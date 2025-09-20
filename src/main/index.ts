@@ -380,8 +380,11 @@ function setupIpcHandlers() {
       }
 
       try {
-        // Generate insights
-        const insights = await insightsService.generateInsights(meeting);
+        // Get user profile to personalize insights
+        const userProfile = settingsService.getProfile();
+
+        // Generate insights with profile context
+        const insights = await insightsService.generateInsights(meeting, userProfile);
 
         // Update the meeting with insights
         await storageService.updateMeeting(meetingId, { insights });

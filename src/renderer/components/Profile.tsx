@@ -128,12 +128,18 @@ const ProfileEditorContainer = styled.div`
     overflow: hidden;
     position: absolute;
     text-overflow: ellipsis;
-    top: 12px;
+    top: 0;
     left: 12px;
     font-size: 13px;
     user-select: none;
     display: inline-block;
     pointer-events: none;
+  }
+
+  /* Ensure first paragraph has no extra margin that could push placeholder down */
+  .mdxeditor-root-contenteditable > p:first-child {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
   }
 `;
 
