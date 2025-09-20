@@ -72,9 +72,12 @@ export class TranscriptCorrectionService extends EventEmitter {
         logger.warn('PromptService not available, using fallback prompt');
         throw new Error('PromptService not initialized');
       }
-      return await this.promptService.getInterpolatedPrompt('transcript-correction', {
+      logger.info('Getting transcript correction prompt from PromptService');
+      const prompt = await this.promptService.getInterpolatedPrompt('transcript-correction', {
         transcript: '' // This will be replaced in the API call
       });
+      logger.info(`Loaded custom prompt (length: ${prompt.length} chars)`);
+      return prompt;
     } catch (error) {
       logger.error('Failed to load transcript correction prompt, using fallback:', error);
       // Fallback to a basic prompt if the service fails
@@ -95,21 +98,25 @@ export class TranscriptCorrectionService extends EventEmitter {
     }
 
     try {
-      // Build context for better correction
-      let contextMessage = '';
+      // Build the transcript content to be corrected
+      const transcriptContent = currentBlock.lines.join('\n');
 
+      // Build context message for the user
+      let userMessage = '';
+
+      // Add previous context if available
       if (previousBlock) {
-        // Include last 5 lines of previous block for context
-        const prevContext = previousBlock.lines.slice(-5);
-        contextMessage += `[Context from previous section - DO NOT MODIFY]\n${prevContext.join('\n')}\n\n[END OF CONTEXT]\n\n`;
+        const prevContext = previousBlock.lines.slice(-3);
+        userMessage += `Previous context (for reference only, do not include in output):\n${prevContext.join('\n')}\n\n---\n\n`;
       }
 
-      contextMessage += `[SECTION TO CORRECT - Line ${currentBlock.startIndex + 1} to ${currentBlock.endIndex + 1}]\n${currentBlock.lines.join('\n')}\n[END OF SECTION TO CORRECT]`;
+      // Add the content to correct
+      userMessage += `Transcript to correct:\n${transcriptContent}`;
 
+      // Add next context if available
       if (nextBlock) {
-        // Include first 5 lines of next block for context
-        const nextContext = nextBlock.lines.slice(0, 5);
-        contextMessage += `\n\n[Context from next section - DO NOT MODIFY]\n${nextContext.join('\n')}\n[END OF CONTEXT]`;
+        const nextContext = nextBlock.lines.slice(0, 3);
+        userMessage += `\n\n---\n\nNext context (for reference only, do not include in output):\n${nextContext.join('\n')}`;
       }
 
       logger.debug(`Making API call for block correction (${currentBlock.lines.length} lines)`);
@@ -121,14 +128,19 @@ export class TranscriptCorrectionService extends EventEmitter {
 
       const systemPrompt = await this.getDefensiveCorrectionPrompt();
 
+      logger.info(`System prompt preview (first 200 chars): ${systemPrompt.substring(0, 200)}`);
+
+      // Log a sample of what we're sending for debugging
+      logger.debug(`Sample of transcript being corrected (first 300 chars): ${transcriptContent.substring(0, 300)}`);
+
       const apiPromise = this.anthropic.messages.create({
         model: 'claude-3-5-sonnet-20241022',
         max_tokens: 4096,
-        temperature: 0.2, // Low temperature for consistent, conservative corrections
+        temperature: 0.1, // Even lower temperature for more consistent corrections
         system: systemPrompt,
         messages: [{
           role: 'user',
-          content: `Please correct ONLY the transcription errors in the section marked [SECTION TO CORRECT], using the context to understand the conversation flow. Return ONLY the corrected lines from that section, nothing else.\n\n${contextMessage}`
+          content: userMessage
         }]
       });
 
@@ -140,26 +152,35 @@ export class TranscriptCorrectionService extends EventEmitter {
       if (response.content[0].type === 'text') {
         let correctedText = response.content[0].text.trim();
 
-        // Extract just the corrected section if the response includes markers
-        // The AI might return the section with markers like [SECTION TO CORRECT]
-        const sectionMatch = correctedText.match(/\[SECTION TO CORRECT[^\]]*\]([\s\S]*?)\[END OF SECTION/);
-        if (sectionMatch) {
-          correctedText = sectionMatch[1].trim();
+        // Remove any wrapper text that Claude might add
+        // Look for common patterns where Claude might wrap the response
+        if (correctedText.includes('---')) {
+          // If there are dividers, extract the main content between them
+          const parts = correctedText.split('---');
+          // Usually the corrected transcript is in the middle section
+          if (parts.length >= 3) {
+            correctedText = parts[1].trim();
+          }
         }
 
-        // Validate that we got reasonable output (not empty, not too different in length)
-        const originalLength = currentBlock.lines.join('\n').length;
+        // Remove any leading/trailing explanation text
+        correctedText = correctedText
+          .replace(/^(Here'?s? the corrected transcript:?|Corrected transcript:?|Corrected version:?)\s*/i, '')
+          .replace(/\s*(End of corrected transcript|That'?s? all)\s*$/i, '')
+          .trim();
+
+        // Validate that we got reasonable output
+        const originalLength = transcriptContent.length;
         const correctedLength = correctedText.length;
 
         // Log what we're seeing for debugging
         logger.debug(`Block correction lengths - original: ${originalLength}, corrected: ${correctedLength}`);
+        logger.debug(`First 200 chars of corrected text: ${correctedText.substring(0, 200)}`);
 
-        // Be more lenient with length changes - sometimes corrections can compress text significantly
+        // Be more lenient with length changes - corrections can compress text
         if (correctedLength < originalLength * 0.3 || correctedLength > originalLength * 2.0) {
           logger.warn(`Block correction resulted in suspicious length change (${originalLength} -> ${correctedLength}), using original`);
-          logger.debug(`Original block sample: ${currentBlock.lines.slice(0, 3).join('\n').substring(0, 200)}...`);
-          logger.debug(`Corrected block sample: ${correctedText.substring(0, 200)}...`);
-          return currentBlock.lines.join('\n');
+          return transcriptContent;
         }
 
         return correctedText;
@@ -176,6 +197,88 @@ export class TranscriptCorrectionService extends EventEmitter {
   /**
    * Correct an entire transcript using block processing
    */
+  private validateCorrectedTranscript(original: string, corrected: string): { isValid: boolean; errors: string[] } {
+    const errors: string[] = [];
+
+    // Check if corrected transcript is not empty
+    if (!corrected || corrected.trim().length === 0) {
+      errors.push('Corrected transcript is empty');
+      return { isValid: false, errors };
+    }
+
+    // Check if transcript length is reasonable - be VERY lenient since custom prompts
+    // may aggressively clean up duplicate content
+    const originalLength = original.length;
+    const correctedLength = corrected.length;
+    if (correctedLength < originalLength * 0.15) {
+      // Only error if we lost more than 85% of content
+      errors.push(`Transcript too short: ${correctedLength} chars vs original ${originalLength} chars`);
+    }
+
+    // Count timestamp lines in both transcripts (with or without square brackets)
+    const timestampRegex = /^(\[)?\d{2}:\d{2}:\d{2}(\])?\s+/gm;
+    const originalTimestamps = (original.match(timestampRegex) || []).length;
+    const correctedTimestamps = (corrected.match(timestampRegex) || []).length;
+
+    // Be very lenient with timestamp consolidation - custom prompts may merge broken lines
+    if (correctedTimestamps < originalTimestamps * 0.15) {
+      // Only error if we lost more than 85% of timestamps
+      errors.push(`Lost too many timestamp lines: ${correctedTimestamps} vs original ${originalTimestamps}`);
+    }
+
+    // Check if the basic structure is maintained (has timestamp lines)
+    if (correctedTimestamps === 0 && originalTimestamps > 0) {
+      errors.push('No timestamp lines found in corrected transcript');
+    }
+
+    // Extract and compare speakers to ensure they weren't lost (with or without square brackets)
+    const speakerRegex = /^(\[)?\d{2}:\d{2}:\d{2}(\])?\s+(.+?)$/gm;
+    const originalSpeakers = new Set<string>();
+    const correctedSpeakers = new Set<string>();
+
+    let match;
+    while ((match = speakerRegex.exec(original)) !== null) {
+      // The speaker name is now in match[3] because of the optional bracket groups
+      originalSpeakers.add(match[3].trim());
+    }
+
+    speakerRegex.lastIndex = 0; // Reset regex
+    while ((match = speakerRegex.exec(corrected)) !== null) {
+      correctedSpeakers.add(match[3].trim());
+    }
+
+    // Clean up speaker names for comparison (remove duplicates and extra formatting)
+    const cleanSpeaker = (speaker: string) => {
+      // Remove duplicate patterns like "Name: Name:" or "Speaker: Name"
+      return speaker
+        .replace(/^(Speaker:\s*)/i, '') // Remove "Speaker:" prefix
+        .replace(/(.+?):\s*\1:?/g, '$1') // Remove duplicate names like "LeonorL: LeonorL:"
+        .trim();
+    };
+
+    const cleanedOriginalSpeakers = new Set(Array.from(originalSpeakers).map(cleanSpeaker));
+    const cleanedCorrectedSpeakers = new Set(Array.from(correctedSpeakers).map(cleanSpeaker));
+
+    // Check if we lost any core speakers (after cleaning)
+    const lostCoreSpeakers = Array.from(cleanedOriginalSpeakers).filter(
+      speaker => !Array.from(cleanedCorrectedSpeakers).some(
+        corrected => corrected.includes(speaker) || speaker.includes(corrected)
+      )
+    );
+
+    if (lostCoreSpeakers.length > 0 && cleanedOriginalSpeakers.size > 0) {
+      // Only error if we lost ALL speakers AND there are no speakers in corrected
+      if (lostCoreSpeakers.length === cleanedOriginalSpeakers.size && correctedSpeakers.size === 0) {
+        errors.push(`All speakers appear to be lost: ${lostCoreSpeakers.join(', ')}`);
+      }
+    }
+
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
+  }
+
   async correctTranscript(transcript: string, meetingId: string): Promise<string> {
     if (!this.anthropic) {
       logger.info('Transcript correction skipped - no Anthropic API key configured');
@@ -258,6 +361,22 @@ export class TranscriptCorrectionService extends EventEmitter {
 
       // Join all corrected blocks
       const correctedTranscript = correctedBlocks.join('\n');
+
+      // Log comparison for debugging
+      logger.debug(`[CORRECTION CHECK] Original sample: ${transcript.substring(0, 300)}`);
+      logger.debug(`[CORRECTION CHECK] Corrected sample: ${correctedTranscript.substring(0, 300)}`);
+      logger.debug(`[CORRECTION CHECK] Are they the same? ${transcript === correctedTranscript}`);
+
+      // Validate the corrected transcript
+      const validationResult = this.validateCorrectedTranscript(transcript, correctedTranscript);
+      if (!validationResult.isValid) {
+        logger.error(`Transcript validation failed for meeting ${meetingId}: ${validationResult.errors.join(', ')}`);
+        logger.info('Returning original transcript due to validation failure');
+        this.emit('correction-failed', { meetingId, error: `Validation failed: ${validationResult.errors.join(', ')}` });
+        return transcript;
+      }
+
+      logger.info(`Transcript correction successful for meeting ${meetingId}`);
 
       // Log first 500 chars of original vs corrected to see if there are actual changes
       logger.info(`Original transcript sample (first 500 chars): ${transcript.substring(0, 500)}`);
