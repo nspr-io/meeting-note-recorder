@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IpcChannels, Meeting, AppSettings, UserProfile } from '../shared/types';
+import { IpcChannels, Meeting, AppSettings, UserProfile, SearchOptions } from '../shared/types';
 
 const api = {
   // Settings
@@ -46,6 +46,14 @@ const api = {
     ipcRenderer.invoke(IpcChannels.OPEN_MEETING_FILE, meetingId),
   showInFinder: (filePath: string) =>
     ipcRenderer.invoke(IpcChannels.SHOW_IN_FINDER, filePath),
+
+  // Search
+  searchMeetings: (options: SearchOptions) =>
+    ipcRenderer.invoke(IpcChannels.SEARCH_MEETINGS, options),
+  getSearchHistory: () =>
+    ipcRenderer.invoke(IpcChannels.GET_SEARCH_HISTORY),
+  clearSearchHistory: () =>
+    ipcRenderer.invoke(IpcChannels.CLEAR_SEARCH_HISTORY),
   
   // Permissions
   getPermissionStatus: () => 
@@ -66,6 +74,7 @@ const api = {
       IpcChannels.SETTINGS_UPDATED,
       IpcChannels.MEETINGS_UPDATED,
       IpcChannels.ERROR_OCCURRED,
+      IpcChannels.SEARCH_RESULTS,
     ];
     
     if (validChannels.includes(channel as any)) {

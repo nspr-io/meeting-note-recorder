@@ -115,4 +115,34 @@ export enum IpcChannels {
   GENERATE_INSIGHTS = 'generate-insights',
   GET_PROFILE = 'get-profile',
   UPDATE_PROFILE = 'update-profile',
+
+  // Search channels
+  SEARCH_MEETINGS = 'search-meetings',
+  GET_SEARCH_HISTORY = 'get-search-history',
+  CLEAR_SEARCH_HISTORY = 'clear-search-history',
+  SEARCH_RESULTS = 'search-results',
+}
+
+export interface SearchOptions {
+  query: string;
+  filters?: {
+    dateFrom?: Date;
+    dateTo?: Date;
+    attendees?: string[];
+    status?: Meeting['status'][];
+    platforms?: string[];
+  };
+  limit?: number;
+}
+
+export interface SearchResult {
+  meeting: Meeting;
+  score: number;
+  matches: SearchMatch[];
+}
+
+export interface SearchMatch {
+  field: string;
+  value: string;
+  indices: [number, number][];
 }

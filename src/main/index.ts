@@ -11,7 +11,8 @@ import { CalendarService } from './services/CalendarService';
 import { SettingsService } from './services/SettingsService';
 import { PermissionService } from './services/PermissionService';
 import { getLogger } from './services/LoggingService';
-import { IpcChannels, Meeting, UserProfile } from '../shared/types';
+import { SearchService } from './services/SearchService';
+import { IpcChannels, Meeting, UserProfile, SearchOptions } from '../shared/types';
 
 const logger = getLogger();
 
@@ -22,6 +23,7 @@ let storageService: StorageService;
 let calendarService: CalendarService;
 let settingsService: SettingsService;
 let permissionService: PermissionService;
+let searchService: SearchService;
 let currentRecordingMeetingId: string | null = null;
 
 function createWindow() {
@@ -84,8 +86,12 @@ async function initializeServices() {
   storageService = new StorageService(settingsService);
   await storageService.initialize();
 
+  searchService = new SearchService();
+  const meetings = await storageService.getAllMeetings();
+  searchService.updateIndex(meetings);
+
   calendarService = new CalendarService();
-  
+
   recordingService = new RecordingService(storageService);
   
   // Initialize recording service with API key and URL from settings
@@ -279,6 +285,9 @@ function setupIpcHandlers() {
 
   ipcMain.handle(IpcChannels.CREATE_MEETING, async (_, meeting: Partial<Meeting>) => {
     const newMeeting = await storageService.createMeeting(meeting);
+    // Update search index
+    const allMeetings = await storageService.getAllMeetings();
+    searchService.updateIndex(allMeetings);
     if (mainWindow) {
       mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
     }
@@ -287,6 +296,9 @@ function setupIpcHandlers() {
 
   ipcMain.handle(IpcChannels.UPDATE_MEETING, async (_, id: string, updates: Partial<Meeting>) => {
     const updatedMeeting = await storageService.updateMeeting(id, updates);
+    // Update search index
+    const allMeetings = await storageService.getAllMeetings();
+    searchService.updateIndex(allMeetings);
     if (mainWindow) {
       mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
     }
@@ -354,6 +366,9 @@ function setupIpcHandlers() {
 
   ipcMain.handle(IpcChannels.DELETE_MEETING, async (_, id: string) => {
     await storageService.deleteMeeting(id);
+    // Update search index
+    const allMeetings = await storageService.getAllMeetings();
+    searchService.updateIndex(allMeetings);
     if (mainWindow) {
       mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
     }
@@ -571,13 +586,28 @@ function setupIpcHandlers() {
   ipcMain.handle('get-permission-status', async () => {
     return permissionService.getPermissionStatus();
   });
-  
+
   ipcMain.handle('check-permissions', async () => {
     return await permissionService.checkAllPermissions();
   });
-  
+
   ipcMain.handle('request-permissions', async () => {
     await permissionService.showPermissionDialog();
+    return { success: true };
+  });
+
+  // Search handlers
+  ipcMain.handle(IpcChannels.SEARCH_MEETINGS, async (_, options: SearchOptions) => {
+    const results = searchService.search(options);
+    return results;
+  });
+
+  ipcMain.handle(IpcChannels.GET_SEARCH_HISTORY, async () => {
+    return searchService.getSearchHistory();
+  });
+
+  ipcMain.handle(IpcChannels.CLEAR_SEARCH_HISTORY, async () => {
+    searchService.clearHistory();
     return { success: true };
   });
 }
@@ -926,7 +956,11 @@ app.whenReady().then(async () => {
   
   storageService = new StorageService(settingsService);
   await storageService.initialize();
-  
+
+  searchService = new SearchService();
+  const meetings = await storageService.getAllMeetings();
+  searchService.updateIndex(meetings);
+
   calendarService = new CalendarService();
   recordingService = new RecordingService(storageService);
   

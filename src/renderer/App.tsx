@@ -6,6 +6,7 @@ import MeetingList from './components/MeetingList';
 import MeetingDetailFinal from './components/MeetingDetailFinal';
 import Settings from './components/Settings';
 import Profile from './components/Profile';
+import Search from './components/Search';
 import { ElectronAPI } from '../main/preload';
 
 declare global {
@@ -43,6 +44,11 @@ const AppTitle = styled.div`
   left: 50%;
   transform: translateX(-50%);
   user-select: none;
+`;
+
+const SearchContainer = styled.div`
+  background: #f9f9f9;
+  border-bottom: 1px solid #e5e5e7;
 `;
 
 const MainContent = styled.div`
@@ -442,7 +448,14 @@ function App() {
       <TitleBar>
         <AppTitle>Meeting Note Recorder</AppTitle>
       </TitleBar>
-      
+
+      <SearchContainer>
+        <Search
+          onSelectMeeting={setSelectedMeeting}
+          currentMeeting={selectedMeeting}
+        />
+      </SearchContainer>
+
       <MainContent>
         <Split
           className="split"

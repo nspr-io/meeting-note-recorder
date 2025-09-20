@@ -30,6 +30,8 @@ export class TranscriptCorrectionService extends EventEmitter {
       return;
     }
 
+    logger.info(`Initializing TranscriptCorrectionService with API key: ${apiKey.substring(0, 10)}...`);
+
     try {
       this.anthropic = new Anthropic({
         apiKey: apiKey
@@ -125,7 +127,14 @@ Return ONLY the corrected text block, maintaining the exact same format, structu
         contextMessage += `\n\n[Context from next section - DO NOT MODIFY]\n${nextContext.join('\n')}\n[END OF CONTEXT]`;
       }
 
-      const response = await this.anthropic.messages.create({
+      logger.debug(`Making API call for block correction (${currentBlock.lines.length} lines)`);
+
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('API request timeout after 30 seconds')), 30000);
+      });
+
+      const apiPromise = this.anthropic.messages.create({
         model: 'claude-3-5-sonnet-20241022',
         max_tokens: 4096,
         temperature: 0.2, // Low temperature for consistent, conservative corrections
@@ -135,6 +144,10 @@ Return ONLY the corrected text block, maintaining the exact same format, structu
           content: `Please correct ONLY the transcription errors in the section marked [SECTION TO CORRECT], using the context to understand the conversation flow. Return ONLY the corrected lines from that section, nothing else.\n\n${contextMessage}`
         }]
       });
+
+      const response = await Promise.race([apiPromise, timeoutPromise]) as any;
+
+      logger.debug('API call completed successfully');
 
       // Extract the corrected text
       if (response.content[0].type === 'text') {
