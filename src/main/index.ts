@@ -11,7 +11,7 @@ import { CalendarService } from './services/CalendarService';
 import { SettingsService } from './services/SettingsService';
 import { PermissionService } from './services/PermissionService';
 import { getLogger } from './services/LoggingService';
-import { IpcChannels, Meeting } from '../shared/types';
+import { IpcChannels, Meeting, UserProfile } from '../shared/types';
 
 const logger = getLogger();
 
@@ -251,6 +251,16 @@ function setupIpcHandlers() {
     return { success: true };
   });
 
+  // Profile
+  ipcMain.handle(IpcChannels.GET_PROFILE, async () => {
+    return settingsService.getProfile();
+  });
+
+  ipcMain.handle(IpcChannels.UPDATE_PROFILE, async (_, profile: UserProfile) => {
+    settingsService.setProfile(profile);
+    return { success: true };
+  });
+
   // Meetings
   ipcMain.handle(IpcChannels.GET_MEETINGS, async () => {
     // Only load meetings from last 30 days for initial load
@@ -348,6 +358,42 @@ function setupIpcHandlers() {
       mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
     }
     return { success: true };
+  });
+
+  ipcMain.handle(IpcChannels.GENERATE_INSIGHTS, async (_, meetingId: string) => {
+    try {
+      // Check if recording service is available
+      if (!recordingService) {
+        return { success: false, error: 'Recording service not initialized' };
+      }
+
+      // Get the meeting
+      const meeting = await storageService.getMeeting(meetingId);
+      if (!meeting) {
+        return { success: false, error: 'Meeting not found' };
+      }
+
+      // Check if insights service is available
+      const insightsService = recordingService.getInsightsService();
+      if (!insightsService || !insightsService.isAvailable()) {
+        return { success: false, error: 'Insights generation service not available. Please check your Anthropic API key in settings.' };
+      }
+
+      try {
+        // Generate insights
+        const insights = await insightsService.generateInsights(meeting);
+
+        // Update the meeting with insights
+        await storageService.updateMeeting(meetingId, { insights });
+
+        return { success: true, insights };
+      } catch (error) {
+        throw error;
+      }
+    } catch (error: any) {
+      logger.error('Failed to generate insights:', error);
+      return { success: false, error: error.message || 'Failed to generate insights' };
+    }
   });
 
   // Recording

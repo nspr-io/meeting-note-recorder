@@ -156,35 +156,10 @@ const ConnectionStatus = styled.div<{ connected: boolean }>`
 interface SettingsProps {
   settings: AppSettings | null;
   onUpdateSettings: (updates: Partial<AppSettings>) => Promise<void>;
-  onBack?: () => void;
 }
 
-const BackButton = styled.button`
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  margin-bottom: 16px;
-  background: #f5f5f7;
-  border: 1px solid #d1d1d1;
-  border-radius: 8px;
-  color: #333;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
 
-  &:hover {
-    background: #e8e8ea;
-    transform: translateX(-2px);
-  }
-
-  &:active {
-    transform: translateX(0);
-  }
-`;
-
-function Settings({ settings, onUpdateSettings, onBack }: SettingsProps) {
+function Settings({ settings, onUpdateSettings }: SettingsProps) {
   const [apiKey, setApiKey] = useState(settings?.recallApiKey || '');
   const [apiUrl, setApiUrl] = useState(settings?.recallApiUrl || 'https://us-east-1.recall.ai');
   const [anthropicApiKey, setAnthropicApiKey] = useState(settings?.anthropicApiKey || '');
@@ -206,7 +181,7 @@ function Settings({ settings, onUpdateSettings, onBack }: SettingsProps) {
       setAutoStart(settings.autoStartOnBoot);
       setIsCalendarConnected(settings.googleCalendarConnected);
     }
-    
+
     // Load permission status
     loadPermissionStatus();
   }, [settings]);
@@ -334,11 +309,6 @@ function Settings({ settings, onUpdateSettings, onBack }: SettingsProps) {
 
   return (
     <SettingsContainer>
-      {onBack && (
-        <BackButton onClick={onBack}>
-          ← Back to Meetings
-        </BackButton>
-      )}
       {statusMessage && (
         <StatusMessage type={statusMessage.type}>
           {statusMessage.text}
@@ -483,7 +453,7 @@ function Settings({ settings, onUpdateSettings, onBack }: SettingsProps) {
           Start on system boot
         </CheckboxContainer>
       </Section>
-      
+
       <Section>
         <SectionTitle>About</SectionTitle>
         <div style={{ fontSize: '13px', color: '#86868b' }}>

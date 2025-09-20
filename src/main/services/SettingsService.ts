@@ -1,7 +1,7 @@
 import Store from 'electron-store';
 import path from 'path';
 import { app } from 'electron';
-import { AppSettings } from '../../shared/types';
+import { AppSettings, UserProfile } from '../../shared/types';
 
 export class SettingsService {
   private store: any; // Using any to work around TypeScript issues with electron-store in tests
@@ -163,6 +163,19 @@ export class SettingsService {
       this.store.delete('anthropicApiKey');
     } else if (this.store.store) {
       delete this.store.store.anthropicApiKey;
+    }
+  }
+
+  getProfile(): UserProfile | null {
+    const profile = this.store.get ? this.store.get('userProfile') : this.store.store?.userProfile;
+    return profile || null;
+  }
+
+  setProfile(profile: UserProfile): void {
+    if (this.store.set) {
+      this.store.set('userProfile', profile);
+    } else {
+      this.store.store = { ...this.store.store, userProfile: profile };
     }
   }
 }

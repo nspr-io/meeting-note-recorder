@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import styled from '@emotion/styled';
+import Split from 'react-split';
 import { Meeting, AppSettings, IpcChannels } from '../shared/types';
 import MeetingList from './components/MeetingList';
 import MeetingDetailFinal from './components/MeetingDetailFinal';
 import Settings from './components/Settings';
+import Profile from './components/Profile';
 import { ElectronAPI } from '../main/preload';
 
 declare global {
@@ -48,44 +50,73 @@ const MainContent = styled.div`
   display: flex;
   overflow: hidden;
   background: #ffffff;
+
+  .split {
+    display: flex;
+    width: 100%;
+  }
+
+  .gutter {
+    background-color: #e5e5e7;
+    background-repeat: no-repeat;
+    background-position: 50%;
+    cursor: col-resize;
+    transition: background-color 0.2s;
+
+    &:hover {
+      background-color: #d1d1d1;
+    }
+  }
+
+  .gutter.gutter-horizontal {
+    background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAeCAYAAADkftS9AAAAIklEQVQoU2M4c+bMfxAGAgYYmwGrIIiDjrELjpo5aiZeMwF+yNnOs5KSvgAAAABJRU5ErkJggg==');
+    cursor: col-resize;
+  }
 `;
 
 const Sidebar = styled.div`
-  width: 280px;
   background: #ffffff;
-  border-right: 1px solid #e5e5e7;
   display: flex;
   flex-direction: column;
   position: relative;
+  height: 100%;
+  min-width: 200px;
 `;
 
-const SettingsButton = styled.button`
+const BottomNav = styled.div`
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 16px;
+  display: flex;
   background: #fafafa;
-  border: none;
   border-top: 1px solid #e5e5e7;
-  color: #666;
-  font-size: 14px;
-  font-weight: 500;
+`;
+
+const NavButton = styled.button<{ active?: boolean }>`
+  flex: 1;
+  padding: 12px;
+  background: ${props => props.active ? '#667eea' : 'transparent'};
+  border: none;
+  color: ${props => props.active ? 'white' : '#666'};
+  font-size: 20px;
   cursor: pointer;
   transition: all 0.2s;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 4px;
 
   &:hover {
-    background: #f0f0f0;
-    color: #333;
+    background: ${props => props.active ? '#5a67d8' : '#e8e8e8'};
+    color: ${props => props.active ? 'white' : '#333'};
   }
 
-  &.active {
-    background: #667eea;
-    color: white;
+  span {
+    font-size: 10px;
+    font-weight: 500;
+    margin-top: 2px;
   }
 `;
 
@@ -184,7 +215,7 @@ const FloatingActionButton = styled.button`
   }
 `;
 
-type ViewMode = 'meetings' | 'settings';
+type ViewMode = 'meetings' | 'settings' | 'profile';
 type TabMode = 'upcoming' | 'past';
 
 function App() {
@@ -413,53 +444,88 @@ function App() {
       </TitleBar>
       
       <MainContent>
-        <Sidebar>
-          {viewMode === 'meetings' && (
-            <>
-              <TabBar>
-                <Tab
-                  active={tabMode === 'upcoming'}
-                  onClick={() => setTabMode('upcoming')}
-                >
-                  Upcoming
-                </Tab>
-                <Tab
-                  active={tabMode === 'past'}
-                  onClick={() => setTabMode('past')}
-                >
-                  Past
-                </Tab>
-              </TabBar>
-              
-              <MeetingList
-                meetings={filterMeetings(meetings)}
-                selectedMeeting={selectedMeeting}
-                onSelectMeeting={setSelectedMeeting}
-                onSyncCalendar={handleSyncCalendar}
+        <Split
+          className="split"
+          sizes={[25, 75]}
+          minSize={[200, 400]}
+          expandToMin={false}
+          gutterSize={6}
+          gutterAlign="center"
+          snapOffset={30}
+          dragInterval={1}
+          direction="horizontal"
+          cursor="col-resize"
+        >
+          <Sidebar>
+            {viewMode === 'meetings' && (
+              <>
+                <TabBar>
+                  <Tab
+                    active={tabMode === 'upcoming'}
+                    onClick={() => setTabMode('upcoming')}
+                  >
+                    Upcoming
+                  </Tab>
+                  <Tab
+                    active={tabMode === 'past'}
+                    onClick={() => setTabMode('past')}
+                  >
+                    Past
+                  </Tab>
+                </TabBar>
+
+                <MeetingList
+                  meetings={filterMeetings(meetings)}
+                  selectedMeeting={selectedMeeting}
+                  onSelectMeeting={setSelectedMeeting}
+                  onSyncCalendar={handleSyncCalendar}
+                />
+              </>
+            )}
+
+            {viewMode === 'settings' && (
+              <Settings
+                settings={settings}
+                onUpdateSettings={async (updates) => {
+                  await window.electronAPI.updateSettings(updates);
+                  await loadSettings();
+                }}
               />
-            </>
-          )}
+            )}
 
-          {viewMode === 'settings' && (
-            <Settings
-              settings={settings}
-              onUpdateSettings={async (updates) => {
-                await window.electronAPI.updateSettings(updates);
-                await loadSettings();
-              }}
-              onBack={() => setViewMode('meetings')}
-            />
-          )}
+            {viewMode === 'profile' && (
+              <Profile />
+            )}
 
-          <SettingsButton
-            className={viewMode === 'settings' ? 'active' : ''}
-            onClick={() => setViewMode(viewMode === 'settings' ? 'meetings' : 'settings')}
-          >
-            ⚙️ Settings
-          </SettingsButton>
-        </Sidebar>
-        
-        <ContentArea>
+            <BottomNav>
+              <NavButton
+                active={viewMode === 'meetings'}
+                onClick={() => setViewMode('meetings')}
+                title="Meetings"
+              >
+                📅
+                <span>Meetings</span>
+              </NavButton>
+              <NavButton
+                active={viewMode === 'profile'}
+                onClick={() => setViewMode('profile')}
+                title="Profile"
+              >
+                👤
+                <span>Profile</span>
+              </NavButton>
+              <NavButton
+                active={viewMode === 'settings'}
+                onClick={() => setViewMode('settings')}
+                title="Settings"
+              >
+                ⚙️
+                <span>Settings</span>
+              </NavButton>
+            </BottomNav>
+          </Sidebar>
+
+          <ContentArea>
           {viewMode === 'meetings' && (
             selectedMeeting ? (
               <MeetingDetailFinal
@@ -491,6 +557,7 @@ function App() {
             )
           )}
         </ContentArea>
+        </Split>
       </MainContent>
       
       <StatusBar>

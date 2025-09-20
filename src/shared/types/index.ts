@@ -19,6 +19,7 @@ export interface Meeting {
   status: 'scheduled' | 'recording' | 'completed' | 'partial' | 'error' | 'active';
   notes: string;
   transcript: string;
+  insights?: string; // JSON string containing summary, action items, decisions
   filePath?: string;
   createdAt?: Date;
   updatedAt?: Date;
@@ -41,6 +42,14 @@ export interface TranscriptChunk {
   timestamp: Date;
   speaker?: string;
   text: string;
+}
+
+export interface UserProfile {
+  name: string;
+  company: string;
+  title: string;
+  aboutMe: string;
+  preferences: string;
 }
 
 export interface AppSettings {
@@ -103,4 +112,7 @@ export enum IpcChannels {
   OPEN_MEETING_FILE = 'open-meeting-file',
   SHOW_IN_FINDER = 'show-in-finder',
   CORRECT_TRANSCRIPT = 'correct-transcript',
+  GENERATE_INSIGHTS = 'generate-insights',
+  GET_PROFILE = 'get-profile',
+  UPDATE_PROFILE = 'update-profile',
 }

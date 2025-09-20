@@ -19,10 +19,18 @@ export class LoggingService {
     
     // Also create a symlink to latest log for easy access
     const latestLogPath = path.join(logsDir, 'latest.log');
-    if (fs.existsSync(latestLogPath)) {
-      fs.unlinkSync(latestLogPath);
+    try {
+      // Try to remove existing symlink/file first
+      if (fs.existsSync(latestLogPath)) {
+        fs.unlinkSync(latestLogPath);
+      }
+      // Create new symlink
+      fs.symlinkSync(this.logPath, latestLogPath);
+    } catch (error) {
+      // If symlink creation fails, just log it and continue
+      // The app should still work without the latest.log symlink
+      console.warn('Failed to create latest.log symlink:', error);
     }
-    fs.symlinkSync(this.logPath, latestLogPath);
     
     this.logStream = fs.createWriteStream(this.logPath, { flags: 'a' });
     

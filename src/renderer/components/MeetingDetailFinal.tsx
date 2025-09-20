@@ -303,6 +303,40 @@ const EditorContainer = styled.div`
   .mdxeditor-root-contenteditable {
     padding: 20px;
     min-height: 400px;
+    position: relative;
+
+    /* Remove default paragraph margins */
+    p {
+      margin: 0;
+      padding: 0;
+      line-height: 1.6;
+    }
+
+    /* First paragraph should have no top margin */
+    > p:first-child {
+      margin-top: 0;
+    }
+  }
+
+  /* Override MDXEditor's placeholder positioning */
+  .mdxeditor [contenteditable="true"]:empty::before,
+  .mdxeditor .mdxeditor-root-contenteditable:empty::before {
+    content: attr(data-placeholder) !important;
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    color: #999;
+    pointer-events: none;
+  }
+
+  /* Hide the default placeholder that appears above */
+  .mdxeditor [data-placeholder]:not(:empty)::before {
+    display: none !important;
+  }
+
+  /* Ensure the contenteditable area starts at the right position */
+  .mdxeditor [contenteditable="true"] {
+    min-height: inherit;
   }
 
   .mdxeditor-root-contenteditable h1 { font-size: 28px; font-weight: 700; margin: 20px 0 12px; }
@@ -481,7 +515,7 @@ interface MeetingDetailFinalProps {
   onRefresh?: () => void;
 }
 
-type ViewMode = 'notes' | 'transcript';
+type ViewMode = 'notes' | 'transcript' | 'insights';
 
 // Error boundary for MDX Editor
 class MDXErrorBoundary extends React.Component<
@@ -562,6 +596,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [editorKey, setEditorKey] = useState(Date.now()); // Force fresh editor instance
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editedTitle, setEditedTitle] = useState(meeting.title);
+  const [insights, setInsights] = useState<any>(null);
+  const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
   const mdxEditorRef = useRef<any>(null);
 
   useEffect(() => {
@@ -570,6 +606,16 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     setHasChanges(false);
     setIsRecording(meeting.status === 'recording');
     setEditorKey(Date.now()); // Force complete editor remount when meeting changes
+
+    // Load existing insights if available
+    if (meeting.insights) {
+      try {
+        setInsights(JSON.parse(meeting.insights));
+      } catch (e) {
+        console.error('Failed to parse insights:', e);
+        setInsights(null);
+      }
+    }
 
     // When recording stops, clear segments and load from stored transcript
     // When recording is active, don't parse stored transcript (rely on real-time)
@@ -731,6 +777,13 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       setIsCorrecting(true);
       setCorrectionProgress(null);
 
+      // Estimate correction time
+      const lines = meeting.transcript.split('\n').filter((line: string) => line.trim()).length;
+      const blocks = Math.ceil(lines / 50);
+      const estimatedSeconds = Math.round(blocks * 1.5);
+
+      console.log(`Transcript has ${lines} lines, will process in ${blocks} blocks (~${estimatedSeconds}s)`);
+
       // Call the main process to correct the transcript
       const result = await (window as any).electronAPI.correctTranscript(meeting.id);
 
@@ -764,6 +817,36 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       } catch (error) {
         console.error('Failed to show in Finder:', error);
       }
+    }
+  };
+
+  const handleGenerateInsights = async () => {
+    if (isGeneratingInsights) return;
+
+    try {
+      setIsGeneratingInsights(true);
+
+      // Call the main process to generate insights
+      const result = await (window as any).electronAPI.generateInsights(meeting.id);
+
+      if (result.success && result.insights) {
+        // Parse and set the insights
+        const parsedInsights = JSON.parse(result.insights);
+        setInsights(parsedInsights);
+
+        // Refresh meeting data to get updated insights
+        if (onRefresh) {
+          await onRefresh();
+        }
+      } else {
+        console.error('Failed to generate insights:', result.error);
+        alert('Failed to generate insights. Please check your Anthropic API key in settings.');
+      }
+    } catch (error) {
+      console.error('Error generating insights:', error);
+      alert('An error occurred while generating insights.');
+    } finally {
+      setIsGeneratingInsights(false);
     }
   };
 
@@ -1086,6 +1169,12 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
               >
                 Transcript
               </Tab>
+              <Tab
+                active={viewMode === 'insights'}
+                onClick={() => setViewMode('insights')}
+              >
+                Insights
+              </Tab>
             </TabContainer>
             {meeting.filePath && (
               <ShowInFinderButton onClick={handleShowInFinder}>
@@ -1200,7 +1289,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                         {isCorrecting ? (
                           <>
                             {correctionProgress ?
-                              `Correcting... ${correctionProgress.percentage}%` :
+                              `Processing block ${correctionProgress.current}/${correctionProgress.total}...` :
                               'Preparing correction...'
                             }
                           </>
@@ -1236,6 +1325,142 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   <span className="icon">🎙️</span>
                   <h3>No transcript available</h3>
                   <p>Transcript will appear here once the meeting is recorded</p>
+                </EmptyState>
+              )}
+            </TranscriptContainer>
+          )}
+
+          {viewMode === 'insights' && (
+            <TranscriptContainer>
+              {insights ? (
+                <div style={{ padding: '20px' }}>
+                  <TranscriptHeader>
+                    <TranscriptTitle>Meeting Insights</TranscriptTitle>
+                    <Button
+                      onClick={handleGenerateInsights}
+                      disabled={isGeneratingInsights}
+                      style={{
+                        background: '#667eea',
+                        borderColor: '#667eea',
+                        color: 'white'
+                      }}
+                    >
+                      {isGeneratingInsights ? '🔄 Generating...' : '✨ Regenerate Insights'}
+                    </Button>
+                  </TranscriptHeader>
+
+                  {/* Summary */}
+                  <div style={{ marginBottom: '30px' }}>
+                    <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '10px' }}>Summary</h3>
+                    <p style={{ lineHeight: '1.6', color: '#333' }}>{insights.summary}</p>
+                  </div>
+
+                  {/* Action Items */}
+                  {insights.actionItems && insights.actionItems.length > 0 && (
+                    <div style={{ marginBottom: '30px' }}>
+                      <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '10px' }}>Action Items</h3>
+                      <ul style={{ listStyle: 'none', padding: 0 }}>
+                        {insights.actionItems.map((item: any, index: number) => (
+                          <li key={index} style={{
+                            marginBottom: '10px',
+                            padding: '10px',
+                            background: '#f5f5f7',
+                            borderRadius: '6px',
+                            display: 'flex',
+                            alignItems: 'flex-start'
+                          }}>
+                            <span style={{ marginRight: '10px' }}>☐</span>
+                            <div style={{ flex: 1 }}>
+                              <strong>{item.owner || 'Unassigned'}</strong>: {item.task}
+                              {item.due && <span style={{ marginLeft: '10px', color: '#666' }}>Due: {item.due}</span>}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Key Decisions */}
+                  {insights.keyDecisions && insights.keyDecisions.length > 0 && (
+                    <div style={{ marginBottom: '30px' }}>
+                      <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '10px' }}>Key Decisions</h3>
+                      <ul style={{ listStyle: 'none', padding: 0 }}>
+                        {insights.keyDecisions.map((decision: string, index: number) => (
+                          <li key={index} style={{
+                            marginBottom: '10px',
+                            padding: '10px',
+                            background: '#e8f4f8',
+                            borderRadius: '6px',
+                            borderLeft: '3px solid #007AFF'
+                          }}>
+                            ✓ {decision}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Follow-ups */}
+                  {insights.followUps && insights.followUps.length > 0 && (
+                    <div style={{ marginBottom: '30px' }}>
+                      <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '10px' }}>Follow-up Items</h3>
+                      <ul style={{ listStyle: 'none', padding: 0 }}>
+                        {insights.followUps.map((followUp: string, index: number) => (
+                          <li key={index} style={{
+                            marginBottom: '10px',
+                            padding: '10px',
+                            background: '#fff9e6',
+                            borderRadius: '6px',
+                            borderLeft: '3px solid #ffc107'
+                          }}>
+                            ❓ {followUp}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Notes Highlights */}
+                  {insights.notesHighlights && insights.notesHighlights.length > 0 && (
+                    <div style={{ marginBottom: '30px' }}>
+                      <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '10px' }}>Key Points from Notes</h3>
+                      <ul style={{ listStyle: 'none', padding: 0 }}>
+                        {insights.notesHighlights.map((highlight: string, index: number) => (
+                          <li key={index} style={{
+                            marginBottom: '10px',
+                            padding: '10px',
+                            background: '#f0f0f0',
+                            borderRadius: '6px'
+                          }}>
+                            📝 {highlight}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <EmptyState>
+                  <span className="icon">💡</span>
+                  <h3>No insights generated yet</h3>
+                  <p>Generate AI-powered insights from your meeting notes and transcript</p>
+                  <Button
+                    onClick={handleGenerateInsights}
+                    disabled={isGeneratingInsights || (!meeting.notes && !meeting.transcript)}
+                    style={{
+                      marginTop: '20px',
+                      background: '#667eea',
+                      borderColor: '#667eea',
+                      color: 'white'
+                    }}
+                  >
+                    {isGeneratingInsights ? '🔄 Generating...' : '✨ Generate Insights'}
+                  </Button>
+                  {!meeting.notes && !meeting.transcript && (
+                    <p style={{ marginTop: '10px', fontSize: '12px', color: '#999' }}>
+                      Add notes or a transcript first to generate insights
+                    </p>
+                  )}
                 </EmptyState>
               )}
             </TranscriptContainer>

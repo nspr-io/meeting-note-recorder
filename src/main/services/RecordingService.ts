@@ -5,6 +5,7 @@ import { RecallApiService } from './RecallApiService';
 import { TranscriptChunk, RecordingState } from '../../shared/types';
 import { SDKDebugger } from './SDKDebugger';
 import { TranscriptCorrectionService } from './TranscriptCorrectionService';
+import { InsightsGenerationService } from './InsightsGenerationService';
 
 const logger = getLogger();
 
@@ -12,6 +13,7 @@ export class RecordingService extends EventEmitter {
   private storageService: StorageService;
   private recallApiService: RecallApiService | null = null;
   private transcriptCorrectionService: TranscriptCorrectionService;
+  private insightsGenerationService: InsightsGenerationService;
   private recordingState: RecordingState = {
     isRecording: false,
     connectionStatus: 'connected',
@@ -29,6 +31,7 @@ export class RecordingService extends EventEmitter {
     this.storageService = storageService;
     this.sdkDebugger = new SDKDebugger();
     this.transcriptCorrectionService = new TranscriptCorrectionService();
+    this.insightsGenerationService = new InsightsGenerationService();
 
     // Forward correction events
     this.transcriptCorrectionService.on('correction-started', (data) => {
@@ -42,6 +45,17 @@ export class RecordingService extends EventEmitter {
     });
     this.transcriptCorrectionService.on('correction-failed', (data) => {
       this.emit('transcript-correction-failed', data);
+    });
+
+    // Forward insights events
+    this.insightsGenerationService.on('insights-started', (data) => {
+      this.emit('insights-started', data);
+    });
+    this.insightsGenerationService.on('insights-completed', (data) => {
+      this.emit('insights-completed', data);
+    });
+    this.insightsGenerationService.on('insights-failed', (data) => {
+      this.emit('insights-failed', data);
     });
   }
 
@@ -125,6 +139,9 @@ export class RecordingService extends EventEmitter {
 
       // Initialize transcript correction service if API key provided
       this.transcriptCorrectionService.initialize(anthropicApiKey);
+
+      // Initialize insights generation service if API key provided
+      this.insightsGenerationService.initialize(anthropicApiKey);
 
       logger.info('RecallAI SDK and API service initialized successfully');
     } catch (error) {
@@ -739,5 +756,9 @@ export class RecordingService extends EventEmitter {
 
   getCorrectionService(): TranscriptCorrectionService {
     return this.transcriptCorrectionService;
+  }
+
+  getInsightsService(): InsightsGenerationService {
+    return this.insightsGenerationService;
   }
 }

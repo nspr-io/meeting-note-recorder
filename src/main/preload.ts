@@ -1,12 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IpcChannels, Meeting, AppSettings } from '../shared/types';
+import { IpcChannels, Meeting, AppSettings, UserProfile } from '../shared/types';
 
 const api = {
   // Settings
   getSettings: () => ipcRenderer.invoke(IpcChannels.GET_SETTINGS),
-  updateSettings: (settings: Partial<AppSettings>) => 
+  updateSettings: (settings: Partial<AppSettings>) =>
     ipcRenderer.invoke(IpcChannels.UPDATE_SETTINGS, settings),
-  
+
+  // Profile
+  getProfile: () => ipcRenderer.invoke(IpcChannels.GET_PROFILE),
+  updateProfile: (profile: UserProfile) =>
+    ipcRenderer.invoke(IpcChannels.UPDATE_PROFILE, profile),
+
   // Meetings
   getMeetings: () => ipcRenderer.invoke(IpcChannels.GET_MEETINGS),
   createMeeting: (meeting: Partial<Meeting>) => 
@@ -23,7 +28,9 @@ const api = {
     ipcRenderer.invoke(IpcChannels.STOP_RECORDING),
   correctTranscript: (meetingId: string) =>
     ipcRenderer.invoke(IpcChannels.CORRECT_TRANSCRIPT, meetingId),
-  
+  generateInsights: (meetingId: string) =>
+    ipcRenderer.invoke(IpcChannels.GENERATE_INSIGHTS, meetingId),
+
   // Calendar
   connectCalendar: () => 
     ipcRenderer.invoke(IpcChannels.CONNECT_CALENDAR),
