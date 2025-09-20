@@ -47,8 +47,8 @@ export class CalendarService {
 
   constructor() {
     // Use the actual credentials provided by the user
-    const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '1042328300965-or1qom5dd5oechlkc03q9qpfelibaq1i.apps.googleusercontent.com';
-    const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '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';
+    const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+    const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
     const REDIRECT_URI = 'http://localhost:9001';
 
     console.log('Initializing CalendarService with CLIENT_ID:', CLIENT_ID.substring(0, 20) + '...');
