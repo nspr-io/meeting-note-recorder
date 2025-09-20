@@ -1,0 +1,49 @@
+
+> meeting-note-recorder@1.0.0 dev
+> concurrently -k "npm run dev:main" "npm run dev:preload" "npm run dev:renderer" "wait-on http://localhost:9000 && electron ."
+
+[0] 
+[0] > meeting-note-recorder@1.0.0 dev:main
+[0] > webpack --config webpack.main.config.js --mode development --watch
+[0] 
+[2] 
+[2] > meeting-note-recorder@1.0.0 dev:renderer
+[2] > webpack serve --config webpack.renderer.config.js --mode development
+[2] 
+[1] 
+[1] > meeting-note-recorder@1.0.0 dev:preload
+[1] > webpack --config webpack.preload.config.js --mode development --watch
+[1] 
+[2] /Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/node_modules/webpack-dev-server/lib/Server.js:2638
+[2]         throw error;
+[2]         ^
+[2] 
+[2] Error: listen EADDRINUSE: address already in use :::9000
+[2]     at Server.setupListenHandle [as _listen2] (node:net:1940:16)
+[2]     at listenInCluster (node:net:1997:12)
+[2]     at Server.listen (node:net:2102:7)
+[2]     at READ_WRITE (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/node_modules/webpack-dev-server/lib/Server.js:3460:23)
+[2]     at new Promise (<anonymous>)
+[2]     at Server.start (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/node_modules/webpack-dev-server/lib/Server.js:3458:7)
+[2]     at async Command.<anonymous> (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/node_modules/@webpack-cli/serve/lib/index.js:161:21)
+[2]     at async Command.parseAsync (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/node_modules/webpack-cli/node_modules/commander/lib/command.js:1092:5)
+[2]     at async Command.<anonymous> (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/node_modules/webpack-cli/lib/webpack-cli.js:1340:13)
+[2]     at async Command.parseAsync (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/node_modules/webpack-cli/node_modules/commander/lib/command.js:1092:5) {
+[2]   code: 'EADDRINUSE',
+[2]   errno: -48,
+[2]   syscall: 'listen',
+[2]   address: '::',
+[2]   port: 9000
+[2] }
+[2] 
+[2] Node.js v24.7.0
+[2] npm run dev:renderer exited with code 1
+--> Sending SIGTERM to other processes..
+[3] /Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron exited with signal SIGTERM
+[3] wait-on http://localhost:9000 && electron . exited with code SIGTERM
+--> Sending SIGTERM to other processes..
+[1] [webpack-cli] Gracefully shutting down. To force exit, press ^C again. Please wait...
+[0] [webpack-cli] Gracefully shutting down. To force exit, press ^C again. Please wait...
+[1] npm run dev:preload exited with code 1
+--> Sending SIGTERM to other processes..
+[0] npm run dev:main exited with code 1

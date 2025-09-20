@@ -1,0 +1,1901 @@
+==================================================================
+PROBLEM CONTEXT FOR REAL-TIME TRANSCRIPTS ISSUE
+==================================================================
+
+PROBLEM: Real-time transcripts are NOT being received during recording.
+The SDK successfully creates uploads, records meetings, but NO 'realtime-event' callbacks
+are being emitted for transcript data, despite proper configuration.
+
+EXPECTED: The SDK should emit 'realtime-event' callbacks with transcript.data
+and transcript.partial_data events during recording.
+
+CONFIRMED WORKING:
+- Recording starts and stops successfully
+- SDK upload is created with transcript provider (Deepgram/AssemblyAI)
+- realtime_endpoints configuration is accepted by the API
+- Transcription provider credentials are configured in Recall dashboard
+- Other SDK events (meeting-detected, recording-started, etc.) work fine
+
+WHAT WAS TRIED:
+- Added comprehensive logging for ANY realtime-event
+- Verified realtime_endpoints configuration format
+- Tested with both Deepgram and AssemblyAI providers
+- Result: ZERO realtime-event callbacks received
+
+SDK VERSION: @recallai/desktop-sdk@1.1.0
+PLATFORM: macOS
+
+==================================================================
+PACKAGE.JSON
+==================================================================
+{
+  "name": "meeting-note-recorder",
+  "version": "1.0.0",
+  "description": "Local meeting recorder with automatic detection and note-taking",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev:main\" \"npm run dev:preload\" \"npm run dev:renderer\" \"wait-on http://localhost:9000 && electron .\"",
+    "dev:main": "webpack --config webpack.main.config.js --mode development --watch",
+    "dev:preload": "webpack --config webpack.preload.config.js --mode development --watch",
+    "dev:renderer": "webpack serve --config webpack.renderer.config.js --mode development",
+    "build": "npm run build:main && npm run build:preload && npm run build:renderer",
+    "build:main": "webpack --config webpack.main.config.js --mode production",
+    "build:preload": "webpack --config webpack.preload.config.js --mode production",
+    "build:renderer": "webpack --config webpack.renderer.config.js --mode production",
+    "start": "electron .",
+    "dist": "npm run build && electron-builder",
+    "test": "node test-production.js",
+    "test:interactive": "node test-interactive.js",
+    "test:production": "node test-production.js",
+    "lint": "eslint src --ext .ts,.tsx"
+  },
+  "keywords": [
+    "electron",
+    "meeting",
+    "recorder",
+    "transcript",
+    "notes"
+  ],
+  "author": "Joshua Wöhle",
+  "license": "MIT",
+  "build": {
+    "appId": "com.meetingnoterecorder.app",
+    "productName": "Meeting Note Recorder",
+    "directories": {
+      "output": "dist-app"
+    },
+    "files": [
+      "dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@mdxeditor/editor": "^3.46.0",
+    "@monaco-editor/react": "^4.7.0",
+    "@recallai/desktop-sdk": "^1.1.0",
+    "@uiw/react-md-editor": "^4.0.8",
+    "date-fns": "^4.1.0",
+    "dotenv": "^17.2.2",
+    "electron-store": "^10.1.0",
+    "googleapis": "^159.0.0",
+    "gray-matter": "^4.0.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "react-split": "^2.0.14",
+    "remark": "^15.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-html": "^16.0.1",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.28.3",
+    "@babel/preset-react": "^7.27.1",
+    "@babel/preset-typescript": "^7.27.1",
+    "@testing-library/jest-dom": "^5.17.0",
+    "@testing-library/react": "^14.3.1",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^24.5.0",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@types/sinon": "^10.0.20",
+    "@types/supertest": "^2.0.16",
+    "@types/uuid": "^10.0.0",
+    "babel-jest": "^30.1.2",
+    "concurrently": "^9.2.1",
+    "css-loader": "^7.1.2",
+    "electron": "^38.1.0",
+    "electron-builder": "^26.0.12",
+    "electron-mock-ipc": "^0.3.12",
+    "html-webpack-plugin": "^5.6.4",
+    "identity-obj-proxy": "^3.0.0",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "sinon": "^15.2.0",
+    "spectron": "^19.0.0",
+    "style-loader": "^4.0.0",
+    "supertest": "^6.3.4",
+    "ts-jest": "^29.4.2",
+    "ts-loader": "^9.5.4",
+    "typescript": "^5.9.2",
+    "wait-on": "^8.0.5",
+    "webpack": "^5.101.3",
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^5.2.2"
+  }
+}
+
+
+==================================================================
+FILE: src/main/services/RecordingService.ts
+==================================================================
+import { EventEmitter } from 'events';
+import { StorageService } from './StorageService';
+import { getLogger } from './LoggingService';
+import { RecallApiService } from './RecallApiService';
+import { TranscriptChunk, RecordingState } from '../../shared/types';
+import { SDKDebugger } from './SDKDebugger';
+
+const logger = getLogger();
+
+export class RecordingService extends EventEmitter {
+  private storageService: StorageService;
+  private recallApiService: RecallApiService | null = null;
+  private recordingState: RecordingState = {
+    isRecording: false,
+    connectionStatus: 'connected',
+  };
+  private currentWindowId: string | null = null;
+  private currentUploadToken: string | null = null;
+  private transcriptBuffer: TranscriptChunk[] = [];
+  private isInitialized = false;
+  private sdkDebugger: SDKDebugger;
+
+  constructor(storageService: StorageService) {
+    super();
+    this.storageService = storageService;
+    this.sdkDebugger = new SDKDebugger();
+  }
+
+  async initialize(apiKey: string, apiUrl: string): Promise<void> {
+    if (this.isInitialized) {
+      logger.info('RecordingService already initialized');
+      return;
+    }
+
+    try {
+      logger.info('Initializing recording service', { apiUrl, hasApiKey: !!apiKey });
+      
+      // Try to initialize RecallAI if we have an API key
+      if (apiKey) {
+        try {
+          // Initialize the API service
+          this.recallApiService = new RecallApiService(apiKey, apiUrl);
+          
+          // Try to initialize the SDK (may fail if not installed)
+          try {
+            const RecallAiSdk = require('@recallai/desktop-sdk').default;
+            
+            // First set up event listeners BEFORE init
+            logger.info('Setting up SDK event listeners BEFORE init');
+            this.setupSDKEventListeners();
+            
+            logger.info('Starting SDK init with config:', {
+              apiUrl: apiUrl || 'https://us-west-2.recall.ai',
+              acquirePermissionsOnStartup: ['accessibility', 'screen-capture', 'microphone'],
+              restartOnError: true
+            });
+            
+            const initPromise = RecallAiSdk.init({
+              apiUrl: apiUrl || 'https://us-west-2.recall.ai',
+              acquirePermissionsOnStartup: ['accessibility', 'screen-capture', 'microphone'],
+              restartOnError: true,
+              dev: process.env.NODE_ENV === 'development' // Enable dev mode for better logging
+            });
+            
+            // Add timeout to SDK init
+            const timeoutPromise = new Promise((_, reject) => {
+              setTimeout(() => reject(new Error('SDK init timeout after 30 seconds')), 30000);
+            });
+            
+            await Promise.race([initPromise, timeoutPromise]);
+            
+            logger.info('RecallAI SDK initialized successfully');
+            
+            // Request accessibility permission explicitly
+            logger.info('Requesting accessibility permission from SDK');
+            try {
+              await RecallAiSdk.requestPermission('accessibility');
+              logger.info('Accessibility permission requested');
+            } catch (permErr) {
+              logger.warn('Failed to request accessibility permission:', permErr);
+            }
+            
+            // Start debugging after init
+            this.sdkDebugger.startDebugging();
+            await SDKDebugger.checkSDKPermissions();
+            
+          } catch (sdkError) {
+            logger.error('RecallAI SDK not available or init failed', sdkError);
+            throw new Error('Failed to initialize RecallAI SDK');
+          }
+        } catch (apiError) {
+          logger.error('Failed to initialize RecallAI API', apiError);
+          throw new Error('Failed to initialize RecallAI API');
+        }
+      } else {
+        logger.error('No API key provided');
+        throw new Error('RecallAI API key is required');
+      }
+      this.isInitialized = true;
+      logger.info('RecallAI SDK and API service initialized successfully');
+    } catch (error) {
+      logger.error('Failed to initialize RecordingService', { error });
+      throw error;
+    }
+  }
+
+  private setupSDKEventListeners(): void {
+    logger.info('Setting up SDK event listeners');
+    
+    try {
+      const RecallAiSdk = require('@recallai/desktop-sdk').default;
+      
+      // Verify SDK is loaded
+      logger.info('SDK module loaded, available methods:', Object.keys(RecallAiSdk));
+      
+      // Add a catch-all listener to debug ANY SDK event
+      const allEvents = [
+        'meeting-detected', 'meeting-updated', 'meeting-closed',
+        'recording-started', 'recording-ended', 'upload-progress',
+        'sdk-state-change', 'error', 'permission-status',
+        'realtime-event', 'media-capture-status', 'participant-capture-status',
+        'permissions-granted', 'shutdown'
+      ];
+      
+      let eventListenerCount = 0;
+      
+      allEvents.forEach(eventName => {
+        try {
+          RecallAiSdk.addEventListener(eventName, (event: any) => {
+            logger.info(`📡 SDK Event Received: ${eventName}`, {
+              eventName,
+              event: JSON.stringify(event, null, 2),
+              timestamp: new Date().toISOString()
+            });
+          });
+          eventListenerCount++;
+          logger.debug(`Added listener for: ${eventName}`);
+        } catch (err) {
+          logger.error(`Failed to add listener for ${eventName}:`, err);
+        }
+      });
+      
+      logger.info(`Successfully added ${eventListenerCount} event listeners`);
+      
+      // CRITICAL: Listen for meeting detection from the SDK
+      RecallAiSdk.addEventListener('meeting-detected', (event: any) => {
+        logger.info('[JOURNEY-1] 🎯 Meeting detected by RecallAI SDK!', {
+          windowId: event.window?.id,
+          platform: event.window?.platform,
+          title: event.window?.title,
+          url: event.window?.url,
+          timestamp: new Date().toISOString(),
+          eventData: JSON.stringify(event)
+        });
+        
+        // Store the window ID for recording
+        if (event.window?.id) {
+          this.currentWindowId = event.window.id;
+        }
+        
+        // Forward the event to MeetingDetectionService
+        // Handle null title properly (SDK returns null, not undefined)
+        const meetingTitle = event.window?.title ||
+                           `${(event.window?.platform || 'unknown').charAt(0).toUpperCase() + (event.window?.platform || 'unknown').slice(1)} Meeting`;
+
+        const eventData = {
+          windowId: event.window?.id || `unknown-${Date.now()}`,
+          platform: event.window?.platform || 'unknown',
+          title: meetingTitle,
+          url: event.window?.url,
+          meetingTitle: meetingTitle  // Add explicit meetingTitle field
+        };
+        logger.info('[JOURNEY-2] Emitting sdk-meeting-detected event', eventData);
+        this.emit('sdk-meeting-detected', eventData);
+      });
+
+      // Listen for meeting updates
+      RecallAiSdk.addEventListener('meeting-updated', (event: any) => {
+        logger.info('Meeting updated by SDK', { window: event.window });
+        this.emit('sdk-meeting-updated', event.window);
+      });
+
+      // Listen for meeting closed
+      RecallAiSdk.addEventListener('meeting-closed', (event: any) => {
+        logger.info('Meeting closed by SDK', { window: event.window });
+        this.emit('sdk-meeting-closed', event.window);
+
+        // Auto-stop recording if this was the window being recorded
+        if (this.recordingState.isRecording && event.window?.id === this.currentWindowId) {
+          logger.info('Auto-stopping recording as meeting closed');
+          this.stopRecording().then(() => {
+            this.emit('recording-auto-stopped');
+          }).catch(err => {
+            logger.error('Failed to auto-stop recording', err);
+          });
+        }
+      });
+      
+      // Listen for recording state changes
+      RecallAiSdk.addEventListener('recording-started', (event: any) => {
+        logger.info('Recording started event received', { windowId: event.window?.id });
+        this.recordingState.connectionStatus = 'connected';
+        this.emit('connection-status', 'connected');
+      });
+
+      RecallAiSdk.addEventListener('recording-ended', async (event: any) => {
+        logger.info('Recording ended event received', { windowId: event.window?.id });
+
+        if (this.transcriptBuffer.length === 0) {
+          logger.warn('No real-time transcripts received during recording');
+        } else {
+          logger.info('Recording completed with real-time transcripts', {
+            totalChunks: this.transcriptBuffer.length
+          });
+        }
+      });
+
+      // Listen for upload progress
+      RecallAiSdk.addEventListener('upload-progress', (event: any) => {
+        logger.info('Upload progress', { progress: event.progress });
+        this.emit('upload-progress', event.progress);
+      });
+
+      // Handle errors
+      RecallAiSdk.addEventListener('error', (error: any) => {
+        logger.error('SDK error', { error });
+        this.emit('error', error);
+      });
+
+      // Handle SDK state changes
+      RecallAiSdk.addEventListener('sdk-state-change', (event: any) => {
+        logger.info('SDK state changed', { state: event.sdk?.state?.code });
+      });
+
+      // Monitor permission status
+      RecallAiSdk.addEventListener('permission-status', (event: any) => {
+        logger.info('Permission status from SDK', { 
+          permission: event.permission,
+          status: event.status 
+        });
+      });
+
+      /**
+       * REAL-TIME TRANSCRIPTION EVENT HANDLER
+       *
+       * The Recall.ai Desktop SDK provides real-time transcripts during recording.
+       * Events are emitted as 'realtime-event' with transcript data.
+       */
+      RecallAiSdk.addEventListener('realtime-event', async (event: any) => {
+        // Log EVERY realtime event to understand what's coming through
+        logger.info('🎤 Real-time event from SDK', {
+          windowId: event.window?.id,
+          eventType: event.type || event.event,
+          eventString: event.event,
+          hasData: !!event.data,
+          dataKeys: event.data ? Object.keys(event.data) : [],
+          fullEvent: JSON.stringify(event, null, 2)
+        });
+
+        // Also log to console for immediate visibility
+        console.log('🔴 REALTIME EVENT RECEIVED:', {
+          event: event.event,
+          data: event.data,
+          window: event.window?.id
+        });
+
+        // Handle real-time transcript chunks
+        if (event.event === 'transcript.data' || event.event === 'transcript.partial_data') {
+          logger.info('📝 TRANSCRIPT EVENT DETECTED!', {
+            eventType: event.event,
+            hasData: !!event.data
+          });
+          // Parse the transcript data based on the Recall.ai format
+          let transcriptText = '';
+          let speaker = 'Unknown';
+
+          if (event.data && event.data.data && event.data.data.words) {
+            // Recall.ai Desktop SDK format - combine all words
+            const words = event.data.data.words;
+            transcriptText = words.map((w: any) => w.text).join(' ');
+
+            // Get speaker from participant data
+            if (event.data.data.participant) {
+              speaker = event.data.data.participant.name ||
+                       `Participant ${event.data.data.participant.id}`;
+            }
+          } else if (event.data) {
+            // Fallback for other formats
+            transcriptText = event.data.text || event.data.content || '';
+            speaker = event.data.speaker || event.data.speaker_name || 'Unknown';
+          }
+
+          // Only process if we have actual text
+          if (transcriptText && transcriptText.trim().length > 0) {
+            const chunk: TranscriptChunk = {
+              timestamp: new Date(),
+              speaker: speaker,
+              text: transcriptText
+            };
+
+            logger.info('📝 Processing transcript chunk', {
+              speaker: chunk.speaker,
+              textLength: chunk.text.length,
+              text: chunk.text.substring(0, 100) // Log first 100 chars
+            });
+
+            this.transcriptBuffer.push(chunk);
+            this.emit('transcript-chunk', chunk);
+
+            // Append to meeting file in real-time
+            if (this.recordingState.meetingId) {
+              await this.storageService.appendTranscript(
+                this.recordingState.meetingId,
+                chunk
+              );
+            }
+          }
+        }
+      });
+
+      // Handle media capture status
+      RecallAiSdk.addEventListener('media-capture-status', (event: any) => {
+        logger.info('Media capture status', { 
+          window: event.window,
+          type: event.type,
+          capturing: event.capturing 
+        });
+        this.emit('media-capture-status', event);
+      });
+
+      // Handle participant capture status
+      RecallAiSdk.addEventListener('participant-capture-status', (event: any) => {
+        logger.info('Participant capture status', { 
+          window: event.window,
+          type: event.type,
+          capturing: event.capturing 
+        });
+        this.emit('participant-capture-status', event);
+      });
+    } catch (error) {
+      logger.warn('Could not set up SDK event listeners:', error);
+    }
+  }
+
+  async startRecording(meetingId: string): Promise<void> {
+    if (this.recordingState.isRecording) {
+      logger.warn('Recording already in progress', { currentMeetingId: this.recordingState.meetingId });
+      throw new Error('Recording already in progress');
+    }
+
+    if (!this.recallApiService) {
+      throw new Error('RecallApiService not initialized');
+    }
+
+    try {
+      logger.info('[JOURNEY-10] Starting recording', {
+        meetingId,
+        currentWindowId: this.currentWindowId,
+        timestamp: new Date().toISOString()
+      });
+      console.log('[JOURNEY] RecordingService: Starting recording for meeting:', meetingId);
+      
+      // Get meeting details
+      logger.info('[JOURNEY-11] Getting meeting from storage...', { meetingId });
+      const meeting = await this.storageService.getMeeting(meetingId);
+      logger.info('[JOURNEY-12] Meeting loaded from storage', {
+        meetingId,
+        found: !!meeting,
+        title: meeting?.title,
+        status: meeting?.status
+      });
+      if (!meeting) {
+        const error = new Error(`Meeting ${meetingId} not found`);
+        console.error('Meeting not found:', meetingId);
+        throw error;
+      }
+      console.log('Found meeting:', meeting.title);
+      
+      // Create an SDK upload session with recall.ai API
+      logger.info('[JOURNEY-13] Creating SDK upload with recall.ai API...', {
+        meetingId,
+        title: meeting.title,
+        timestamp: new Date().toISOString()
+      });
+      console.log('[JOURNEY] Creating upload for:', meeting.title);
+      
+      let uploadData;
+      try {
+        uploadData = await this.recallApiService.createSdkUpload(meetingId, meeting.title);
+        logger.info('Upload created successfully', { uploadId: uploadData.id });
+        console.log('Upload created:', uploadData.id);
+
+        // Check if local transcription is needed
+        if ((uploadData as any).needsLocalTranscription) {
+          logger.warn('[TRANSCRIPTION-UNAVAILABLE] No cloud transcription credentials configured', {
+            note: 'Recording will continue without real-time transcription',
+            suggestion: 'Configure AssemblyAI or Deepgram credentials at https://us-west-2.recall.ai/dashboard/transcription'
+          });
+
+          // Emit warning to UI
+          this.emit('transcription-warning', {
+            message: 'Recording without transcription - credentials not configured',
+            details: 'Transcripts may be available after recording ends if post-processing is enabled'
+          });
+        }
+      } catch (apiError: any) {
+        logger.error('Failed to create SDK upload', { error: apiError.message });
+        console.error('API Error creating upload:', apiError);
+        throw apiError;
+      }
+
+      this.currentUploadToken = uploadData.upload_token;
+      
+      // Find the current meeting window
+      // The SDK should have already detected the window
+      const windowId = this.currentWindowId || `meeting-${meetingId}`;
+      this.currentWindowId = windowId;
+      
+      logger.info('Using window ID for recording', { windowId, currentWindowId: this.currentWindowId });
+
+      // Request permissions from SDK when actually needed for recording
+      // This ensures the SDK has the permissions it needs
+      try {
+        const RecallAiSdk = require('@recallai/desktop-sdk').default;
+        await RecallAiSdk.requestPermission('screen-capture');
+        await RecallAiSdk.requestPermission('microphone');
+        await RecallAiSdk.requestPermission('accessibility');
+      } catch (permError) {
+        logger.warn('Permission request error (may already be granted):', permError);
+        // Continue anyway - permissions might already be granted
+      }
+
+      // Start recording with the SDK using the upload token
+      const RecallAiSdk = require('@recallai/desktop-sdk').default;
+      await RecallAiSdk.startRecording({
+        windowId: windowId,
+        uploadToken: uploadData.upload_token
+      });
+
+      this.recordingState = {
+        isRecording: true,
+        meetingId,
+        startTime: new Date(),
+        connectionStatus: 'connected',
+        uploadId: uploadData.id
+      };
+
+      logger.info('Real-time transcription enabled via SDK events', {
+        uploadId: uploadData.id,
+        meetingId: meetingId
+      });
+
+      // Start auto-save for notes
+      this.storageService.startAutoSave(meetingId);
+
+      // Update meeting status
+      await this.storageService.updateMeeting(meetingId, { 
+        status: 'recording',
+        recallRecordingId: uploadData.id
+      });
+
+      this.emit('recording-started', { meetingId });
+      logger.info('Recording started successfully', { 
+        meetingId, 
+        uploadId: uploadData.id,
+        isRecording: this.recordingState.isRecording 
+      });
+    } catch (error: any) {
+      logger.error('Failed to start recording', { meetingId, error });
+
+      // Reset state on error
+      this.recordingState = {
+        isRecording: false,
+        connectionStatus: 'disconnected'
+      };
+
+      throw error;
+    }
+  }
+
+  async stopRecording(): Promise<boolean> {
+    if (!this.recordingState.isRecording) {
+      logger.warn('No recording to stop');
+      return false;
+    }
+
+    try {
+      logger.info('Stopping recording', { meetingId: this.recordingState.meetingId });
+
+      if (this.currentWindowId) {
+        // Stop the SDK recording
+        try {
+          const RecallAiSdk = require('@recallai/desktop-sdk').default;
+          await RecallAiSdk.stopRecording({ windowId: this.currentWindowId });
+          await RecallAiSdk.uploadRecording({ windowId: this.currentWindowId });
+        } catch (sdkError) {
+          logger.warn('Failed to stop SDK recording:', sdkError);
+        }
+      }
+
+      const meetingId = this.recordingState.meetingId;
+      
+      if (meetingId) {
+        this.storageService.stopAutoSave(meetingId);
+        
+        // Update meeting status
+        await this.storageService.updateMeeting(meetingId, {
+          status: 'completed',
+          duration: this.recordingState.startTime 
+            ? Math.floor((Date.now() - this.recordingState.startTime.getTime()) / 1000 / 60)
+            : undefined,
+        });
+        
+        // Clear the upload from API service
+        if (this.recallApiService) {
+          this.recallApiService.clearUpload(meetingId);
+        }
+      }
+
+      this.recordingState = {
+        isRecording: false,
+        connectionStatus: 'connected',
+      };
+
+      this.transcriptBuffer = [];
+      this.currentWindowId = null;
+      this.currentUploadToken = null;
+
+      this.emit('recording-stopped');
+      logger.info('Recording stopped successfully', { meetingId });
+      return true;
+    } catch (error) {
+      logger.error('Failed to stop recording', { error });
+      throw error;
+    }
+  }
+
+
+
+  private formatTranscriptBuffer(): string {
+    return this.transcriptBuffer
+      .map(chunk => {
+        const time = chunk.timestamp.toLocaleTimeString();
+        return chunk.speaker 
+          ? `[${time}] ${chunk.speaker}: ${chunk.text}`
+          : `[${time}] ${chunk.text}`;
+      })
+      .join('\n');
+  }
+
+  // Called by MeetingDetectionService when a meeting window is detected
+  setCurrentWindow(windowId: string): void {
+    this.currentWindowId = windowId;
+    logger.info('Current window set', { windowId });
+  }
+
+  getRecordingState(): RecordingState {
+    return { ...this.recordingState };
+  }
+
+  isRecording(): boolean {
+    return this.recordingState.isRecording;
+  }
+
+  getInitializedStatus(): boolean {
+    return this.isInitialized;
+  }
+
+  async addTranscriptChunk(meetingId: string, chunk: any): Promise<void> {
+    if (!this.recordingState.isRecording || this.recordingState.meetingId !== meetingId) {
+      logger.warn('Cannot add transcript chunk - not recording this meeting', { meetingId });
+      return;
+    }
+
+    const transcriptChunk: TranscriptChunk = {
+      timestamp: new Date(chunk.timestamp),
+      speaker: chunk.speaker,
+      text: chunk.text
+    };
+
+    this.transcriptBuffer.push(transcriptChunk);
+    logger.info('Transcript chunk added', { meetingId, speaker: chunk.speaker });
+  }
+}
+
+==================================================================
+FILE: src/main/services/RecallApiService.ts
+==================================================================
+import { getLogger } from './LoggingService';
+
+const logger = getLogger();
+
+export interface SdkUploadResponse {
+  id: string;
+  upload_token: string;
+  recording_id?: string;
+  status: string;
+}
+
+export interface TranscriptResponse {
+  id: string;
+  text: string;
+  speaker: string;
+  timestamp: number;
+}
+
+export class RecallApiService {
+  private apiKey: string;
+  private apiUrl: string;
+  private activeUploads: Map<string, SdkUploadResponse> = new Map();
+
+  constructor(apiKey: string, apiUrl?: string) {
+    this.apiKey = apiKey;
+    // Always use us-west-2 as the API key is for that region
+    this.apiUrl = 'https://us-west-2.recall.ai';
+    logger.info('RecallApiService initialized', { apiUrl: this.apiUrl, providedUrl: apiUrl });
+  }
+
+  /**
+   * Create an SDK upload session for recording a meeting
+   *
+   * IMPORTANT: For real-time transcripts to work:
+   * 1. Must include 'realtime_endpoints' configuration with type: 'desktop-sdk-callback'
+   * 2. Must subscribe to events: ['transcript.data', 'transcript.partial_data']
+   * 3. Provider must be configured in Recall.ai dashboard with proper API keys
+   *    - For Deepgram: API key needs 'keys:write' scope
+   *    - For AssemblyAI: Standard API key with transcription access
+   */
+  async createSdkUpload(meetingId: string, meetingTitle: string): Promise<SdkUploadResponse> {
+    try {
+      logger.info('[SDK-UPLOAD-START] Creating SDK upload', {
+        meetingId,
+        meetingTitle,
+        apiUrl: this.apiUrl,
+        timestamp: new Date().toISOString()
+      });
+
+      // Try with Deepgram first (currently configured in Recall.ai dashboard)
+      const deepgramRequest = {
+        meeting_title: meetingTitle,
+        transcript: {
+          provider: {
+            deepgram_streaming: {}
+          }
+        },
+        // Enable real-time transcripts
+        realtime_endpoints: [{
+          type: 'desktop-sdk-callback',
+          events: ['transcript.data', 'transcript.partial_data']
+        }],
+        webhook_url: process.env.WEBHOOK_URL || null
+      };
+
+      logger.info('[SDK-UPLOAD-REQUEST-1] Trying Deepgram streaming provider', {
+        request: deepgramRequest
+      });
+
+      let response = await fetch(`${this.apiUrl}/api/v1/sdk-upload/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${this.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(deepgramRequest)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.warn('[SDK-UPLOAD-FAIL-1] Deepgram provider failed', {
+          status: response.status,
+          error: errorText,
+          parsedError: (() => {
+            try {
+              return JSON.parse(errorText);
+            } catch {
+              return errorText;
+            }
+          })()
+        });
+
+        // Try with AssemblyAI as fallback
+        const assemblyAiRequest = {
+          meeting_title: meetingTitle,
+          transcript: {
+            provider: {
+              assembly_ai_streaming: {}
+            }
+          },
+          // Enable real-time transcripts
+          realtime_endpoints: [{
+            type: 'desktop-sdk-callback',
+            events: ['transcript.data', 'transcript.partial_data']
+          }],
+          webhook_url: process.env.WEBHOOK_URL || null
+        };
+
+        logger.info('[SDK-UPLOAD-REQUEST-2] Trying AssemblyAI streaming provider as fallback', {
+          request: assemblyAiRequest
+        });
+
+        response = await fetch(`${this.apiUrl}/api/v1/sdk-upload/`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Token ${this.apiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(assemblyAiRequest)
+        });
+
+        if (!response.ok) {
+          const errorText2 = await response.text();
+          logger.warn('[SDK-UPLOAD-FAIL-2] AssemblyAI provider also failed', {
+            status: response.status,
+            error: errorText2,
+            parsedError: (() => {
+              try {
+                return JSON.parse(errorText2);
+              } catch {
+                return errorText2;
+              }
+            })()
+          });
+
+          // Both providers failed - cannot proceed without transcription
+          throw new Error(`Failed to create SDK upload with transcription providers: ${response.status} - ${errorText2}`);
+        } else {
+          logger.info('[SDK-UPLOAD-SUCCESS-2] Created upload with AssemblyAI provider');
+        }
+      } else {
+        logger.info('[SDK-UPLOAD-SUCCESS-1] Created upload with Deepgram provider');
+      }
+
+      const data = await response.json();
+      logger.info('[SDK-UPLOAD-RESPONSE] Upload created', {
+        uploadId: data.id,
+        status: data.status,
+        hasUploadToken: !!data.upload_token,
+        fullResponse: data
+      });
+
+      const uploadData: SdkUploadResponse = {
+        id: data.id,
+        upload_token: data.upload_token,
+        status: data.status
+      };
+
+      this.activeUploads.set(meetingId, uploadData);
+      logger.info('[SDK-UPLOAD-COMPLETE] SDK upload saved', {
+        uploadId: data.id,
+        meetingId
+      });
+
+      return uploadData;
+    } catch (error) {
+      logger.error('Failed to create SDK upload', { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Get the status of an SDK upload
+   */
+  async getSdkUploadStatus(uploadId: string): Promise<SdkUploadResponse> {
+    try {
+      const response = await fetch(`${this.apiUrl}/api/v1/sdk-upload/${uploadId}/`, {
+        headers: {
+          'Authorization': `Token ${this.apiKey}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to get SDK upload status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return {
+        id: data.id,
+        upload_token: data.upload_token,
+        recording_id: data.recording_id,
+        status: data.status
+      };
+    } catch (error) {
+      logger.error('Failed to get SDK upload status', { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Create a transcript for a completed recording
+   */
+  async createTranscript(recordingId: string): Promise<void> {
+    try {
+      logger.info('Creating transcript for recording', { recordingId });
+      
+      const response = await fetch(`${this.apiUrl}/api/v1/recording/${recordingId}/create_transcript/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${this.apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to create transcript: ${response.status}`);
+      }
+
+      logger.info('Transcript creation initiated', { recordingId });
+    } catch (error) {
+      logger.error('Failed to create transcript', { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch the transcript for a recording (used for post-recording retrieval)
+   * Note: Real-time transcripts are delivered via SDK events during recording
+   */
+  async getTranscript(recordingId: string): Promise<TranscriptResponse[]> {
+    try {
+      logger.info('Fetching transcript from API', {
+        recordingId,
+        url: `${this.apiUrl}/api/v1/recording/${recordingId}/transcript/`
+      });
+
+      const response = await fetch(`${this.apiUrl}/api/v1/recording/${recordingId}/transcript/`, {
+        headers: {
+          'Authorization': `Token ${this.apiKey}`
+        }
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          logger.info('Transcript not ready yet (404)', {
+            recordingId,
+            note: 'Transcript may still be processing'
+          });
+          return [];
+        }
+        const errorText = await response.text();
+        logger.error('Transcript API error', {
+          status: response.status,
+          error: errorText,
+          recordingId
+        });
+        throw new Error(`Failed to get transcript: ${response.status}`);
+      }
+
+      const data = await response.json();
+      logger.info('Transcript API response', {
+        recordingId,
+        hasTranscript: !!data.transcript,
+        hasWords: !!data.transcript?.words,
+        wordCount: data.transcript?.words?.length || 0,
+        dataKeys: Object.keys(data),
+        transcriptKeys: data.transcript ? Object.keys(data.transcript) : []
+      });
+
+      // Parse the transcript data into our format
+      const transcript: TranscriptResponse[] = data.transcript?.words?.map((word: any) => ({
+        id: word.id,
+        text: word.text,
+        speaker: word.speaker || 'Unknown',
+        timestamp: word.start_time
+      })) || [];
+
+      return transcript;
+    } catch (error) {
+      logger.error('Failed to get transcript', { error });
+      throw error;
+    }
+  }
+
+
+  /**
+   * Get the upload token for a meeting
+   */
+  getUploadToken(meetingId: string): string | undefined {
+    return this.activeUploads.get(meetingId)?.upload_token;
+  }
+
+  /**
+   * Clear upload data for a meeting
+   */
+  clearUpload(meetingId: string): void {
+    this.activeUploads.delete(meetingId);
+  }
+}
+
+==================================================================
+FILE: src/main/services/MeetingDetectionService.ts
+==================================================================
+import { EventEmitter } from 'events';
+import { RecordingService } from './RecordingService';
+import { StorageService } from './StorageService';
+import { CalendarService } from './CalendarService';
+import { SettingsService } from './SettingsService';
+import { getLogger } from './LoggingService';
+import { Meeting, CalendarEvent } from '../../shared/types';
+import { v4 as uuidv4 } from 'uuid';
+
+const logger = getLogger();
+
+export interface MeetingDetectedEvent {
+  meetingTitle?: string;
+  platform: 'zoom' | 'meet' | 'teams' | 'slack' | 'manual' | string;
+  windowId: string;
+  url?: string;
+  detected?: boolean;
+}
+
+export class MeetingDetectionService extends EventEmitter {
+  private settingsService: SettingsService;
+  private recordingService: RecordingService;
+  private storageService: StorageService;
+  private calendarService: CalendarService;
+  private isMonitoring = false;
+  private detectedMeetings = new Map<string, MeetingDetectedEvent>();
+  private dismissedMeetings = new Set<string>();
+
+  constructor(
+    settingsService: SettingsService,
+    recordingService: RecordingService,
+    storageService: StorageService,
+    calendarService: CalendarService
+  ) {
+    super();
+    this.settingsService = settingsService;
+    this.recordingService = recordingService;
+    this.storageService = storageService;
+    this.calendarService = calendarService;
+    
+    // Listen for SDK meeting detection events
+    this.setupSDKEventListeners();
+  }
+
+  private setupSDKEventListeners(): void {
+    // Listen for meetings detected by the RecallAI SDK
+    this.recordingService.on('sdk-meeting-detected', async (event: MeetingDetectedEvent) => {
+      logger.info('[JOURNEY-3] Meeting detection service received SDK event', {
+        ...event,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Skip if we've already dismissed this meeting
+      if (this.dismissedMeetings.has(event.windowId)) {
+        logger.info('[JOURNEY-3a] Skipping dismissed meeting', {
+          windowId: event.windowId,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+      
+      // Skip if we're already tracking this meeting
+      if (this.detectedMeetings.has(event.windowId)) {
+        logger.info('[JOURNEY-3b] Meeting already tracked', {
+          windowId: event.windowId,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+      
+      // Store the detected meeting
+      logger.info('[JOURNEY-4] Storing detected meeting', {
+        windowId: event.windowId,
+        platform: event.platform,
+        title: event.meetingTitle
+      });
+      this.detectedMeetings.set(event.windowId, event);
+      
+      // Try to match with calendar events
+      logger.info('[JOURNEY-5] Attempting to match with calendar events');
+      const suggestedMeeting = await this.findMatchingCalendarEvent(event);
+      logger.info('[JOURNEY-6] Calendar matching result', {
+        found: !!suggestedMeeting,
+        suggestedTitle: suggestedMeeting?.title
+      });
+      
+      // Emit meeting detected event for UI notification
+      logger.info('[JOURNEY-7] Emitting meeting-detected event for notification', {
+        windowId: event.windowId,
+        platform: event.platform,
+        title: event.meetingTitle,
+        hasSuggested: !!suggestedMeeting,
+        timestamp: new Date().toISOString()
+      });
+      this.emit('meeting-detected', {
+        ...event,
+        suggestedMeeting
+      });
+    });
+    
+    // Listen for meeting updates
+    this.recordingService.on('sdk-meeting-updated', (window: any) => {
+      logger.info('Meeting updated', window);
+      if (this.detectedMeetings.has(window.id)) {
+        const existing = this.detectedMeetings.get(window.id)!;
+        this.detectedMeetings.set(window.id, {
+          ...existing,
+          meetingTitle: window.title || existing.meetingTitle,
+          url: window.url || existing.url
+        });
+        this.emit('meeting-updated', window);
+      }
+    });
+    
+    // Listen for meeting closed
+    this.recordingService.on('sdk-meeting-closed', (window: any) => {
+      logger.info('Meeting closed', window);
+      this.detectedMeetings.delete(window.id);
+      this.dismissedMeetings.delete(window.id);
+      this.emit('meeting-closed', window);
+    });
+  }
+
+  async startMonitoring(): Promise<void> {
+    if (this.isMonitoring) {
+      logger.warn('Meeting detection already running');
+      return;
+    }
+
+    logger.info('Meeting detection service ready (SDK handles detection)');
+    this.isMonitoring = true;
+    
+    // The RecallAI SDK automatically detects meetings once initialized
+    // We just need to listen for the events, which we've set up above
+    logger.info('SDK meeting detection is active');
+  }
+
+  stopMonitoring(): void {
+    logger.info('Stopping meeting detection monitoring');
+    this.isMonitoring = false;
+    this.detectedMeetings.clear();
+    this.dismissedMeetings.clear();
+  }
+
+  isActive(): boolean {
+    return this.isMonitoring;
+  }
+
+  private async findMatchingCalendarEvent(detectedMeeting: MeetingDetectedEvent): Promise<CalendarEvent | undefined> {
+    try {
+      // Get upcoming calendar events
+      const upcomingEvents = await this.calendarService.getUpcomingEvents();
+      const now = new Date();
+      
+      // Try to find a matching event based on platform or title
+      return upcomingEvents.find(event => {
+        // Check if the event is happening now (within 15 minutes before/after start)
+        const eventStart = new Date(event.start);
+        const timeDiff = Math.abs(now.getTime() - eventStart.getTime());
+        if (timeDiff > 15 * 60 * 1000) return false; // More than 15 minutes difference
+        
+        // Check platform match
+        if (detectedMeeting.platform.toLowerCase() === 'zoom' && event.meetingUrl?.includes('zoom.us')) {
+          return true;
+        }
+        if (detectedMeeting.platform.toLowerCase() === 'meet' && event.meetingUrl?.includes('meet.google.com')) {
+          return true;
+        }
+        if (detectedMeeting.platform.toLowerCase() === 'teams' && event.meetingUrl?.includes('teams.microsoft.com')) {
+          return true;
+        }
+        
+        // Check title similarity if available
+        if (detectedMeeting.meetingTitle && event.title) {
+          const titleMatch = event.title.toLowerCase().includes(detectedMeeting.meetingTitle.toLowerCase()) ||
+                           detectedMeeting.meetingTitle.toLowerCase().includes(event.title.toLowerCase());
+          if (titleMatch) return true;
+        }
+        
+        return false;
+      });
+    } catch (error) {
+      logger.warn('Failed to match calendar event', error);
+      return undefined;
+    }
+  }
+
+  async createManualMeeting(title: string): Promise<Meeting> {
+    const meetingId = uuidv4();
+    const meeting: Meeting = {
+      id: meetingId,
+      title: title || 'Manual Meeting',
+      date: new Date(),
+      startTime: new Date(),
+      endTime: new Date(),
+      attendees: [],
+      notes: '',
+      transcript: '',
+      platform: 'manual',
+      status: 'active'
+    };
+
+    await this.storageService.saveMeeting(meeting);
+    logger.info('Created manual meeting', { meetingId, title });
+    
+    return meeting;
+  }
+
+  async handleToastAction(action: string, meetingId: string): Promise<any> {
+    logger.info('Handling toast action', { action, meetingId });
+    
+    switch (action) {
+      case 'start-recording':
+        try {
+          await this.recordingService.startRecording(meetingId);
+          return { action, success: true };
+        } catch (error) {
+          logger.error('Failed to start recording from toast', error);
+          throw error;
+        }
+        
+      case 'dismiss':
+        // Add to dismissed set so we don't show notification again
+        const meeting = this.detectedMeetings.get(meetingId);
+        if (meeting) {
+          this.dismissedMeetings.add(meetingId);
+        }
+        return { action, dismissed: true };
+        
+      case 'select-different':
+        // Return list of detected meetings
+        return { 
+          action, 
+          meetings: Array.from(this.detectedMeetings.values())
+        };
+        
+      default:
+        logger.warn('Unknown toast action', { action });
+        return { action, error: 'Unknown action' };
+    }
+  }
+
+  // Helper method to prepare notification data
+  prepareNotification(detectedMeeting: any): any {
+    return {
+      title: 'Meeting Detected',
+      body: `${detectedMeeting.platform} meeting detected: ${detectedMeeting.meetingTitle || 'Meeting'}`,
+      actions: ['Start Recording', 'Dismiss', 'Select Different Meeting']
+    };
+  }
+}
+
+==================================================================
+FILE: src/main/services/SDKDebugger.ts
+==================================================================
+import { getLogger } from './LoggingService';
+
+const logger = getLogger();
+
+export class SDKDebugger {
+  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private sdkProcessCheck: NodeJS.Timeout | null = null;
+  
+  startDebugging(): void {
+    logger.info('🔍 SDK Debugger started');
+    
+    // Log SDK heartbeat every 10 seconds
+    this.heartbeatInterval = setInterval(() => {
+      try {
+        const RecallAiSdk = require('@recallai/desktop-sdk').default;
+        logger.debug('💓 SDK heartbeat - SDK module loaded successfully');
+        
+        // Check if we can access SDK methods
+        if (typeof RecallAiSdk.addEventListener === 'function') {
+          logger.debug('✅ SDK methods accessible');
+        } else {
+          logger.error('❌ SDK methods not accessible');
+        }
+      } catch (error) {
+        logger.error('❌ SDK heartbeat failed', { error });
+      }
+    }, 10000);
+    
+    // Check SDK process every 5 seconds
+    this.sdkProcessCheck = setInterval(async () => {
+      const { exec } = require('child_process');
+      const { promisify } = require('util');
+      const execAsync = promisify(exec);
+      
+      try {
+        const { stdout } = await execAsync('ps aux | grep desktop_sdk_macos_exe | grep -v grep');
+        const processes = stdout.trim().split('\n').filter(Boolean);
+        if (processes.length > 0) {
+          logger.debug(`🎯 SDK process running (${processes.length} instance(s))`);
+        } else {
+          logger.error('❌ SDK process not found!');
+        }
+      } catch (error) {
+        logger.error('❌ SDK process not running');
+      }
+    }, 5000);
+  }
+  
+  stopDebugging(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    if (this.sdkProcessCheck) {
+      clearInterval(this.sdkProcessCheck);
+      this.sdkProcessCheck = null;
+    }
+    logger.info('🔍 SDK Debugger stopped');
+  }
+  
+  // Log all SDK events with full details
+  static logSDKEvent(eventName: string, data: any): void {
+    logger.info(`📡 SDK Event: ${eventName}`, {
+      eventName,
+      timestamp: new Date().toISOString(),
+      data: JSON.stringify(data, null, 2)
+    });
+  }
+  
+  // Check SDK permissions
+  static async checkSDKPermissions(): Promise<void> {
+    try {
+      const { exec } = require('child_process');
+      const { promisify } = require('util');
+      const execAsync = promisify(exec);
+      
+      // Check accessibility
+      try {
+        await execAsync('osascript -e \'tell application "System Events" to return name of first process\'');
+        logger.info('✅ Accessibility permission granted');
+      } catch (e) {
+        logger.error('❌ Accessibility permission denied');
+      }
+      
+      // Log all environment variables that might affect SDK
+      logger.debug('SDK Environment', {
+        NODE_ENV: process.env.NODE_ENV,
+        RECALL_API_KEY: process.env.RECALL_API_KEY ? 'SET' : 'NOT SET',
+        PATH: process.env.PATH
+      });
+      
+    } catch (error) {
+      logger.error('Failed to check SDK permissions', { error });
+    }
+  }
+}
+
+==================================================================
+SDK TYPE DEFINITIONS: node_modules/@recallai/desktop-sdk/index.d.ts
+==================================================================
+export type RecallAiSdkEvent = RecordingStartEvent | RecordingStopEvent | UploadProgressEvent | MeetingDetectedEvent | MeetingUpdatedEvent | MeetingClosedEvent | SdkStateChangeEvent | ErrorEvent | MediaCaptureStatusEvent | ParticipantCaptureStatusEvent | PermissionsGrantedEvent | RealtimeEvent | ShutdownEvent;
+export type EventTypeToPayloadMap = {
+    'recording-started': RecordingStartEvent;
+    'recording-ended': RecordingStopEvent;
+    'upload-progress': UploadProgressEvent;
+    'meeting-detected': MeetingDetectedEvent;
+    'meeting-updated': MeetingUpdatedEvent;
+    'meeting-closed': MeetingClosedEvent;
+    'sdk-state-change': SdkStateChangeEvent;
+    'error': ErrorEvent;
+    'media-capture-status': MediaCaptureStatusEvent;
+    'participant-capture-status': ParticipantCaptureStatusEvent;
+    'permissions-granted': PermissionsGrantedEvent;
+    'permission-status': PermissionStatusEvent;
+    'realtime-event': RealtimeEvent;
+    'shutdown': ShutdownEvent;
+};
+export type Permission = 'accessibility' | 'screen-capture' | 'microphone' | 'system-audio';
+export interface RecallAiSdkWindow {
+    id: string;
+    title?: string;
+    url?: string;
+    platform: string;
+}
+export interface RecallAiSdkConfig {
+    api_url?: string;
+    apiUrl?: string;
+    acquirePermissionsOnStartup?: Permission[];
+    restartOnError?: boolean;
+    dev?: boolean;
+}
+export interface StartRecordingConfig {
+    windowId: string;
+    uploadToken: string;
+}
+export interface StopRecordingConfig {
+    windowId: string;
+}
+export interface PauseRecordingConfig {
+    windowId: string;
+}
+export interface ResumeRecordingConfig {
+    windowId: string;
+}
+export interface UploadRecordingConfig {
+    windowId: string;
+}
+export interface RecordingStartEvent {
+    window: RecallAiSdkWindow;
+}
+export interface RecordingStopEvent {
+    window: RecallAiSdkWindow;
+}
+export interface UploadProgressEvent {
+    window: {
+        id: string;
+    };
+    progress: number;
+}
+export interface MeetingDetectedEvent {
+    window: RecallAiSdkWindow;
+}
+export interface MeetingUpdatedEvent {
+    window: RecallAiSdkWindow;
+}
+export interface MeetingClosedEvent {
+    window: RecallAiSdkWindow;
+}
+export interface SdkStateChangeEvent {
+    sdk: {
+        state: {
+            code: 'recording' | 'idle' | 'paused';
+        };
+    };
+}
+export interface MediaCaptureStatusEvent {
+    window: RecallAiSdkWindow;
+    type: 'video' | 'audio';
+    capturing: boolean;
+}
+export interface ParticipantCaptureStatusEvent {
+    window: RecallAiSdkWindow;
+    type: 'video' | 'audio' | 'screenshare';
+    capturing: boolean;
+}
+export interface PermissionsGrantedEvent {
+}
+export interface PermissionStatusEvent {
+    permission: Permission;
+    status: string;
+}
+export interface ErrorEvent {
+    window?: RecallAiSdkWindow;
+    type: string;
+    message: string;
+}
+export interface RealtimeEvent {
+    window: RecallAiSdkWindow;
+    event: string;
+    data: any;
+}
+export interface ShutdownEvent {
+    code: number;
+    signal: string;
+}
+export declare function init(options: RecallAiSdkConfig): Promise<null>;
+export declare function shutdown(): Promise<null>;
+export declare function startRecording(config: StartRecordingConfig): Promise<null>;
+export declare function stopRecording({ windowId }: StopRecordingConfig): Promise<null>;
+export declare function pauseRecording({ windowId }: PauseRecordingConfig): Promise<null>;
+export declare function resumeRecording({ windowId }: ResumeRecordingConfig): Promise<null>;
+export declare function uploadRecording({ windowId }: UploadRecordingConfig): Promise<null>;
+export declare function prepareDesktopAudioRecording(): Promise<string>;
+export declare function requestPermission(permission: Permission): Promise<null>;
+export declare function addEventListener<T extends keyof EventTypeToPayloadMap>(type: T, callback: (event: EventTypeToPayloadMap[T]) => void): void;
+declare const RecallAiSdk: {
+    init: typeof init;
+    shutdown: typeof shutdown;
+    startRecording: typeof startRecording;
+    stopRecording: typeof stopRecording;
+    pauseRecording: typeof pauseRecording;
+    resumeRecording: typeof resumeRecording;
+    uploadRecording: typeof uploadRecording;
+    prepareDesktopAudioRecording: typeof prepareDesktopAudioRecording;
+    requestPermission: typeof requestPermission;
+    addEventListener: typeof addEventListener;
+};
+export default RecallAiSdk;
+
+
+==================================================================
+SDK IMPLEMENTATION (first 400 lines): node_modules/@recallai/desktop-sdk/index.js
+==================================================================
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.init = init;
+exports.shutdown = shutdown;
+exports.startRecording = startRecording;
+exports.stopRecording = stopRecording;
+exports.pauseRecording = pauseRecording;
+exports.resumeRecording = resumeRecording;
+exports.uploadRecording = uploadRecording;
+exports.prepareDesktopAudioRecording = prepareDesktopAudioRecording;
+exports.requestPermission = requestPermission;
+exports.addEventListener = addEventListener;
+const path = __importStar(require("path"));
+const child_process_1 = require("child_process");
+const readline = __importStar(require("node:readline"));
+const fs = __importStar(require("node:fs"));
+const os = __importStar(require("node:os"));
+const uuid_1 = require("uuid");
+// HACK: This is needed because of https://github.com/electron/electron/issues/6262
+// Search for the unpacked directory first, since fs.existsSync actually reports
+// the "virtual" files in the .asar as being present
+let exe_paths = [];
+if (process.platform === "darwin") {
+    exe_paths.push(path.join(__dirname, "desktop_sdk_macos_exe").replace('app.asar', 'app.asar.unpacked'));
+    exe_paths.push(path.join(__dirname, "desktop_sdk_macos_exe"));
+}
+else if (process.platform === "win32") {
+    exe_paths.push(path.join(__dirname, "agent-windows.exe").replace('app.asar', 'app.asar.unpacked'));
+    exe_paths.push(path.join(__dirname, "agent-windows.exe"));
+}
+let proc;
+const listeners = [];
+const pendingCommands = {};
+let lastOptions;
+let remainingAutomaticRestarts = 10;
+let unexpectedShutdown = false;
+let logBuffer = [];
+let logIndex = 0;
+function flushLogBuffer() {
+    const buf = logBuffer.slice(); // just here for the copy
+    logBuffer = [];
+    logIndex = 0;
+    // we use a for... in... here because it does not loop over the sparse (undefined) entries
+    // if you doubt this, see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/for...in#array_iteration_and_for...in
+    // and know that Nick and Tucker spent at least 10 minutes debating this
+    for (const idx in buf) {
+        const { level, log, echo } = buf[idx];
+        doLog(level, [log], echo);
+    }
+}
+async function doLog(level, log, echo = true) {
+    try {
+        const levelMap = {
+            "info": "log",
+            "warning": "warn",
+            "error": "error"
+        };
+        if (echo) {
+            const consoleMethod = console[levelMap[level] ?? "log"];
+            consoleMethod(...log);
+        }
+        const logPayload = {
+            log: log.join(" "),
+            level: level,
+            echo
+        };
+        const idx = logIndex++;
+        logBuffer[idx] = logPayload;
+        if (proc && proc.exitCode === null) {
+            await sendCommand("log", logPayload);
+            delete logBuffer[idx];
+        }
+    }
+    catch (e) {
+        console.error("Failed to send log to Desktop SDK", e.stack, e.message);
+    }
+}
+function log(...log) {
+    doLog("info", log);
+}
+function logWarning(...log) {
+    doLog("warning", log);
+}
+function logError(...log) {
+    doLog("error", log);
+}
+function emitEvent(type, payload) {
+    if (type !== "upload-progress" && type !== "realtime-event") {
+        doLog("info", ["Receiving event: " + type + " | " + JSON.stringify(payload)], false);
+    }
+    for (const listener of listeners) {
+        if (listener.type === type) {
+            listener.callback(payload);
+        }
+    }
+}
+function flushPendingCommands(err) {
+    Object.keys(pendingCommands).forEach(commandId => {
+        pendingCommands[commandId].reject(err);
+        delete pendingCommands[commandId];
+    });
+}
+function startProcess() {
+    if (proc && proc.exitCode === null) {
+        logError("Desktop SDK: Trying to start process while it is already started");
+        return;
+    }
+    const exe_path = exe_paths.find(fs.existsSync);
+    if (!exe_path) {
+        logError(`Desktop SDK: Couldn't launch! This is likely an issue with the build tool you're using.`);
+        for (const exe_path of exe_paths) {
+            logError("Tried:", exe_path);
+        }
+        return;
+    }
+    let envExtra = {};
+    if (process.platform === "win32" && process.env.GLOBAL_GST_RECALL !== "1") {
+        envExtra["GST_PLUGIN_PATH"] = path.join(path.dirname(exe_path), "gstreamer-1.0");
+    }
+    const gst_dump_dir = process.env.RECALLAI_DESKTOP_SDK_DEV ? path.join(os.tmpdir(), "gst.nocommit") : os.tmpdir();
+    if (!fs.existsSync(gst_dump_dir)) {
+        try {
+            fs.mkdirSync(gst_dump_dir);
+        }
+        catch (e) {
+            logError("Failed to create gst dump dir:", String(e));
+        }
+    }
+    proc = (0, child_process_1.spawn)(exe_path, {
+        stdio: "pipe",
+        env: {
+            GST_DEBUG: "2",
+            GST_DEBUG_DUMP_DOT_DIR: gst_dump_dir,
+            RUST_BACKTRACE: "1",
+            // "DYLD_INSERT_LIBRARIES":"/opt/homebrew/lib/libjemalloc.dylib",
+            // "MALLOC_CONF":"prof:true,prof_active:true,prof_prefix:jeprof",
+            // "DYLD_FORCE_FLAT_NAMESPACE":"1",
+            ...envExtra,
+        }
+    });
+    const rlStdout = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
+    const rlStderr = readline.createInterface({ input: proc.stderr, crlfDelay: Infinity });
+    rlStdout.on('line', (line) => {
+        if (line.startsWith("recall_ai_command|")) {
+            try {
+                const data = JSON.parse(line.substring(18));
+                switch (data.type) {
+                    case "event":
+                        if (data.event) {
+                            const event = JSON.parse(data.event);
+                            emitEvent(event.type, event.payload);
+                        }
+                        break;
+                    case "response":
+                        const pendingCommand = pendingCommands[data.commandId];
+                        if (pendingCommand) {
+                            if (data.status === "success") {
+                                pendingCommand.resolve(data.result);
+                            }
+                            else {
+                                pendingCommand.reject(new Error(data.result));
+                            }
+                            delete pendingCommands[data.commandId];
+                        }
+                        break;
+                }
+            }
+            catch (err) {
+                logError("Desktop SDK: Failed to parse incoming data:", String(err));
+            }
+        }
+        else {
+            if (process.env.RECALLAI_DESKTOP_SDK_DEV) {
+                console.log(line);
+            }
+        }
+    });
+    rlStderr.on('line', (line) => {
+        if (process.env.RECALLAI_DESKTOP_SDK_DEV) {
+            console.error(line);
+        }
+    });
+    proc.on('error', (error) => {
+        flushPendingCommands(new Error(`Process error: ${error.message}`));
+        emitEvent('error', {
+            type: 'process',
+            message: `The Desktop SDK server process has failed to start or exited improperly.`
+        });
+        logError(`Desktop SDK: Process error: ${error.message}`);
+    });
+    proc.on('close', async (code, signal) => {
+        flushPendingCommands(new Error(`Process exited with code ${code}, signal ${signal}.`));
+        emitEvent('shutdown', { code: code ?? 0, signal: signal ?? '' });
+        if (code === 0 || signal === 'SIGINT') {
+            return;
+        }
+        logError(`Desktop SDK: Process exited with code ${code}, signal ${signal}`);
+        emitEvent('error', {
+            type: 'process',
+            message: "The Desktop SDK server process exited unexpectedly."
+        });
+        proc = null;
+        unexpectedShutdown = true;
+        if (lastOptions.restartOnError && remainingAutomaticRestarts > 0) {
+            remainingAutomaticRestarts--;
+            logError(`Automatically restarting Desktop SDK due to unexpected exit! Automatic restarts left: ${remainingAutomaticRestarts}`);
+            doInit(lastOptions);
+        }
+    });
+}
+function sendCommand(command, params = {}) {
+    return new Promise((resolve, reject) => {
+        if (!proc || !proc.stdin) {
+            reject(new Error("The Desktop SDK is not started; call `init` to start it."));
+            return;
+        }
+        const commandId = (0, uuid_1.v4)();
+        pendingCommands[commandId] = { resolve, reject };
+        const payload = {
+            command,
+            commandId,
+            params
+        };
+        const payloadStr = JSON.stringify(payload);
+        proc.stdin.write(payloadStr + "\n");
+        if (command !== "log") {
+            doLog("info", ["Sending command: " + payloadStr], false);
+        }
+    });
+}
+async function doInit(options) {
+    startProcess();
+    if (unexpectedShutdown) {
+        logError("Desktop SDK: Recovered from unexpected shutdown");
+        unexpectedShutdown = false;
+    }
+    await sendCommand("init", { config: JSON.stringify(options) });
+    flushLogBuffer();
+}
+async function init(options) {
+    if (process.platform !== "darwin" && process.platform !== "win32") {
+        throw new Error(`Platform ${process.platform} is not supported by Desktop SDK`);
+    }
+    const { api_url, apiUrl, dev } = options;
+    options.api_url = api_url ?? apiUrl ?? "https://api.recall.ai";
+    if (!dev && (!options.api_url || !options.api_url.startsWith("https"))) {
+        throw new Error(`apiUrl must be an https url, got: ${options.api_url}`);
+    }
+    if (options.restartOnError === undefined) {
+        options.restartOnError = true;
+    }
+    lastOptions = options;
+    await doInit(options);
+    return null;
+}
+async function shutdown() {
+    const result = await sendCommand("shutdown");
+    if (proc) {
+        const currentProc = proc;
+        setTimeout(() => {
+            if (!currentProc.killed) {
+                currentProc.kill();
+            }
+        }, 5000);
+    }
+    return result;
+}
+function startRecording(config) {
+    return sendCommand("startRecording", { config: JSON.stringify(config) });
+}
+function stopRecording({ windowId }) {
+    return sendCommand("stopRecording", { windowId });
+}
+function pauseRecording({ windowId }) {
+    return sendCommand("pauseRecording", { windowId });
+}
+function resumeRecording({ windowId }) {
+    return sendCommand("resumeRecording", { windowId });
+}
+function uploadRecording({ windowId }) {
+    return sendCommand("uploadRecording", { windowId });
+}
+function prepareDesktopAudioRecording() {
+    return sendCommand("prepareDesktopAudioRecording");
+}
+function requestPermission(permission) {
+    return sendCommand("requestPermission", { permission });
+}
+function addEventListener(type, callback) {
+    listeners.push({ type, callback });
+}
+const RecallAiSdk = {
+    init,
+    shutdown,
+    startRecording,
+    stopRecording,
+    pauseRecording,
+    resumeRecording,
+    uploadRecording,
+    prepareDesktopAudioRecording,
+    requestPermission,
+    addEventListener,
+};
+exports.default = RecallAiSdk;
+
+
+==================================================================
+ENVIRONMENT VARIABLES (.env)
+==================================================================
+RECALL_API_KEY=<REDACTED>
+WEBHOOK_URL not set
+NODE_ENV=development
+
+
+==================================================================
+SAMPLE LOG OUTPUT SHOWING THE ISSUE
+==================================================================
+When recording starts, we see:
+- [SDK-UPLOAD-SUCCESS-1] Created upload with Deepgram provider
+- Recording started event received
+- Media capture status events
+- Participant capture status events
+- But NO realtime-event callbacks at all
+
+The enhanced logging that should catch ANY realtime event:
+RecallAiSdk.addEventListener('realtime-event', async (event: any) => {
+  logger.info('🎤 Real-time event from SDK', { ... });
+  console.log('🔴 REALTIME EVENT RECEIVED:', { ... });
+});
+
+Never logs anything - meaning the SDK is not emitting these events.
+

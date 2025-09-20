@@ -1,0 +1,53 @@
+
+> meeting-note-recorder@1.0.0 start
+> electron .
+
+[dotenv@17.2.2] injecting env (4) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+Settings initialized: {
+  googleCalendarConnected: true,
+  hasApiKey: true,
+  storagePath: '/Users/joshuawohle/Documents/MeetingRecordings'
+}
+Initializing CalendarService with CLIENT_ID: 1042328300965-or1qom...
+Stored tokens available: true
+Setting credentials from stored tokens
+Loading index.html from: /Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/renderer/index.html
+[93524:0916/115453.006456:ERROR:electron/shell/common/platform_util_mac.mm:258] Unable to set login item: The operation couldn’t be completed. Operation not permitted
+Meeting detection started
+DOM is ready
+Starting calendar sync...
+fetchUpcomingMeetings called
+Calendar object exists: true
+Is authenticated: true
+Fetching events from 2025-09-16T10:55:22.377Z to 2025-09-23T10:55:22.377Z
+Calendar API response: 50 events found
+Found 50 calendar events
+Calendar sync failed: YAMLException: unacceptable kind of an object to dump [object Undefined]
+    at b (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:4907615)
+    at /Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:4906508
+    at b (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:4906613)
+    at O (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:4908206)
+    at e.exports.safeDump (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:4908293)
+    at e.exports (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:5138319)
+    at m.stringify (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:9081510)
+    at t.StorageService.formatMeetingToMarkdown (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:9192702)
+    at t.StorageService.createMeeting (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:9193225)
+    at /Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:3429420 {
+  reason: 'unacceptable kind of an object to dump [object Undefined]',
+  mark: undefined
+}
+Error occurred in handler for 'sync-calendar': YAMLException: unacceptable kind of an object to dump [object Undefined]
+    at b (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:4907615)
+    at /Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:4906508
+    at b (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:4906613)
+    at O (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:4908206)
+    at e.exports.safeDump (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:4908293)
+    at e.exports (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:5138319)
+    at m.stringify (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:9081510)
+    at t.StorageService.formatMeetingToMarkdown (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:9192702)
+    at t.StorageService.createMeeting (/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:9193225)
+    at /Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/main/index.js:2:3429420 {
+  reason: 'unacceptable kind of an object to dump [object Undefined]',
+  mark: undefined
+}
+Meeting detection stopped

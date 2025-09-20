@@ -1,0 +1,26 @@
+
+> meeting-note-recorder@1.0.0 start
+> electron .
+
+[dotenv@17.2.2] injecting env (4) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+Settings initialized: {
+  googleCalendarConnected: true,
+  hasApiKey: true,
+  storagePath: '/Users/joshuawohle/Documents/MeetingRecordings'
+}
+Initializing CalendarService with CLIENT_ID: 1042328300965-or1qom...
+Stored tokens available: true
+Setting credentials from stored tokens
+Loading index.html from: /Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/renderer/index.html
+[18990:0916/115704.198907:ERROR:electron/shell/common/platform_util_mac.mm:258] Unable to set login item: The operation couldn’t be completed. Operation not permitted
+Meeting detection started
+DOM is ready
+Starting calendar sync...
+fetchUpcomingMeetings called
+Calendar object exists: true
+Is authenticated: true
+Fetching events from 2025-09-16T10:57:12.606Z to 2025-09-23T10:57:12.606Z
+Calendar API response: 50 events found
+Found 50 calendar events
+Created 50 new meetings
+Meeting detection stopped

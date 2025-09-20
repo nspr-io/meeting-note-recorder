@@ -1,0 +1,516 @@
+import React, { useState, useEffect } from 'react';
+import styled from '@emotion/styled';
+import { Meeting, AppSettings, IpcChannels } from '../shared/types';
+import MeetingList from './components/MeetingList';
+import MeetingDetailFinal from './components/MeetingDetailFinal';
+import Settings from './components/Settings';
+import { ElectronAPI } from '../main/preload';
+
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
+}
+
+const AppContainer = styled.div`
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #f5f5f7;
+`;
+
+const TitleBar = styled.div`
+  height: 38px;
+  background: linear-gradient(180deg, #f6f6f6 0%, #e8e8e8 100%);
+  border-bottom: 1px solid #d1d1d1;
+  display: flex;
+  align-items: center;
+  padding: 0 80px; /* Space for window controls */
+  -webkit-app-region: drag;
+  position: relative;
+`;
+
+const AppTitle = styled.div`
+  font-size: 14px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  user-select: none;
+`;
+
+const MainContent = styled.div`
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  background: #ffffff;
+`;
+
+const Sidebar = styled.div`
+  width: 280px;
+  background: #ffffff;
+  border-right: 1px solid #e5e5e7;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+`;
+
+const SettingsButton = styled.button`
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 16px;
+  background: #fafafa;
+  border: none;
+  border-top: 1px solid #e5e5e7;
+  color: #666;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+
+  &:hover {
+    background: #f0f0f0;
+    color: #333;
+  }
+
+  &.active {
+    background: #667eea;
+    color: white;
+  }
+`;
+
+const TabBar = styled.div`
+  display: flex;
+  border-bottom: 1px solid #e5e5e7;
+  background: #f9f9f9;
+`;
+
+const Tab = styled.button<{ active: boolean }>`
+  flex: 1;
+  padding: 10px;
+  background: ${props => props.active ? '#ffffff' : 'transparent'};
+  border: none;
+  border-bottom: ${props => props.active ? '2px solid #007aff' : 'none'};
+  color: ${props => props.active ? '#007aff' : '#86868b'};
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.2s;
+  
+  &:hover {
+    color: #007aff;
+  }
+`;
+
+const ContentArea = styled.div`
+  flex: 1;
+  background: #ffffff;
+  overflow: hidden;
+`;
+
+const StatusBar = styled.div`
+  height: 24px;
+  background: #f6f6f6;
+  border-top: 1px solid #d1d1d1;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 11px;
+  color: #86868b;
+`;
+
+const StatusIndicator = styled.div<{ type: 'recording' | 'connected' | 'disconnected' }>`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  
+  &::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: ${props => {
+      switch(props.type) {
+        case 'recording': return '#ff3b30';
+        case 'connected': return '#34c759';
+        case 'disconnected': return '#ff9500';
+        default: return '#86868b';
+      }
+    }};
+    ${props => props.type === 'recording' && `
+      animation: pulse 1.5s ease-in-out infinite;
+    `}
+  }
+  
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+`;
+
+const FloatingActionButton = styled.button`
+  position: fixed;
+  bottom: 40px;
+  right: 24px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #007aff;
+  color: white;
+  border: none;
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.3);
+  font-size: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  
+  &:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 16px rgba(0, 122, 255, 0.4);
+  }
+  
+  &:active {
+    transform: scale(0.95);
+  }
+`;
+
+type ViewMode = 'meetings' | 'settings';
+type TabMode = 'upcoming' | 'past';
+
+function App() {
+  const [viewMode, setViewMode] = useState<ViewMode>('meetings');
+  const [tabMode, setTabMode] = useState<TabMode>('upcoming');
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('connected');
+
+  useEffect(() => {
+    // Check if electronAPI is available
+    if (typeof window.electronAPI === 'undefined') {
+      console.error('electronAPI is not available!');
+      return;
+    }
+    
+    loadMeetings();
+    loadSettings();
+    setupEventListeners();
+
+    return () => {
+      // Cleanup event listeners
+    };
+  }, []);
+
+  const loadMeetings = async () => {
+    try {
+      console.log('[JOURNEY-UI-LOAD-1] Loading meetings from backend');
+      const loadedMeetings = await window.electronAPI.getMeetings();
+      console.log('[JOURNEY-UI-LOAD-2] Meetings loaded', {
+        count: loadedMeetings.length,
+        meetings: loadedMeetings.map((m: Meeting) => ({ id: m.id, title: m.title, status: m.status }))
+      });
+      setMeetings(loadedMeetings);
+    } catch (error) {
+      console.error('[JOURNEY-UI-LOAD-ERROR] Failed to load meetings:', error);
+    }
+  };
+
+  const loadSettings = async () => {
+    try {
+      const loadedSettings = await window.electronAPI.getSettings();
+      setSettings(loadedSettings);
+    } catch (error) {
+      console.error('Failed to load settings:', error);
+    }
+  };
+
+  const setupEventListeners = () => {
+    window.electronAPI.on(IpcChannels.MEETINGS_UPDATED, loadMeetings);
+    window.electronAPI.on(IpcChannels.RECORDING_STARTED, async (data: any) => {
+      console.log('[JOURNEY-UI-EVENT-1] RECORDING_STARTED event received:', {
+        data,
+        timestamp: new Date().toISOString()
+      });
+      setIsRecording(true);
+      console.log('[JOURNEY-UI-STATE-1] isRecording set to true');
+
+      // If meeting object is provided directly, use it immediately
+      if (data.meeting) {
+        console.log('[JOURNEY-UI-EVENT-2] Using meeting object from event:', {
+          id: data.meeting.id,
+          title: data.meeting.title,
+          status: data.meeting.status
+        });
+        setSelectedMeeting(data.meeting);
+        console.log('[JOURNEY-UI-STATE-2] selectedMeeting set to:', data.meeting.id);
+        setViewMode('meetings');
+        console.log('[JOURNEY-UI-STATE-3] viewMode set to: meetings');
+        setTabMode('upcoming');
+        console.log('[JOURNEY-UI-STATE-4] tabMode set to: upcoming');
+
+        // Also update the meetings list to include this new meeting
+        setMeetings(prev => {
+          const exists = prev.some(m => m.id === data.meeting.id);
+          console.log('[JOURNEY-UI-STATE-5] Updating meetings list', {
+            meetingId: data.meeting.id,
+            alreadyExists: exists,
+            previousCount: prev.length
+          });
+          if (!exists) {
+            console.log('[JOURNEY-UI-STATE-6] Adding new meeting to list');
+            return [...prev, data.meeting];
+          }
+          return prev;
+        });
+      } else if (data.meetingId) {
+        console.log('[JOURNEY-UI-EVENT-3] Only meetingId provided, loading from storage');
+        // Fallback to loading from storage
+        await loadMeetings();
+        const loadedMeetings = await window.electronAPI.getMeetings();
+        console.log('[JOURNEY-UI-EVENT-4] Meetings loaded for selection:', loadedMeetings.length);
+        const meeting = loadedMeetings.find((m: Meeting) => m.id === data.meetingId);
+        console.log('[JOURNEY-UI-EVENT-5] Meeting search result:', {
+          searchId: data.meetingId,
+          found: !!meeting,
+          title: meeting?.title
+        });
+        if (meeting) {
+          setSelectedMeeting(meeting);
+          setViewMode('meetings');
+          setTabMode('upcoming');
+          console.log('[JOURNEY-UI-EVENT-6] Meeting selected successfully');
+        } else {
+          console.error('[JOURNEY-UI-EVENT-ERROR] Meeting not found in list:', data.meetingId);
+        }
+      }
+    });
+    window.electronAPI.on(IpcChannels.RECORDING_STOPPED, () => {
+      console.log('[JOURNEY-UI-STOP] Recording stopped event received');
+      setIsRecording(false);
+      console.log('[JOURNEY-UI-STATE-STOP] isRecording set to false');
+      loadMeetings(); // Refresh to update status
+    });
+    window.electronAPI.on(IpcChannels.CONNECTION_STATUS, (status: string) => {
+      console.log('[JOURNEY-UI-CONNECTION] Connection status changed:', status);
+      setConnectionStatus(status as 'connected' | 'disconnected');
+    });
+    window.electronAPI.on(IpcChannels.SETTINGS_UPDATED, (newSettings: AppSettings) => {
+      setSettings(newSettings);
+    });
+    // Listen for select-meeting event from main process
+    window.electronAPI.on('select-meeting', async (data: { meetingId: string }) => {
+      // Reload meetings first
+      await loadMeetings();
+      const loadedMeetings = await window.electronAPI.getMeetings();
+      const meeting = loadedMeetings.find((m: Meeting) => m.id === data.meetingId);
+      if (meeting) {
+        setSelectedMeeting(meeting);
+        setViewMode('meetings');
+        // If it's a recording meeting, switch to upcoming tab
+        if (meeting.status === 'recording' || meeting.status === 'active') {
+          setTabMode('upcoming');
+        }
+      }
+    });
+  };
+
+  const handleCreateMeeting = async () => {
+    try {
+      console.log('[JOURNEY-UI-CREATE-1] Creating new meeting');
+      const newMeeting = await window.electronAPI.createMeeting({
+        title: 'New Meeting',
+        date: new Date(),
+        status: 'scheduled',
+        notes: '',
+      });
+      console.log('[JOURNEY-UI-CREATE-2] Meeting created:', {
+        id: newMeeting.id,
+        title: newMeeting.title
+      });
+      await loadMeetings();
+      setSelectedMeeting(newMeeting);
+      console.log('[JOURNEY-UI-CREATE-3] New meeting selected');
+    } catch (error) {
+      console.error('[JOURNEY-UI-CREATE-ERROR] Failed to create meeting:', error);
+    }
+  };
+
+  const handleSyncCalendar = async () => {
+    try {
+      const result = await window.electronAPI.syncCalendar();
+      await loadMeetings();
+      return result;
+    } catch (error) {
+      console.error('Failed to sync calendar:', error);
+      throw error;
+    }
+  };
+
+  const filterMeetings = (meetings: Meeting[]): Meeting[] => {
+    const now = new Date();
+    let filtered: Meeting[];
+
+    if (tabMode === 'upcoming') {
+      // Show future meetings and currently recording meetings
+      filtered = meetings.filter(m =>
+        new Date(m.date) >= now ||
+        m.status === 'recording' ||
+        m.status === 'active'
+      );
+    } else {
+      // Show past meetings - only those with notes or transcripts
+      filtered = meetings.filter(m =>
+        (new Date(m.date) < now || m.status === 'completed') &&
+        m.status !== 'recording' &&
+        m.status !== 'active' &&
+        // Only show past meetings that have actual content
+        ((m.notes && m.notes.trim().length > 0) ||
+         (m.transcript && m.transcript.trim().length > 0))
+      );
+    }
+    
+    // Sort meetings by date - upcoming meetings in ascending order, past in descending
+    return filtered.sort((a, b) => {
+      const dateA = new Date(a.date).getTime();
+      const dateB = new Date(b.date).getTime();
+      
+      if (tabMode === 'upcoming') {
+        return dateA - dateB; // Ascending for upcoming (next meeting first)
+      } else {
+        return dateB - dateA; // Descending for past (most recent first)
+      }
+    });
+  };
+
+  // Show error if electronAPI is not available
+  if (typeof window.electronAPI === 'undefined') {
+    return (
+      <AppContainer>
+        <div style={{ padding: 50, textAlign: 'center' }}>
+          <h1>Error: Application not loaded properly</h1>
+          <p>The Electron API is not available. Please restart the application.</p>
+          <p>If this persists, check the console for errors.</p>
+        </div>
+      </AppContainer>
+    );
+  }
+
+  return (
+    <AppContainer>
+      <TitleBar>
+        <AppTitle>Meeting Note Recorder</AppTitle>
+      </TitleBar>
+      
+      <MainContent>
+        <Sidebar>
+          {viewMode === 'meetings' && (
+            <>
+              <TabBar>
+                <Tab
+                  active={tabMode === 'upcoming'}
+                  onClick={() => setTabMode('upcoming')}
+                >
+                  Upcoming
+                </Tab>
+                <Tab
+                  active={tabMode === 'past'}
+                  onClick={() => setTabMode('past')}
+                >
+                  Past
+                </Tab>
+              </TabBar>
+              
+              <MeetingList
+                meetings={filterMeetings(meetings)}
+                selectedMeeting={selectedMeeting}
+                onSelectMeeting={setSelectedMeeting}
+                onSyncCalendar={handleSyncCalendar}
+              />
+            </>
+          )}
+
+          {viewMode === 'settings' && (
+            <Settings
+              settings={settings}
+              onUpdateSettings={async (updates) => {
+                await window.electronAPI.updateSettings(updates);
+                await loadSettings();
+              }}
+              onBack={() => setViewMode('meetings')}
+            />
+          )}
+
+          <SettingsButton
+            className={viewMode === 'settings' ? 'active' : ''}
+            onClick={() => setViewMode(viewMode === 'settings' ? 'meetings' : 'settings')}
+          >
+            ⚙️ Settings
+          </SettingsButton>
+        </Sidebar>
+        
+        <ContentArea>
+          {viewMode === 'meetings' && (
+            selectedMeeting ? (
+              <MeetingDetailFinal
+                meeting={selectedMeeting}
+                onUpdateMeeting={async (updates) => {
+                  await window.electronAPI.updateMeeting(selectedMeeting.id, updates);
+                  await loadMeetings();
+                }}
+                onDeleteMeeting={async (meetingId) => {
+                  await window.electronAPI.deleteMeeting(meetingId);
+                  setSelectedMeeting(null);
+                  await loadMeetings();
+                }}
+                onRefresh={async () => {
+                  await loadMeetings();
+                  // Update selected meeting with refreshed data
+                  const updatedMeetings = await window.electronAPI.getMeetings();
+                  const updatedMeeting = updatedMeetings.find((m: Meeting) => m.id === selectedMeeting.id);
+                  if (updatedMeeting) {
+                    setSelectedMeeting(updatedMeeting);
+                  }
+                }}
+              />
+            ) : (
+              <div style={{ padding: 50, textAlign: 'center', color: '#86868b' }}>
+                <h2>No meeting selected</h2>
+                <p>Select a meeting from the list or start a new recording</p>
+              </div>
+            )
+          )}
+        </ContentArea>
+      </MainContent>
+      
+      <StatusBar>
+        {isRecording && (
+          <StatusIndicator type="recording">Recording</StatusIndicator>
+        )}
+        {!isRecording && (
+          <StatusIndicator type={connectionStatus}>
+            {connectionStatus === 'connected' ? 'Connected' : 'Disconnected'}
+          </StatusIndicator>
+        )}
+      </StatusBar>
+      
+      {viewMode === 'meetings' && (
+        <FloatingActionButton onClick={handleCreateMeeting}>
+          +
+        </FloatingActionButton>
+      )}
+    </AppContainer>
+  );
+}
+
+export default App;

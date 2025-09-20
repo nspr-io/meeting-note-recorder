@@ -1,0 +1,54 @@
+
+> meeting-note-recorder@1.0.0 start
+> electron .
+
+[dotenv@17.2.2] injecting env (4) from .env -- tip: 📡 observe env with Radar: https://dotenvx.com/radar
+LoggingService initialized {
+  logPath: '/Users/joshuawohle/Library/Application Support/meeting-note-recorder/logs/app-2025-09-16T18-00-40-638Z.log'
+}
+Initializing services... 
+Checking all permissions 
+Screen recording status: granted
+Permission status { 'screen-capture': true, microphone: true, accessibility: true }
+Permission status { 'screen-capture': true, microphone: true, accessibility: true }
+Checking all permissions 
+Screen recording status: granted
+Permission status { 'screen-capture': true, microphone: true, accessibility: true }
+Settings initialized: {
+  googleCalendarConnected: true,
+  hasApiKey: true,
+  storagePath: '/Users/joshuawohle/Documents/MeetingRecordings'
+}
+Settings service initialized {
+  recallApiUrl: 'https://us-east-1.recall.ai',
+  storagePath: '/Users/joshuawohle/Documents/MeetingRecordings',
+  googleCalendarConnected: true,
+  autoStartOnBoot: false,
+  selectedCalendars: [],
+  recallApiKey: '1332daafebd5965acdf93098d1be5c9a23b2f2dc'
+}
+Initializing CalendarService with CLIENT_ID: 1042328300965-or1qom...
+Stored tokens available: true
+Setting credentials from stored tokens
+Initializing RecallAI SDK { apiUrl: 'https://us-west-2.recall.ai', hasApiKey: true }
+RecallApiService initialized {
+  apiUrl: 'https://us-west-2.recall.ai',
+  providedUrl: 'https://us-west-2.recall.ai'
+}
+Setting up SDK event listeners 
+RecallAI SDK and API service initialized successfully 
+Loading index.html from: /Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/dist/renderer/index.html
+[78276:0916/190041.118399:ERROR:electron/shell/common/platform_util_mac.mm:258] Unable to set login item: The operation couldn’t be completed. Operation not permitted
+Meeting detection started with recall.ai SDK 
+Auto-syncing calendar on startup...
+DOM is ready
+Getting meetings { count: 58 }
+fetchUpcomingMeetings called
+Calendar object exists: true
+Is authenticated: true
+Fetching events from 2025-09-16T18:00:46.138Z to 2025-09-23T18:00:46.138Z
+Calendar API response: 50 events found
+Auto-sync: Found 50 calendar events
+Auto-sync completed: 0 new meetings, 50 total events
+Getting meetings { count: 58 }
+/Users/joshuawohle/Documents/Workspace/Core/Tools/meeting-note-recorder/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron exited with signal SIGTERM
