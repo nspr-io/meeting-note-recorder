@@ -75,6 +75,8 @@ const api = {
       IpcChannels.MEETINGS_UPDATED,
       IpcChannels.ERROR_OCCURRED,
       IpcChannels.SEARCH_RESULTS,
+      'correction-progress',
+      'correction-completed',
     ];
     
     if (validChannels.includes(channel as any)) {
