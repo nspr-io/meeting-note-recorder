@@ -6,6 +6,7 @@ import { TranscriptChunk, RecordingState } from '../../shared/types';
 import { SDKDebugger } from './SDKDebugger';
 import { TranscriptCorrectionService } from './TranscriptCorrectionService';
 import { InsightsGenerationService } from './InsightsGenerationService';
+import { PromptService } from './PromptService';
 
 const logger = getLogger();
 
@@ -26,12 +27,12 @@ export class RecordingService extends EventEmitter {
   private unknownSpeakerCount = 0;
   private speakerMap: Map<string, string> = new Map();
 
-  constructor(storageService: StorageService) {
+  constructor(storageService: StorageService, promptService: PromptService | null) {
     super();
     this.storageService = storageService;
     this.sdkDebugger = new SDKDebugger();
-    this.transcriptCorrectionService = new TranscriptCorrectionService();
-    this.insightsGenerationService = new InsightsGenerationService();
+    this.transcriptCorrectionService = new TranscriptCorrectionService(promptService);
+    this.insightsGenerationService = new InsightsGenerationService(promptService);
 
     // Forward correction events
     this.transcriptCorrectionService.on('correction-started', (data) => {

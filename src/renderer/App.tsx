@@ -7,6 +7,7 @@ import MeetingDetailFinal from './components/MeetingDetailFinal';
 import Settings from './components/Settings';
 import Profile from './components/Profile';
 import Search from './components/Search';
+import { SystemPromptsList, SystemPromptEditor } from './components/SystemPromptsEditor';
 import { ElectronAPI } from '../main/preload';
 
 declare global {
@@ -89,6 +90,13 @@ const Sidebar = styled.div`
   min-width: 200px;
 `;
 
+const SidebarContent = styled.div`
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 80px; /* Space for bottom navigation */
+`;
+
 const BottomNav = styled.div`
   position: absolute;
   bottom: 0;
@@ -97,6 +105,8 @@ const BottomNav = styled.div`
   display: flex;
   background: #fafafa;
   border-top: 1px solid #e5e5e7;
+  z-index: 100;
+  height: 80px; /* Fixed height for navigation */
 `;
 
 const NavButton = styled.button<{ active?: boolean }>`
@@ -221,7 +231,7 @@ const FloatingActionButton = styled.button`
   }
 `;
 
-type ViewMode = 'meetings' | 'settings' | 'profile';
+type ViewMode = 'meetings' | 'settings' | 'profile' | 'prompts';
 type TabMode = 'upcoming' | 'past';
 
 function App() {
@@ -229,6 +239,7 @@ function App() {
   const [tabMode, setTabMode] = useState<TabMode>('upcoming');
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
+  const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('connected');
@@ -470,45 +481,54 @@ function App() {
           cursor="col-resize"
         >
           <Sidebar>
-            {viewMode === 'meetings' && (
-              <>
-                <TabBar>
-                  <Tab
-                    active={tabMode === 'upcoming'}
-                    onClick={() => setTabMode('upcoming')}
-                  >
-                    Upcoming
-                  </Tab>
-                  <Tab
-                    active={tabMode === 'past'}
-                    onClick={() => setTabMode('past')}
-                  >
-                    Past
-                  </Tab>
-                </TabBar>
+            <SidebarContent>
+              {viewMode === 'meetings' && (
+                <>
+                  <TabBar>
+                    <Tab
+                      active={tabMode === 'upcoming'}
+                      onClick={() => setTabMode('upcoming')}
+                    >
+                      Upcoming
+                    </Tab>
+                    <Tab
+                      active={tabMode === 'past'}
+                      onClick={() => setTabMode('past')}
+                    >
+                      Past
+                    </Tab>
+                  </TabBar>
 
-                <MeetingList
-                  meetings={filterMeetings(meetings)}
-                  selectedMeeting={selectedMeeting}
-                  onSelectMeeting={setSelectedMeeting}
-                  onSyncCalendar={handleSyncCalendar}
+                  <MeetingList
+                    meetings={filterMeetings(meetings)}
+                    selectedMeeting={selectedMeeting}
+                    onSelectMeeting={setSelectedMeeting}
+                    onSyncCalendar={handleSyncCalendar}
+                  />
+                </>
+              )}
+
+              {viewMode === 'settings' && (
+                <Settings
+                  settings={settings}
+                  onUpdateSettings={async (updates) => {
+                    await window.electronAPI.updateSettings(updates);
+                    await loadSettings();
+                  }}
                 />
-              </>
-            )}
+              )}
 
-            {viewMode === 'settings' && (
-              <Settings
-                settings={settings}
-                onUpdateSettings={async (updates) => {
-                  await window.electronAPI.updateSettings(updates);
-                  await loadSettings();
-                }}
-              />
-            )}
+              {viewMode === 'profile' && (
+                <Profile />
+              )}
 
-            {viewMode === 'profile' && (
-              <Profile />
-            )}
+              {viewMode === 'prompts' && (
+                <SystemPromptsList
+                  onSelectPrompt={setSelectedPromptId}
+                  selectedPromptId={selectedPromptId}
+                />
+              )}
+            </SidebarContent>
 
             <BottomNav>
               <NavButton
@@ -526,6 +546,14 @@ function App() {
               >
                 👤
                 <span>Profile</span>
+              </NavButton>
+              <NavButton
+                active={viewMode === 'prompts'}
+                onClick={() => setViewMode('prompts')}
+                title="Prompts"
+              >
+                📝
+                <span>Prompts</span>
               </NavButton>
               <NavButton
                 active={viewMode === 'settings'}
@@ -566,6 +594,17 @@ function App() {
               <div style={{ padding: 50, textAlign: 'center', color: '#86868b' }}>
                 <h2>No meeting selected</h2>
                 <p>Select a meeting from the list or start a new recording</p>
+              </div>
+            )
+          )}
+
+          {viewMode === 'prompts' && (
+            selectedPromptId ? (
+              <SystemPromptEditor promptId={selectedPromptId} />
+            ) : (
+              <div style={{ padding: 50, textAlign: 'center', color: '#86868b' }}>
+                <h2>No prompt selected</h2>
+                <p>Select a prompt from the list to edit it</p>
               </div>
             )
           )}

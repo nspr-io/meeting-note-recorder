@@ -55,12 +55,22 @@ const api = {
   clearSearchHistory: () =>
     ipcRenderer.invoke(IpcChannels.CLEAR_SEARCH_HISTORY),
   
+  // System Prompts
+  getPrompts: () =>
+    ipcRenderer.invoke(IpcChannels.GET_PROMPTS),
+  getPrompt: (promptId: string) =>
+    ipcRenderer.invoke(IpcChannels.GET_PROMPT, promptId),
+  updatePrompt: (data: { promptId: string; content: string }) =>
+    ipcRenderer.invoke(IpcChannels.UPDATE_PROMPT, data),
+  resetPrompt: (promptId: string) =>
+    ipcRenderer.invoke(IpcChannels.RESET_PROMPT, promptId),
+
   // Permissions
-  getPermissionStatus: () => 
+  getPermissionStatus: () =>
     ipcRenderer.invoke('get-permission-status'),
-  checkPermissions: () => 
+  checkPermissions: () =>
     ipcRenderer.invoke('check-permissions'),
-  requestPermissions: () => 
+  requestPermissions: () =>
     ipcRenderer.invoke('request-permissions'),
   
   // Event listeners

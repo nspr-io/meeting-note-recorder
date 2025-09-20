@@ -12,6 +12,7 @@ import { SettingsService } from './services/SettingsService';
 import { PermissionService } from './services/PermissionService';
 import { getLogger } from './services/LoggingService';
 import { SearchService } from './services/SearchService';
+import { PromptService } from './services/PromptService';
 import { IpcChannels, Meeting, UserProfile, SearchOptions } from '../shared/types';
 
 const logger = getLogger();
@@ -24,6 +25,7 @@ let calendarService: CalendarService;
 let settingsService: SettingsService;
 let permissionService: PermissionService;
 let searchService: SearchService;
+let promptService: PromptService | null = null;
 let currentRecordingMeetingId: string | null = null;
 
 function createWindow() {
@@ -83,6 +85,18 @@ async function initializeServices() {
   await settingsService.initialize();
   logger.info('Settings service initialized', settingsService.getSettings());
 
+  try {
+    logger.info('Creating PromptService instance...');
+    promptService = new PromptService();
+    logger.info('PromptService instance created, initializing...');
+    await promptService.initialize();
+    logger.info('Prompt service initialized successfully');
+  } catch (error) {
+    logger.error('FATAL: Failed to initialize PromptService:', error);
+    // Continue without PromptService for now to avoid breaking the app
+    promptService = null;
+  }
+
   storageService = new StorageService(settingsService);
   await storageService.initialize();
 
@@ -92,7 +106,7 @@ async function initializeServices() {
 
   calendarService = new CalendarService();
 
-  recordingService = new RecordingService(storageService);
+  recordingService = new RecordingService(storageService, promptService);
   
   // Initialize recording service with API key and URL from settings
   const settings = settingsService.getSettings();
@@ -267,6 +281,41 @@ function setupIpcHandlers() {
     return { success: true };
   });
 
+  // System Prompts
+  ipcMain.handle(IpcChannels.GET_PROMPTS, async () => {
+    if (!promptService) {
+      logger.error('PromptService not available - returning empty prompts');
+      return {};
+    }
+    return promptService.getAllPrompts();
+  });
+
+  ipcMain.handle(IpcChannels.GET_PROMPT, async (_, promptId) => {
+    if (!promptService) {
+      logger.error('PromptService not available - cannot get prompt:', promptId);
+      throw new Error('PromptService not available');
+    }
+    return promptService.getPrompt(promptId);
+  });
+
+  ipcMain.handle(IpcChannels.UPDATE_PROMPT, async (_, { promptId, content }) => {
+    if (!promptService) {
+      logger.error('PromptService not available - cannot update prompt:', promptId);
+      throw new Error('PromptService not available');
+    }
+    await promptService.updatePrompt(promptId, content);
+    return { success: true };
+  });
+
+  ipcMain.handle(IpcChannels.RESET_PROMPT, async (_, promptId) => {
+    if (!promptService) {
+      logger.error('PromptService not available - cannot reset prompt:', promptId);
+      throw new Error('PromptService not available');
+    }
+    await promptService.resetPrompt(promptId);
+    return { success: true };
+  });
+
   // Meetings
   ipcMain.handle(IpcChannels.GET_MEETINGS, async () => {
     // Only load meetings from last 30 days for initial load
@@ -343,6 +392,13 @@ function setupIpcHandlers() {
       try {
         // Correct the transcript
         const correctedTranscript = await correctionService.correctTranscript(meeting.transcript, meetingId);
+
+        // Log if transcript actually changed
+        const originalSample = meeting.transcript.substring(0, 200);
+        const correctedSample = correctedTranscript.substring(0, 200);
+        logger.info(`[CORRECTION CHECK] Original sample: "${originalSample}"`);
+        logger.info(`[CORRECTION CHECK] Corrected sample: "${correctedSample}"`);
+        logger.info(`[CORRECTION CHECK] Are they the same? ${originalSample === correctedSample}`);
 
         // Update the meeting with corrected transcript
         await storageService.updateMeeting(meetingId, { transcript: correctedTranscript });
@@ -950,9 +1006,21 @@ app.whenReady().then(async () => {
   // Initialize permission service first
   permissionService = new PermissionService();
   await permissionService.checkAllPermissions();
-  
+
   settingsService = new SettingsService();
   await settingsService.initialize();
+
+  try {
+    logger.info('Creating PromptService instance...');
+    promptService = new PromptService();
+    logger.info('PromptService instance created, initializing...');
+    await promptService.initialize();
+    logger.info('Prompt service initialized successfully');
+  } catch (error) {
+    logger.error('FATAL: Failed to initialize PromptService:', error);
+    // Continue without PromptService for now to avoid breaking the app
+    promptService = null;
+  }
   
   storageService = new StorageService(settingsService);
   await storageService.initialize();
@@ -962,7 +1030,7 @@ app.whenReady().then(async () => {
   searchService.updateIndex(meetings);
 
   calendarService = new CalendarService();
-  recordingService = new RecordingService(storageService);
+  recordingService = new RecordingService(storageService, promptService);
   
   // Create meeting detection service with basic setup (no SDK yet)
   meetingDetectionService = new MeetingDetectionService(

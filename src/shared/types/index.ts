@@ -121,6 +121,12 @@ export enum IpcChannels {
   GET_SEARCH_HISTORY = 'get-search-history',
   CLEAR_SEARCH_HISTORY = 'clear-search-history',
   SEARCH_RESULTS = 'search-results',
+
+  // System Prompts channels
+  GET_PROMPTS = 'get-prompts',
+  GET_PROMPT = 'get-prompt',
+  UPDATE_PROMPT = 'update-prompt',
+  RESET_PROMPT = 'reset-prompt',
 }
 
 export interface SearchOptions {

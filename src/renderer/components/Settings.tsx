@@ -454,6 +454,7 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
         </CheckboxContainer>
       </Section>
 
+
       <Section>
         <SectionTitle>About</SectionTitle>
         <div style={{ fontSize: '13px', color: '#86868b' }}>

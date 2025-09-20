@@ -5,6 +5,7 @@ import { AppSettings, UserProfile } from '../../shared/types';
 
 export class SettingsService {
   private store: any; // Using any to work around TypeScript issues with electron-store in tests
+
   private defaultSettings: AppSettings = {
     recallApiUrl: process.env.RECALL_API_URL || 'https://us-west-2.recall.ai',
     storagePath: path.join(app.getPath('documents'), 'MeetingRecordings'),
@@ -178,4 +179,5 @@ export class SettingsService {
       this.store.store = { ...this.store.store, userProfile: profile };
     }
   }
+
 }

@@ -1,0 +1,23 @@
+{
+  "transcript-correction": {
+    "name": "Transcript Correction",
+    "description": "AI prompt for correcting transcript errors while maintaining format",
+    "variables": ["transcript"]
+  },
+  "insights-generation": {
+    "name": "Meeting Insights Generation",
+    "description": "AI prompt for generating executive-level meeting insights and action items",
+    "variables": [
+      "userProfile.name",
+      "userProfile.title",
+      "userProfile.company",
+      "userProfile.aboutMe",
+      "userProfile.preferences",
+      "meeting.title",
+      "meeting.date",
+      "meeting.attendees",
+      "notes",
+      "transcript"
+    ]
+  }
+}

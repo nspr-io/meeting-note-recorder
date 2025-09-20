@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getLogger } from './LoggingService';
 import { EventEmitter } from 'events';
+import { PromptService } from './PromptService';
 
 const logger = getLogger();
 
@@ -18,10 +19,12 @@ interface TranscriptBlock {
 
 export class TranscriptCorrectionService extends EventEmitter {
   private anthropic: Anthropic | null = null;
-  private readonly BLOCK_SIZE = 50; // Process 50 lines at a time
+  private readonly BLOCK_SIZE = 100; // Process 100 lines at a time
+  private promptService: PromptService | null;
 
-  constructor() {
+  constructor(promptService: PromptService | null) {
     super();
+    this.promptService = promptService;
   }
 
   initialize(apiKey: string | undefined): void {
@@ -61,40 +64,22 @@ export class TranscriptCorrectionService extends EventEmitter {
   }
 
   /**
-   * Get the defensive correction prompt
+   * Get the correction prompt from PromptService
    */
-  private getDefensiveCorrectionPrompt(): string {
-    return `You are a transcript correction specialist. Your ONLY job is to fix obvious transcription errors while preserving the exact meaning and intent of the speakers.
-
-STRICT RULES - YOU MUST:
-1. ONLY fix clear transcription errors:
-   - Misspelled words (e.g., "teh" → "the")
-   - Wrong homophones (e.g., "there" vs "their" based on context)
-   - Garbled audio artifacts (e.g., "um the the" → "um the")
-   - Obvious punctuation errors that affect readability
-
-2. NEVER change:
-   - The speaker's actual words or phrasing
-   - Technical terms (even if they seem wrong)
-   - Numbers, dates, or specific values
-   - The order or structure of sentences
-   - Informal language or colloquialisms (keep "gonna", "wanna", etc.)
-   - Filler words that were actually spoken ("um", "uh", "like")
-
-3. PRESERVE exactly:
-   - Speaker attributions and timestamps
-   - Line breaks and formatting
-   - Incomplete thoughts or interruptions
-   - Any [inaudible] or [unclear] markers
-
-4. When uncertain:
-   - Leave it unchanged
-   - If 60% sure it's an error, fix it
-   - If less than 60% sure, keep original
-
-IMPORTANT: People's exact words matter. This could be used for records or documentation. A court reporter wouldn't change "gonna" to "going to" - neither should you.
-
-Return ONLY the corrected text block, maintaining the exact same format, structure, and number of lines.`;
+  private async getDefensiveCorrectionPrompt(): Promise<string> {
+    try {
+      if (!this.promptService) {
+        logger.warn('PromptService not available, using fallback prompt');
+        throw new Error('PromptService not initialized');
+      }
+      return await this.promptService.getInterpolatedPrompt('transcript-correction', {
+        transcript: '' // This will be replaced in the API call
+      });
+    } catch (error) {
+      logger.error('Failed to load transcript correction prompt, using fallback:', error);
+      // Fallback to a basic prompt if the service fails
+      return 'You are a transcript correction specialist. Fix errors in the transcript while maintaining the exact format. Return ONLY the corrected text.';
+    }
   }
 
   /**
@@ -129,16 +114,18 @@ Return ONLY the corrected text block, maintaining the exact same format, structu
 
       logger.debug(`Making API call for block correction (${currentBlock.lines.length} lines)`);
 
-      // Add timeout to prevent hanging
+      // Add timeout to prevent hanging (60 seconds for 100-line blocks)
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('API request timeout after 30 seconds')), 30000);
+        setTimeout(() => reject(new Error('API request timeout after 60 seconds')), 60000);
       });
+
+      const systemPrompt = await this.getDefensiveCorrectionPrompt();
 
       const apiPromise = this.anthropic.messages.create({
         model: 'claude-3-5-sonnet-20241022',
         max_tokens: 4096,
         temperature: 0.2, // Low temperature for consistent, conservative corrections
-        system: this.getDefensiveCorrectionPrompt(),
+        system: systemPrompt,
         messages: [{
           role: 'user',
           content: `Please correct ONLY the transcription errors in the section marked [SECTION TO CORRECT], using the context to understand the conversation flow. Return ONLY the corrected lines from that section, nothing else.\n\n${contextMessage}`
@@ -151,16 +138,27 @@ Return ONLY the corrected text block, maintaining the exact same format, structu
 
       // Extract the corrected text
       if (response.content[0].type === 'text') {
-        const correctedText = response.content[0].text.trim();
+        let correctedText = response.content[0].text.trim();
+
+        // Extract just the corrected section if the response includes markers
+        // The AI might return the section with markers like [SECTION TO CORRECT]
+        const sectionMatch = correctedText.match(/\[SECTION TO CORRECT[^\]]*\]([\s\S]*?)\[END OF SECTION/);
+        if (sectionMatch) {
+          correctedText = sectionMatch[1].trim();
+        }
 
         // Validate that we got reasonable output (not empty, not too different in length)
         const originalLength = currentBlock.lines.join('\n').length;
         const correctedLength = correctedText.length;
 
-        // If the correction is drastically different in size (more than 50% change),
-        // it might have done something wrong, so return original
-        if (correctedLength < originalLength * 0.5 || correctedLength > originalLength * 1.5) {
+        // Log what we're seeing for debugging
+        logger.debug(`Block correction lengths - original: ${originalLength}, corrected: ${correctedLength}`);
+
+        // Be more lenient with length changes - sometimes corrections can compress text significantly
+        if (correctedLength < originalLength * 0.3 || correctedLength > originalLength * 2.0) {
           logger.warn(`Block correction resulted in suspicious length change (${originalLength} -> ${correctedLength}), using original`);
+          logger.debug(`Original block sample: ${currentBlock.lines.slice(0, 3).join('\n').substring(0, 200)}...`);
+          logger.debug(`Corrected block sample: ${correctedText.substring(0, 200)}...`);
           return currentBlock.lines.join('\n');
         }
 
@@ -201,40 +199,70 @@ Return ONLY the corrected text block, maintaining the exact same format, structu
 
       logger.info(`Processing transcript in ${totalBlocks} blocks of ~${this.BLOCK_SIZE} lines each`);
 
-      const correctedBlocks: string[] = [];
+      // Process all blocks in parallel for speed
+      logger.info(`Processing all ${totalBlocks} blocks in parallel for maximum speed`);
 
-      for (let i = 0; i < blocks.length; i++) {
-        // Emit progress event
-        this.emit('correction-progress', {
-          meetingId,
-          current: i + 1,
-          total: totalBlocks,
-          percentage: Math.round(((i + 1) / totalBlocks) * 100)
-        });
+      let completedBlocks = 0;
 
-        logger.debug(`Correcting block ${i + 1}/${totalBlocks} (lines ${blocks[i].startIndex + 1}-${blocks[i].endIndex + 1})`);
-
+      const correctionPromises = blocks.map(async (block, i) => {
         // Get context blocks
         const previousBlock = i > 0 ? blocks[i - 1] : null;
         const nextBlock = i < blocks.length - 1 ? blocks[i + 1] : null;
 
-        // Correct the block
-        const correctedBlock = await this.correctBlock(
-          blocks[i],
-          previousBlock,
-          nextBlock
-        );
+        // Add a small random delay to avoid hitting the API all at once
+        await new Promise(resolve => setTimeout(resolve, Math.random() * 1000));
 
-        correctedBlocks.push(correctedBlock);
+        logger.debug(`Starting correction for block ${i + 1}/${totalBlocks} (lines ${block.startIndex + 1}-${block.endIndex + 1})`);
 
-        // Small delay to avoid rate limiting (only between blocks, not after the last one)
-        if (i < blocks.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 200)); // Slightly longer delay for safety
+        try {
+          const correctedBlock = await this.correctBlock(
+            block,
+            previousBlock,
+            nextBlock
+          );
+
+          // Emit progress event when this block completes
+          completedBlocks++;
+          this.emit('correction-progress', {
+            meetingId,
+            current: completedBlocks,
+            total: totalBlocks,
+            percentage: Math.round((completedBlocks / totalBlocks) * 100)
+          });
+
+          logger.debug(`Completed block ${i + 1}/${totalBlocks} (${completedBlocks} total completed)`);
+          return { index: i, corrected: correctedBlock };
+        } catch (error) {
+          logger.error(`Failed to correct block ${i + 1}:`, error);
+          // Still count as completed for progress
+          completedBlocks++;
+          this.emit('correction-progress', {
+            meetingId,
+            current: completedBlocks,
+            total: totalBlocks,
+            percentage: Math.round((completedBlocks / totalBlocks) * 100)
+          });
+          // Return original block on error
+          return { index: i, corrected: block.lines.join('\n') };
         }
-      }
+      });
+
+      // Wait for all blocks to complete
+      const results = await Promise.all(correctionPromises);
+
+      // Sort results by index to maintain order
+      results.sort((a, b) => a.index - b.index);
+
+      // Extract corrected blocks in order
+      const correctedBlocks = results.map(r => r.corrected);
 
       // Join all corrected blocks
       const correctedTranscript = correctedBlocks.join('\n');
+
+      // Log first 500 chars of original vs corrected to see if there are actual changes
+      logger.info(`Original transcript sample (first 500 chars): ${transcript.substring(0, 500)}`);
+      logger.info(`Corrected transcript sample (first 500 chars): ${correctedTranscript.substring(0, 500)}`);
+      logger.info(`Transcript lengths - original: ${transcript.length}, corrected: ${correctedTranscript.length}`);
 
       logger.info(`Transcript correction completed for meeting ${meetingId} (${totalBlocks} blocks processed)`);
       this.emit('correction-completed', { meetingId });
@@ -349,7 +377,7 @@ Return ONLY the corrected text block, maintaining the exact same format, structu
   getEstimatedCorrectionTime(transcript: string): number {
     const lines = transcript.split('\n').filter(line => line.trim());
     const blocks = Math.ceil(lines.length / this.BLOCK_SIZE);
-    // Estimate: 1-2 seconds per block + API latency
-    return blocks * 1.5;
+    // Estimate: 2-3 seconds per block + API latency (larger blocks take a bit longer)
+    return blocks * 2.5;
   }
 }

@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getLogger } from './LoggingService';
 import { EventEmitter } from 'events';
 import { Meeting, UserProfile } from '../../shared/types';
+import { PromptService } from './PromptService';
 
 const logger = getLogger();
 
@@ -19,9 +20,11 @@ interface MeetingInsights {
 
 export class InsightsGenerationService extends EventEmitter {
   private anthropic: Anthropic | null = null;
+  private promptService: PromptService | null;
 
-  constructor() {
+  constructor(promptService: PromptService | null) {
     super();
+    this.promptService = promptService;
   }
 
   initialize(apiKey: string | undefined): void {
@@ -54,13 +57,14 @@ export class InsightsGenerationService extends EventEmitter {
     this.emit('insights-started', { meetingId: meeting.id });
 
     try {
+      const systemPrompt = await this.getSystemPrompt(meeting, userProfile);
       const prompt = this.buildPrompt(meeting, userProfile);
 
       const response = await this.anthropic.messages.create({
         model: 'claude-3-5-sonnet-20241022',
         max_tokens: 4096,
         temperature: 0.3,
-        system: this.getSystemPrompt(userProfile),
+        system: systemPrompt,
         messages: [{
           role: 'user',
           content: prompt
@@ -93,61 +97,23 @@ export class InsightsGenerationService extends EventEmitter {
     }
   }
 
-  private getSystemPrompt(userProfile?: UserProfile | null): string {
-    let systemPrompt = `You are an experienced Executive Assistant with 20+ years of expertise in analyzing meetings, extracting actionable insights, and preparing executive-level summaries. You excel at understanding context, identifying what matters most, and presenting information in a clear, actionable format.
-
-`;
-
-    if (userProfile) {
-      systemPrompt += `USER CONTEXT:
-You are preparing these insights for ${userProfile.name}, ${userProfile.title} at ${userProfile.company}.
-
-About them: ${userProfile.aboutMe}
-
-Their preferences for meeting insights: ${userProfile.preferences}
-
-Tailor your insights to match their role, responsibilities, and preferences. Consider their position and what would be most valuable for them to track and action.
-
-`;
+  private async getSystemPrompt(meeting: Meeting, userProfile?: UserProfile | null): Promise<string> {
+    try {
+      if (!this.promptService) {
+        logger.warn('PromptService not available, using fallback prompt');
+        throw new Error('PromptService not initialized');
+      }
+      return await this.promptService.getInterpolatedPrompt('insights-generation', {
+        userProfile,
+        meeting,
+        transcript: meeting.transcript,
+        notes: meeting.notes
+      });
+    } catch (error) {
+      logger.error('Failed to load insights generation prompt, using fallback:', error);
+      // Fallback to a basic prompt if the service fails
+      return 'You are an experienced Executive Assistant. Analyze the meeting content and produce structured insights in JSON format with summary, actionItems, keyDecisions, followUps, and notesHighlights.';
     }
-
-    systemPrompt += `YOUR TASK:
-Analyze the meeting content and produce structured insights that are immediately actionable and valuable.
-
-CRITICAL GUIDELINES:
-1. Personal notes are the PRIMARY source - they reflect what the user considered important
-2. Use the transcript to provide context and fill gaps, but NEVER contradict the notes
-3. Be concise but comprehensive - every word should add value
-4. Focus on outcomes: decisions made, actions required, and strategic implications
-5. Write action items that are specific, measurable, and assignable
-6. Highlight strategic insights and patterns that an exec would care about
-7. If something seems important but unclear, mark it for follow-up rather than guessing
-
-You must return ONLY valid JSON in this exact format:
-{
-  "summary": "2-3 paragraph executive summary of the meeting",
-  "actionItems": [
-    {
-      "owner": "Person's name or 'Unassigned'",
-      "task": "Clear description of what needs to be done",
-      "due": "Date if mentioned, otherwise null"
-    }
-  ],
-  "keyDecisions": [
-    "Decision 1 that was made",
-    "Decision 2 that was made"
-  ],
-  "followUps": [
-    "Question or topic that needs follow-up",
-    "Unresolved issue that was discussed"
-  ],
-  "notesHighlights": [
-    "Important point from the personal notes",
-    "Key insight captured in notes"
-  ]
-}`;
-
-    return systemPrompt;
   }
 
   private buildPrompt(meeting: Meeting, userProfile?: UserProfile | null): string {

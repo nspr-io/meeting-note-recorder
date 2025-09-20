@@ -779,8 +779,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
       // Estimate correction time
       const lines = meeting.transcript.split('\n').filter((line: string) => line.trim()).length;
-      const blocks = Math.ceil(lines / 50);
-      const estimatedSeconds = Math.round(blocks * 1.5);
+      const blocks = Math.ceil(lines / 100);
+      const estimatedSeconds = Math.round(blocks * 2.5);
 
       console.log(`Transcript has ${lines} lines, will process in ${blocks} blocks (~${estimatedSeconds}s)`);
 
