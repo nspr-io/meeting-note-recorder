@@ -164,6 +164,12 @@ const AttendeeToggle = styled.button`
   }
 `;
 
+const TabPanel = styled.div<{ isActive: boolean }>`
+  display: ${props => props.isActive ? 'block' : 'none'};
+  width: 100%;
+  height: 100%;
+`;
+
 const ActionButtons = styled.div`
   display: flex;
   gap: 8px;
@@ -1185,7 +1191,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
         </Header>
 
         <Content>
-          {viewMode === 'notes' && (
+          {/* Notes Panel - Always rendered but hidden when not active */}
+          <TabPanel isActive={viewMode === 'notes'}>
             <EditorContainer>
               <MDXErrorBoundary
                 key={`boundary-${editorKey}`}
@@ -1261,9 +1268,10 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                 />
               </MDXErrorBoundary>
             </EditorContainer>
-          )}
+          </TabPanel>
 
-          {viewMode === 'transcript' && (
+          {/* Transcript Panel - Always rendered but hidden when not active */}
+          <TabPanel isActive={viewMode === 'transcript'}>
             <TranscriptContainer>
               {(meeting.transcript || transcriptSegments.length > 0) ? (
                 <>
@@ -1328,9 +1336,10 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                 </EmptyState>
               )}
             </TranscriptContainer>
-          )}
+          </TabPanel>
 
-          {viewMode === 'insights' && (
+          {/* Insights Panel - Always rendered but hidden when not active */}
+          <TabPanel isActive={viewMode === 'insights'}>
             <TranscriptContainer>
               {insights ? (
                 <div style={{ padding: '20px' }}>
@@ -1464,7 +1473,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                 </EmptyState>
               )}
             </TranscriptContainer>
-          )}
+          </TabPanel>
         </Content>
       </Container>
 
