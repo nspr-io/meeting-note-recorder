@@ -6,12 +6,14 @@ import path from 'path';
 import fs from 'fs/promises';
 import { format } from 'date-fns';
 import { app } from 'electron';
+import { DescriptionProcessingService } from './DescriptionProcessingService';
 
 export class StorageService {
   private meetingsCache: Map<string, Meeting> = new Map();
   private settingsService: SettingsService;
   private storagePath: string;
   private cacheFilePath: string;
+  private descriptionProcessor: DescriptionProcessingService;
 
   constructor(settingsService: SettingsService) {
     this.settingsService = settingsService;
@@ -19,6 +21,11 @@ export class StorageService {
     // Store cache in app data directory for fast loading
     const appDataPath = app.getPath('userData');
     this.cacheFilePath = path.join(appDataPath, 'meetings-cache.json');
+
+    // Initialize description processor
+    this.descriptionProcessor = new DescriptionProcessingService();
+    const apiKey = settingsService.getSettings().anthropicApiKey;
+    this.descriptionProcessor.initialize(apiKey);
   }
 
   async initialize(): Promise<void> {
@@ -422,6 +429,8 @@ export class StorageService {
         recallVideoUrl: data.recall_video_url,
         recallAudioUrl: data.recall_audio_url,
         calendarEventId: data.calendar_event_id,
+        meetingUrl: data.meeting_url,
+        calendarInviteUrl: data.calendar_invite_url,
         status: data.status || 'completed',
         notes,
         transcript,
@@ -463,6 +472,8 @@ export class StorageService {
     if (meeting.recallVideoUrl !== undefined) frontmatter.recall_video_url = meeting.recallVideoUrl;
     if (meeting.recallAudioUrl !== undefined) frontmatter.recall_audio_url = meeting.recallAudioUrl;
     if (meeting.calendarEventId !== undefined) frontmatter.calendar_event_id = meeting.calendarEventId;
+    if (meeting.meetingUrl !== undefined) frontmatter.meeting_url = meeting.meetingUrl;
+    if (meeting.calendarInviteUrl !== undefined) frontmatter.calendar_invite_url = meeting.calendarInviteUrl;
 
     const content = `# Meeting Notes
 
@@ -759,6 +770,23 @@ ${meeting.transcript || ''}`;
             // Check for existing prep note
             const prepNoteContent = await this.checkForPrepNote(event);
 
+            // Process description to extract meeting URL and clean notes
+            let processedNotes = prepNoteContent || '';
+            let meetingUrl = event.meetingUrl;
+            let platform: Meeting['platform'] = 'googlemeet'; // Default
+
+            if (!prepNoteContent && event.description) {
+              try {
+                const processed = await this.descriptionProcessor.processDescription(event.description);
+                processedNotes = processed.notes;
+                meetingUrl = processed.meetingUrl || event.meetingUrl;
+                platform = (processed.platform as Meeting['platform']) || 'googlemeet';
+              } catch (error) {
+                console.log('Description processing failed, using fallback:', error);
+                processedNotes = event.description || '';
+              }
+            }
+
             const newMeeting: Partial<Meeting> = {
               title: event.title,
               date: event.start,
@@ -766,10 +794,12 @@ ${meeting.transcript || ''}`;
               endTime: event.end,
               attendees: event.attendees,
               calendarEventId: event.id,
+              meetingUrl,
+              calendarInviteUrl: event.htmlLink,
               status: 'scheduled',
-              notes: prepNoteContent || event.description || '', // Use prep note > event description > empty
+              notes: processedNotes,
               transcript: '',
-              platform: 'googlemeet' // Default assumption
+              platform
             };
 
             await this.createMeeting(newMeeting);

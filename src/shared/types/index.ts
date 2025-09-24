@@ -11,11 +11,13 @@ export interface Meeting {
   endTime?: Date;
   attendees: string[] | Attendee[];
   duration?: number;
-  platform?: 'zoom' | 'googlemeet' | 'teams' | 'slack' | 'manual';
+  platform?: 'zoom' | 'googlemeet' | 'teams' | 'slack' | 'manual' | 'webex' | 'other';
   recallRecordingId?: string | null;
   recallVideoUrl?: string;
   recallAudioUrl?: string;
   calendarEventId?: string;
+  meetingUrl?: string;  // Video conference URL
+  calendarInviteUrl?: string;  // Link to Google Calendar event
   status: 'scheduled' | 'recording' | 'completed' | 'partial' | 'error' | 'active';
   notes: string;
   transcript: string;
@@ -72,6 +74,7 @@ export interface CalendarEvent {
   location?: string;
   calendarId: string;
   meetingUrl?: string;
+  htmlLink?: string;  // Google Calendar event URL
 }
 
 export interface RecordingState {
@@ -111,6 +114,7 @@ export enum IpcChannels {
   SELECT_STORAGE_PATH = 'select-storage-path',
   OPEN_MEETING_FILE = 'open-meeting-file',
   SHOW_IN_FINDER = 'show-in-finder',
+  OPEN_EXTERNAL = 'open-external',
   CORRECT_TRANSCRIPT = 'correct-transcript',
   GENERATE_INSIGHTS = 'generate-insights',
   GET_PROFILE = 'get-profile',

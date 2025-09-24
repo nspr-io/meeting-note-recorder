@@ -220,14 +220,47 @@ const FloatingActionButton = styled.button`
   align-items: center;
   justify-content: center;
   transition: all 0.2s;
-  
+
   &:hover {
     transform: scale(1.05);
     box-shadow: 0 6px 16px rgba(0, 122, 255, 0.4);
   }
-  
+
   &:active {
     transform: scale(0.95);
+  }
+`;
+
+const Toast = styled.div<{ show: boolean }>`
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%) translateY(${props => props.show ? '0' : '100px'});
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 16px 24px;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(102, 126, 234, 0.4);
+  font-size: 14px;
+  font-weight: 500;
+  z-index: 1000;
+  opacity: ${props => props.show ? 1 : 0};
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 400px;
+
+  &::before {
+    content: '✓';
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 50%;
+    text-align: center;
+    line-height: 20px;
+    font-size: 12px;
   }
 `;
 
@@ -243,6 +276,9 @@ function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('connected');
+  const [readyToRecordMeetings, setReadyToRecordMeetings] = useState<Set<string>>(new Set());
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
 
   useEffect(() => {
     // Check if electronAPI is available
@@ -349,6 +385,28 @@ function App() {
       console.log('[JOURNEY-UI-STATE-STOP] isRecording set to false');
       loadMeetings(); // Refresh to update status
     });
+
+    // Handle auto-stop notifications
+    window.electronAPI.on('recording-auto-stopped', (data: any) => {
+      console.log('[AUTO-STOP] Recording automatically stopped:', data);
+
+      const reason = data.reason === 'window-closed'
+        ? 'Meeting window closed'
+        : 'Meeting ended';
+
+      const message = `Recording automatically stopped: ${reason}`;
+
+      // Show toast notification
+      setToastMessage(message);
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 5000);
+
+      // Also log transcript count if available
+      if (data.transcriptCount > 0) {
+        console.log(`[AUTO-STOP] Saved ${data.transcriptCount} transcript segments`);
+      }
+    });
+
     window.electronAPI.on(IpcChannels.CONNECTION_STATUS, (status: string) => {
       console.log('[JOURNEY-UI-CONNECTION] Connection status changed:', status);
       setConnectionStatus(status as 'connected' | 'disconnected');
@@ -369,6 +427,27 @@ function App() {
         if (meeting.status === 'recording' || meeting.status === 'active') {
           setTabMode('upcoming');
         }
+      }
+    });
+
+    // Listen for meeting-ready events from pre-meeting notifications
+    window.electronAPI.on('meeting-ready', (data: any) => {
+      console.log('[MEETING-READY] Meeting ready for recording:', data);
+      if (data.calendarEvent) {
+        // Add to ready set
+        setReadyToRecordMeetings(prev => {
+          const newSet = new Set(prev);
+          newSet.add(data.calendarEvent.id);
+          // Auto-clear after 5 minutes
+          setTimeout(() => {
+            setReadyToRecordMeetings(p => {
+              const updated = new Set(p);
+              updated.delete(data.calendarEvent.id);
+              return updated;
+            });
+          }, 300000);
+          return newSet;
+        });
       }
     });
   };
@@ -504,6 +583,7 @@ function App() {
                     selectedMeeting={selectedMeeting}
                     onSelectMeeting={setSelectedMeeting}
                     onSyncCalendar={handleSyncCalendar}
+                    readyToRecordMeetings={readyToRecordMeetings}
                   />
                 </>
               )}
@@ -628,6 +708,10 @@ function App() {
           +
         </FloatingActionButton>
       )}
+
+      <Toast show={showToast}>
+        {toastMessage}
+      </Toast>
     </AppContainer>
   );
 }

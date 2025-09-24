@@ -75,6 +75,22 @@ const Icons = styled.div`
   margin-left: auto;
 `;
 
+const ReadyBadge = styled.div`
+  background: #00C851;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  animation: pulse 2s infinite;
+  margin-left: auto;
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+  }
+`;
+
 const Icon = styled.span`
   font-size: 16px;
 `;
@@ -133,9 +149,10 @@ interface MeetingListProps {
   selectedMeeting: Meeting | null;
   onSelectMeeting: (meeting: Meeting) => void;
   onSyncCalendar: () => Promise<any>;
+  readyToRecordMeetings?: Set<string>;
 }
 
-function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalendar }: MeetingListProps) {
+function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalendar, readyToRecordMeetings }: MeetingListProps) {
   const [lastSyncTime, setLastSyncTime] = useState<Date>(new Date());
 
   useEffect(() => {
@@ -206,6 +223,9 @@ function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalenda
           <MeetingMeta>
             <span>{formatMeetingDate(meeting.date)}</span>
             {meeting.duration && <span>• {meeting.duration} min</span>}
+            {readyToRecordMeetings?.has(meeting.calendarEventId || meeting.id) && (
+              <ReadyBadge>Ready to Record</ReadyBadge>
+            )}
             <Icons>
               {meeting.notes && <Icon title="Has notes">📝</Icon>}
               {meeting.transcript && <Icon title="Has transcript">🎙️</Icon>}

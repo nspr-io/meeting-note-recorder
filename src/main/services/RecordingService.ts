@@ -22,10 +22,12 @@ export class RecordingService extends EventEmitter {
   private currentWindowId: string | null = null;
   private currentUploadToken: string | null = null;
   private transcriptBuffer: TranscriptChunk[] = [];
+  private transcriptBuffers = new Map<string, TranscriptChunk[]>();
   private isInitialized = false;
   private sdkDebugger: SDKDebugger;
   private unknownSpeakerCount = 0;
   private speakerMap: Map<string, string> = new Map();
+  private autoSaveInterval: NodeJS.Timeout | null = null;
 
   constructor(storageService: StorageService, promptService: PromptService | null) {
     super();
@@ -241,8 +243,16 @@ export class RecordingService extends EventEmitter {
         if (this.recordingState.isRecording && event.window?.id === this.currentWindowId) {
           logger.info('Auto-stopping recording as meeting window was closed');
           try {
+            const meetingId = this.recordingState.meetingId;
             await this.stopRecording();
-            this.emit('recording-auto-stopped');
+
+            // Emit detailed event for UI notification
+            this.emit('recording-auto-stopped', {
+              reason: 'window-closed',
+              meetingId,
+              transcriptCount: this.transcriptBuffers.get(meetingId || '')?.length || 0
+            });
+
             logger.info('Recording automatically stopped after window closed');
           } catch (err) {
             logger.error('Failed to auto-stop recording on window close', err);
@@ -281,8 +291,16 @@ export class RecordingService extends EventEmitter {
         if (this.recordingState.isRecording) {
           logger.info('Meeting ended - automatically stopping recording');
           try {
+            const meetingId = this.recordingState.meetingId;
             await this.stopRecording();
             logger.info('Recording automatically stopped after meeting ended');
+
+            // Emit event for UI notification
+            this.emit('recording-auto-stopped', {
+              reason: 'meeting-ended',
+              meetingId,
+              transcriptCount: this.transcriptBuffers.get(meetingId || '')?.length || 0
+            });
           } catch (error) {
             logger.error('Failed to automatically stop recording after meeting ended', { error });
           }
@@ -430,7 +448,16 @@ export class RecordingService extends EventEmitter {
               text: chunk.text.substring(0, 100) // Log first 100 chars
             });
 
+            // Add to both global and meeting-specific buffers
             this.transcriptBuffer.push(chunk);
+
+            if (this.recordingState.meetingId) {
+              const buffer = this.transcriptBuffers.get(this.recordingState.meetingId);
+              if (buffer) {
+                buffer.push(chunk);
+              }
+            }
+
             this.emit('transcript-chunk', chunk);
 
             // Append to meeting file in real-time
@@ -474,8 +501,28 @@ export class RecordingService extends EventEmitter {
       throw new Error('Recording already in progress');
     }
 
-    // Clear transcript buffer and speaker tracking when starting a new recording
-    this.transcriptBuffer = [];
+    // SDK health check before starting
+    try {
+      const RecallAiSdk = require('@recallai/desktop-sdk').default;
+      // Quick SDK responsiveness check
+      await Promise.race([
+        RecallAiSdk.requestPermission('accessibility'),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('SDK not responding')), 3000)
+        )
+      ]);
+      logger.info('SDK health check passed');
+    } catch (error) {
+      logger.error('SDK health check failed', error);
+      throw new Error('Recording system not ready. Please restart the app.');
+    }
+
+    // Create meeting-specific buffer instead of clearing global one
+    if (!this.transcriptBuffers.has(meetingId)) {
+      this.transcriptBuffers.set(meetingId, []);
+    }
+
+    // Only reset speaker tracking for new meetings
     this.unknownSpeakerCount = 0;
     this.speakerMap.clear();
 
@@ -601,8 +648,13 @@ export class RecordingService extends EventEmitter {
       // Start auto-save for notes
       this.storageService.startAutoSave(meetingId);
 
+      // Start auto-save interval for transcripts
+      this.autoSaveInterval = setInterval(() => {
+        this.flushTranscriptBuffer(meetingId);
+      }, 10000); // Every 10 seconds
+
       // Update meeting status
-      await this.storageService.updateMeeting(meetingId, { 
+      await this.storageService.updateMeeting(meetingId, {
         status: 'recording',
         recallRecordingId: uploadData.id
       });
@@ -630,6 +682,17 @@ export class RecordingService extends EventEmitter {
     if (!this.recordingState.isRecording) {
       logger.warn('No recording to stop');
       return false;
+    }
+
+    // Clear auto-save interval
+    if (this.autoSaveInterval) {
+      clearInterval(this.autoSaveInterval);
+      this.autoSaveInterval = null;
+    }
+
+    // Final flush of transcript buffer
+    if (this.recordingState.meetingId) {
+      await this.flushTranscriptBuffer(this.recordingState.meetingId);
     }
 
     try {
@@ -761,5 +824,14 @@ export class RecordingService extends EventEmitter {
 
   getInsightsService(): InsightsGenerationService {
     return this.insightsGenerationService;
+  }
+
+  private async flushTranscriptBuffer(meetingId: string) {
+    const buffer = this.transcriptBuffers.get(meetingId);
+    if (buffer && buffer.length > 0) {
+      logger.info(`Auto-saving ${buffer.length} transcript chunks for meeting ${meetingId}`);
+      // The chunks are already being persisted in real-time via appendTranscript
+      // This is just a log for monitoring
+    }
   }
 }

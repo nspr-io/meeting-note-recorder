@@ -46,6 +46,8 @@ const api = {
     ipcRenderer.invoke(IpcChannels.OPEN_MEETING_FILE, meetingId),
   showInFinder: (filePath: string) =>
     ipcRenderer.invoke(IpcChannels.SHOW_IN_FINDER, filePath),
+  openExternal: (url: string) =>
+    ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL, url),
 
   // Search
   searchMeetings: (options: SearchOptions) =>

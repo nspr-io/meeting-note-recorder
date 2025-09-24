@@ -3,6 +3,7 @@ import { OAuth2Client } from 'google-auth-library';
 import { CalendarEvent } from '../../shared/types';
 import { BrowserWindow } from 'electron';
 import Store from 'electron-store';
+import { EventEmitter } from 'events';
 
 const SCOPES = ['https://www.googleapis.com/auth/calendar.readonly'];
 
@@ -14,10 +15,12 @@ interface TokenStore {
   expiry_date?: number;
 }
 
-export class CalendarService {
+export class CalendarService extends EventEmitter {
   private oauth2Client: OAuth2Client;
   private tokenStore: any; // Using any to work around TypeScript issues with electron-store in tests
   private calendar: any;
+  private notificationTimer: NodeJS.Timeout | null = null;
+  private notifiedMeetings = new Set<string>();
 
   // Common video conference URL patterns
   private conferencePatterns = [
@@ -46,6 +49,7 @@ export class CalendarService {
   ];
 
   constructor() {
+    super();
     // Use the actual credentials provided by the user
     const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
     const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
@@ -248,6 +252,7 @@ export class CalendarService {
         description: event.description,
         location: event.location,
         calendarId: 'primary',
+        htmlLink: event.htmlLink,
       }));
     } catch (error: any) {
       console.error('Failed to fetch calendar events:', error);
@@ -280,6 +285,7 @@ export class CalendarService {
         description: event.description,
         location: event.location,
         calendarId: 'primary',
+        htmlLink: event.htmlLink,
       };
     } catch (error) {
       console.error('Failed to get calendar event:', error);
@@ -343,6 +349,80 @@ export class CalendarService {
     } catch (error) {
       console.error('Failed to list calendars:', error);
       throw error;
+    }
+  }
+
+  // Pre-meeting notification methods
+  startMeetingReminders() {
+    console.log('Starting meeting reminder service');
+    // Check every 30 seconds for upcoming meetings
+    this.notificationTimer = setInterval(() => {
+      this.checkForUpcomingMeetings();
+    }, 30000);
+
+    // Do an immediate check
+    this.checkForUpcomingMeetings();
+  }
+
+  stopMeetingReminders() {
+    console.log('Stopping meeting reminder service');
+    if (this.notificationTimer) {
+      clearInterval(this.notificationTimer);
+      this.notificationTimer = null;
+    }
+    this.notifiedMeetings.clear();
+  }
+
+  async checkForUpcomingMeetings() {
+    if (!this.isAuthenticated()) {
+      console.log('Calendar not authenticated, skipping reminder check');
+      return;
+    }
+
+    try {
+      const events = await this.getUpcomingEvents();
+      const now = Date.now();
+
+      for (const event of events) {
+        const startTime = new Date(event.start).getTime();
+        const timeDiff = startTime - now;
+
+        // Notify between 60-90 seconds before meeting
+        if (timeDiff > 0 && timeDiff <= 90000 && timeDiff > 30000) {
+          const key = `${event.id}-${event.start}`;
+          if (!this.notifiedMeetings.has(key)) {
+            this.notifiedMeetings.add(key);
+            console.log(`Meeting reminder: ${event.title} starts in ${Math.round(timeDiff/1000)} seconds`);
+            this.emit('meeting-reminder', event);
+          }
+        }
+      }
+
+      // Clean up old notifications (older than 2 hours)
+      this.cleanupOldNotifications();
+    } catch (error) {
+      console.error('Error checking for upcoming meetings:', error);
+    }
+  }
+
+  private cleanupOldNotifications() {
+    const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+    const toDelete: string[] = [];
+
+    this.notifiedMeetings.forEach(key => {
+      const parts = key.split('-');
+      const dateStr = parts[parts.length - 1];
+      const eventTime = new Date(dateStr).getTime();
+
+      if (eventTime < twoHoursAgo) {
+        toDelete.push(key);
+      }
+    });
+
+    toDelete.forEach(key => this.notifiedMeetings.delete(key));
+
+    if (toDelete.length > 0) {
+      console.log(`Cleaned up ${toDelete.length} old notification records`);
     }
   }
 }

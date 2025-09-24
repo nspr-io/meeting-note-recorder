@@ -126,9 +126,14 @@ async function initializeServices() {
   );
 
   // Listen for auto-stop recording events from the RecordingService
-  recordingService.on('recording-auto-stopped', async () => {
-    logger.info('Recording auto-stopped by SDK (meeting closed)');
-    const meetingId = currentRecordingMeetingId;
+  recordingService.on('recording-auto-stopped', async (data) => {
+    logger.info('Recording auto-stopped by SDK', {
+      reason: data?.reason || 'unknown',
+      meetingId: data?.meetingId,
+      transcriptCount: data?.transcriptCount
+    });
+
+    const meetingId = data?.meetingId || currentRecordingMeetingId;
     currentRecordingMeetingId = null;
 
     if (meetingId) {
@@ -138,6 +143,13 @@ async function initializeServices() {
       if (mainWindow) {
         mainWindow.webContents.send(IpcChannels.RECORDING_STOPPED);
         mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
+
+        // Send notification about auto-stop
+        mainWindow.webContents.send('recording-auto-stopped', {
+          meetingId,
+          reason: data?.reason || 'meeting-ended',
+          transcriptCount: data?.transcriptCount || 0
+        });
       }
     }
   });
@@ -255,6 +267,49 @@ async function initializeServices() {
   } catch (error) {
     logger.error('Failed to start meeting detection service', error);
   }
+
+  // Start meeting reminders if calendar is connected
+  if (calendarService.isAuthenticated()) {
+    calendarService.startMeetingReminders();
+    logger.info('Meeting reminder service started');
+  }
+
+  // Setup calendar meeting reminder handler
+  calendarService.on('meeting-reminder', (event) => {
+    logger.info('Meeting reminder triggered', { title: event.title, start: event.start });
+
+    const notification = new Notification({
+      title: 'Meeting Starting Soon',
+      body: `${event.title} starts in 1 minute`,
+      actions: [
+        { type: 'button', text: 'Open Meeting' }
+      ]
+    });
+
+    notification.on('click', () => {
+      logger.info('Notification clicked for meeting', event.title);
+
+      // Open meeting link in browser
+      if (event.meetingUrl) {
+        shell.openExternal(event.meetingUrl);
+        logger.info('Opened meeting URL', event.meetingUrl);
+      }
+
+      // Focus our app window
+      if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+
+        // Send event to renderer to show meeting ready for recording
+        mainWindow.webContents.send('meeting-ready', {
+          calendarEvent: event,
+          readyToRecord: true
+        });
+      }
+    });
+
+    notification.show();
+  });
 }
 
 function setupIpcHandlers() {
@@ -630,6 +685,17 @@ function setupIpcHandlers() {
       return true;
     } catch {
       return false;
+    }
+  });
+
+  // Open external URL
+  ipcMain.handle(IpcChannels.OPEN_EXTERNAL, async (_, url: string) => {
+    try {
+      await shell.openExternal(url);
+      return { success: true };
+    } catch (error) {
+      logger.error(`Failed to open external URL: ${url}`);
+      return { success: false, error: 'Failed to open URL' };
     }
   });
 

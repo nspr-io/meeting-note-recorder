@@ -523,6 +523,9 @@ interface MeetingDetailFinalProps {
 
 type ViewMode = 'notes' | 'transcript' | 'insights';
 
+// Module-level transcript cache to persist across component re-renders
+const transcriptCache = new Map<string, any[]>();
+
 // Error boundary for MDX Editor
 class MDXErrorBoundary extends React.Component<
   { children: React.ReactNode; fallback: React.ReactNode },
@@ -594,7 +597,9 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
-  const [transcriptSegments, setTranscriptSegments] = useState<any[]>([]);
+  const [transcriptSegments, setTranscriptSegments] = useState<any[]>(
+    transcriptCache.get(meeting.id) || []
+  );
   const [isRecording, setIsRecording] = useState(meeting.status === 'recording');
   const [showAttendees, setShowAttendees] = useState(false);
   const [isCorrecting, setIsCorrecting] = useState(false);
@@ -605,6 +610,12 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [insights, setInsights] = useState<any>(null);
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
   const mdxEditorRef = useRef<any>(null);
+  const isFirstRender = useRef(true);
+
+  // Update cache when segments change
+  useEffect(() => {
+    transcriptCache.set(meeting.id, transcriptSegments);
+  }, [meeting.id, transcriptSegments]);
 
   useEffect(() => {
     setNotes(meeting.notes || '');
@@ -612,6 +623,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     setHasChanges(false);
     setIsRecording(meeting.status === 'recording');
     setEditorKey(Date.now()); // Force complete editor remount when meeting changes
+    isFirstRender.current = true; // Reset first render flag for new meeting
 
     // Load existing insights if available
     if (meeting.insights) {
@@ -699,44 +711,32 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   useEffect(() => {
     const handleTranscriptUpdate = (data: any) => {
       console.log('[MeetingDetailFinal] Received transcript update:', data);
-      if (data.meetingId === meeting.id) {
-        // Handle both single chunks and arrays of chunks
-        const chunks = Array.isArray(data.chunks) ? data.chunks : [data];
+      if (data.meetingId !== meeting.id) return;
 
-        const newSegments = chunks
-          .filter((chunk: any) => chunk && chunk.text)
-          .map((chunk: any) => ({
-            id: `${Date.now()}-${Math.random()}`, // Unique ID for deduplication
-            time: chunk.timestamp ? new Date(chunk.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString(),
-            speaker: chunk.speaker || 'Speaker',
-            text: chunk.text
-          }));
+      setTranscriptSegments(prev => {
+        // Check for duplicates before adding
+        const isDuplicate = prev.some(
+          s => s.timestamp === data.timestamp &&
+               s.text === data.text
+        );
 
-        if (newSegments.length > 0) {
-          setTranscriptSegments(prev => {
-            // Only add segments during active recording - check isRecording state instead of meeting.status
-            if (isRecording) {
-              // Group consecutive segments from the same speaker
-              const updatedSegments = [...prev];
+        if (!isDuplicate) {
+          const newSegment = {
+            id: `${Date.now()}-${Math.random()}`,
+            time: format(new Date(data.timestamp), 'HH:mm:ss'),
+            speaker: data.speaker || 'Unknown Speaker',
+            text: data.text,
+            timestamp: data.timestamp
+          };
 
-              newSegments.forEach((newSegment: { id: string; time: string; speaker: string; text: string }) => {
-                const lastSegment = updatedSegments[updatedSegments.length - 1];
+          const updated = [...prev, newSegment];
 
-                // If last segment exists and is from the same speaker, append text
-                if (lastSegment && lastSegment.speaker === newSegment.speaker) {
-                  lastSegment.text += ' ' + newSegment.text;
-                } else {
-                  // Different speaker or no previous segment, add new one
-                  updatedSegments.push(newSegment);
-                }
-              });
-
-              return updatedSegments;
-            }
-            return prev;
-          });
+          // Update cache immediately
+          transcriptCache.set(meeting.id, updated);
+          return updated;
         }
-      }
+        return prev;
+      });
     };
 
     // Import IpcChannels to use the correct channel name
@@ -765,8 +765,17 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   };
 
   const handleNotesChange = (value: string) => {
+    // Ignore the first onChange trigger from MDXEditor mount
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      setNotes(value);
+      return;
+    }
+
     setNotes(value);
-    setHasChanges(true);
+    // Only mark as changed if the value actually differs from the original
+    const originalNotes = meeting.notes || '';
+    setHasChanges(value !== originalNotes);
   };
 
   const handleDelete = () => {
@@ -1072,6 +1081,22 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
               </Title>
             )}
             <ActionButtons>
+              {meeting.meetingUrl && (
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    if (meeting.meetingUrl) {
+                      (window as any).electronAPI.openExternal(meeting.meetingUrl);
+                    }
+                  }}
+                  style={{
+                    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                    marginRight: '8px'
+                  }}
+                >
+                  Join Meeting
+                </Button>
+              )}
               {!isRecording && (
                 <Button
                   variant="primary"
