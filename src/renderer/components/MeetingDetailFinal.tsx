@@ -521,7 +521,7 @@ interface MeetingDetailFinalProps {
   onRefresh?: () => void;
 }
 
-type ViewMode = 'notes' | 'transcript' | 'insights';
+type ViewMode = 'notes' | 'transcript' | 'insights' | 'actions';
 
 // Module-level transcript cache to persist across component re-renders
 const transcriptCache = new Map<string, any[]>();
@@ -609,6 +609,11 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [editedTitle, setEditedTitle] = useState(meeting.title);
   const [insights, setInsights] = useState<any>(null);
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
+  const [teamSummary, setTeamSummary] = useState<any>(null);
+  const [isGeneratingTeamSummary, setIsGeneratingTeamSummary] = useState(false);
+  const [editedTeamContent, setEditedTeamContent] = useState('');
+  const [slackShared, setSlackShared] = useState(meeting.slackSharedAt);
+  const [isSharing, setIsSharing] = useState(false);
   const mdxEditorRef = useRef<any>(null);
   const isFirstRender = useRef(true);
 
@@ -634,6 +639,21 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
         setInsights(null);
       }
     }
+
+    // Load existing team summary if available
+    if (meeting.teamSummary) {
+      try {
+        setTeamSummary(JSON.parse(meeting.teamSummary));
+      } catch (e) {
+        console.error('Failed to parse team summary:', e);
+        setTeamSummary(null);
+      }
+    } else {
+      setTeamSummary(null);
+    }
+
+    // Update slack shared status
+    setSlackShared(meeting.slackSharedAt);
 
     // When recording stops, clear segments and load from stored transcript
     // When recording is active, don't parse stored transcript (rely on real-time)
@@ -876,6 +896,109 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       alert('An error occurred while generating insights.');
     } finally {
       setIsGeneratingInsights(false);
+    }
+  };
+
+  const handleGenerateTeamSummary = async () => {
+    if (isGeneratingTeamSummary) return;
+
+    try {
+      setIsGeneratingTeamSummary(true);
+
+      // Call the main process to generate team summary
+      const result = await (window as any).electronAPI.generateTeamSummary(meeting.id);
+
+      if (result.success && result.teamSummary) {
+        // Parse and set the team summary
+        const parsedTeamSummary = JSON.parse(result.teamSummary);
+        setTeamSummary(parsedTeamSummary);
+
+        // Refresh meeting data to get updated team summary
+        if (onRefresh) {
+          await onRefresh();
+        }
+      } else {
+        console.error('Failed to generate team summary:', result.error);
+        alert('Failed to generate team summary. Please check your Anthropic API key in settings.');
+      }
+    } catch (error) {
+      console.error('Error generating team summary:', error);
+      alert('An error occurred while generating team summary.');
+    } finally {
+      setIsGeneratingTeamSummary(false);
+    }
+  };
+
+  const formatTeamSummary = (summary: any): string => {
+    if (!summary) return '';
+
+    let formatted = `# Meeting Summary: ${meeting.title}\n\n`;
+    formatted += `**Date:** ${format(new Date(meeting.date), 'PPP')}\n`;
+    formatted += `**Attendees:** ${Array.isArray(meeting.attendees) ? meeting.attendees.join(', ') : meeting.attendees}\n\n`;
+
+    if (summary.summary) {
+      formatted += `## Overview\n${summary.summary}\n\n`;
+    }
+
+    if (summary.keyDecisions && summary.keyDecisions.length > 0) {
+      formatted += `## Key Decisions\n`;
+      summary.keyDecisions.forEach((decision: string, index: number) => {
+        formatted += `${index + 1}. ${decision}\n`;
+      });
+      formatted += '\n';
+    }
+
+    if (summary.actionItems && summary.actionItems.length > 0) {
+      formatted += `## Action Items\n`;
+      summary.actionItems.forEach((item: any, index: number) => {
+        formatted += `${index + 1}. **${item.owner || 'Unassigned'}**: ${item.task}`;
+        if (item.due) formatted += ` (Due: ${item.due})`;
+        formatted += '\n';
+      });
+      formatted += '\n';
+    }
+
+    if (summary.followUps && summary.followUps.length > 0) {
+      formatted += `## Follow-up Items\n`;
+      summary.followUps.forEach((item: string, index: number) => {
+        formatted += `${index + 1}. ${item}\n`;
+      });
+    }
+
+    return formatted;
+  };
+
+  const handleShareToSlack = async () => {
+    if (isSharing) return;
+
+    try {
+      setIsSharing(true);
+
+      const contentToShare = editedTeamContent || formatTeamSummary(teamSummary);
+
+      // Call the main process to share to Slack
+      const result = await (window as any).electronAPI.shareToSlack({
+        meetingId: meeting.id,
+        content: contentToShare
+      });
+
+      if (result.success) {
+        setSlackShared(new Date());
+        alert('Successfully shared to Slack!');
+
+        // Refresh meeting data to get updated timestamp
+        if (onRefresh) {
+          await onRefresh();
+        }
+      } else {
+        console.error('Failed to share to Slack:', result.error);
+        alert(result.error || 'Failed to share to Slack. Please check your webhook configuration in settings.');
+      }
+    } catch (error) {
+      console.error('Error sharing to Slack:', error);
+      alert('An error occurred while sharing to Slack.');
+    } finally {
+      setIsSharing(false);
     }
   };
 
@@ -1236,6 +1359,17 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
               >
                 Insights
               </Tab>
+              <Tab
+                active={viewMode === 'actions'}
+                onClick={() => {
+                  setViewMode('actions');
+                  if (!teamSummary && !isGeneratingTeamSummary) {
+                    handleGenerateTeamSummary();
+                  }
+                }}
+              >
+                Actions
+              </Tab>
             </TabContainer>
             {meeting.filePath && (
               <ShowInFinderButton onClick={handleShowInFinder}>
@@ -1513,6 +1647,124 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   {!meeting.notes && !meeting.transcript && (
                     <p style={{ marginTop: '10px', fontSize: '12px', color: '#999' }}>
                       Add notes or a transcript first to generate insights
+                    </p>
+                  )}
+                </EmptyState>
+              )}
+            </TranscriptContainer>
+          </TabPanel>
+
+          {/* Actions Panel - Always rendered but hidden when not active */}
+          <TabPanel isActive={viewMode === 'actions'}>
+            <TranscriptContainer>
+              {teamSummary ? (
+                <div style={{ padding: '20px' }}>
+                  {slackShared && (
+                    <div style={{
+                      background: '#d4f4dd',
+                      padding: '10px',
+                      marginBottom: '20px',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      color: '#00875a'
+                    }}>
+                      ✅ Shared to Slack at {format(new Date(slackShared), 'PPp')}
+                    </div>
+                  )}
+
+                  <TranscriptHeader>
+                    <TranscriptTitle>Team Summary</TranscriptTitle>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <Button
+                        onClick={handleGenerateTeamSummary}
+                        disabled={isGeneratingTeamSummary}
+                        style={{
+                          background: '#34c759',
+                          borderColor: '#34c759',
+                          color: 'white'
+                        }}
+                      >
+                        {isGeneratingTeamSummary ? '🔄 Generating...' : '🔄 Regenerate'}
+                      </Button>
+                      <Button
+                        onClick={handleShareToSlack}
+                        disabled={isSharing || !teamSummary}
+                        style={{
+                          background: '#4a154b',
+                          borderColor: '#4a154b',
+                          color: 'white'
+                        }}
+                      >
+                        {isSharing ? '📤 Sharing...' : (slackShared ? '📤 Share Again' : '📤 Share to Slack')}
+                      </Button>
+                    </div>
+                  </TranscriptHeader>
+
+                  <div style={{ marginTop: '20px' }}>
+                    <MDXEditor
+                      key={`team-editor-${meeting.id}`}
+                      markdown={editedTeamContent || formatTeamSummary(teamSummary)}
+                      onChange={setEditedTeamContent}
+                      placeholder="Edit team summary before sharing..."
+                      plugins={[
+                        headingsPlugin(),
+                        listsPlugin(),
+                        quotePlugin(),
+                        thematicBreakPlugin(),
+                        markdownShortcutPlugin(),
+                        linkPlugin(),
+                        linkDialogPlugin(),
+                        tablePlugin(),
+                        codeBlockPlugin(),
+                        codeMirrorPlugin(),
+                        diffSourcePlugin(),
+                        toolbarPlugin({
+                          toolbarContents: () => (
+                            <>
+                              <UndoRedo />
+                              <Separator />
+                              <BoldItalicUnderlineToggles />
+                              <Separator />
+                              <ListsToggle />
+                              <Separator />
+                              <BlockTypeSelect />
+                              <Separator />
+                              <CreateLink />
+                              <InsertTable />
+                              <InsertCodeBlock />
+                              <Separator />
+                              <DiffSourceToggleWrapper>
+                                <div />
+                              </DiffSourceToggleWrapper>
+                            </>
+                          )
+                        })
+                      ]}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <EmptyState>
+                  <span className="icon">🎯</span>
+                  <h3>{isGeneratingTeamSummary ? 'Generating team summary...' : 'No team summary generated yet'}</h3>
+                  <p>Generate a team-appropriate summary from your meeting notes and transcript</p>
+                  {!isGeneratingTeamSummary && (
+                    <Button
+                      onClick={handleGenerateTeamSummary}
+                      disabled={isGeneratingTeamSummary || (!meeting.notes && !meeting.transcript)}
+                      style={{
+                        marginTop: '20px',
+                        background: '#34c759',
+                        borderColor: '#34c759',
+                        color: 'white'
+                      }}
+                    >
+                      {isGeneratingTeamSummary ? '🔄 Generating...' : '✨ Generate Team Summary'}
+                    </Button>
+                  )}
+                  {!meeting.notes && !meeting.transcript && (
+                    <p style={{ marginTop: '10px', fontSize: '12px', color: '#999' }}>
+                      Add notes or a transcript first to generate team summary
                     </p>
                   )}
                 </EmptyState>

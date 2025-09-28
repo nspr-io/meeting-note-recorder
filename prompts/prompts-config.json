@@ -19,5 +19,16 @@
       "notes",
       "transcript"
     ]
+  },
+  "team-summary": {
+    "name": "Team Summary Generation",
+    "description": "AI prompt for generating team-appropriate meeting summaries for sharing",
+    "variables": [
+      "meeting.title",
+      "meeting.date",
+      "meeting.attendees",
+      "notes",
+      "transcript"
+    ]
   }
 }

@@ -315,6 +315,75 @@ function setupIpcHandlers() {
     }
   });
 
+  ipcMain.handle(IpcChannels.GENERATE_TEAM_SUMMARY, async (_, meetingId: string) => {
+    try {
+      // Check if recording service is available
+      if (!recordingService) {
+        return { success: false, error: 'Recording service not initialized' };
+      }
+
+      // Get the meeting
+      const meeting = await storageService.getMeeting(meetingId);
+      if (!meeting) {
+        return { success: false, error: 'Meeting not found' };
+      }
+
+      // Check if insights service is available
+      const insightsService = recordingService.getInsightsService();
+      if (!insightsService || !insightsService.isAvailable()) {
+        return { success: false, error: 'Team summary generation service not available. Please check your Anthropic API key in settings.' };
+      }
+
+      try {
+        // Generate team summary
+        const teamSummary = await insightsService.generateTeamSummary(meeting);
+
+        // Update the meeting with team summary
+        await storageService.updateMeeting(meetingId, { teamSummary });
+
+        return { success: true, teamSummary };
+      } catch (error) {
+        throw error;
+      }
+    } catch (error: any) {
+      logger.error('Failed to generate team summary:', error);
+      return { success: false, error: error.message || 'Failed to generate team summary' };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.SHARE_TO_SLACK, async (_, { meetingId, content }) => {
+    try {
+      const settings = settingsService.getSettings();
+      if (!settings.slackWebhookUrl) {
+        return { success: false, error: 'No Slack webhook configured. Please add a webhook URL in settings.' };
+      }
+
+      // Check if insights service is available
+      const insightsService = recordingService.getInsightsService();
+      if (!insightsService) {
+        return { success: false, error: 'Service not available' };
+      }
+
+      // Share to Slack
+      await insightsService.shareToSlack(settings.slackWebhookUrl, content);
+
+      // Update meeting with timestamp
+      await storageService.updateMeeting(meetingId, {
+        slackSharedAt: new Date()
+      });
+
+      // Notify UI of update
+      if (mainWindow) {
+        mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Failed to share to Slack:', error);
+      return { success: false, error: error.message || 'Failed to share to Slack' };
+    }
+  });
+
   // Recording
   ipcMain.handle(IpcChannels.START_RECORDING, async (_, meetingId: string) => {
     logger.info('[JOURNEY-IPC-1] START_RECORDING IPC handler called', {
@@ -337,8 +406,8 @@ function setupIpcHandlers() {
     
     try {
       logger.info('Calling recordingService.startRecording...');
+      currentRecordingMeetingId = meetingId; // Set this BEFORE starting recording to prevent duplicate notifications
       await recordingService.startRecording(meetingId);
-      currentRecordingMeetingId = meetingId;
       
       // Update meeting status to recording
       await storageService.updateMeeting(meetingId, { status: 'recording' });
@@ -606,8 +675,18 @@ function setupMeetingDetectionHandlers() {
       platform: data.platform,
       title: data.meetingTitle,
       hasSuggested: !!data.suggestedMeeting,
+      currentlyRecording: !!currentRecordingMeetingId,
       timestamp: new Date().toISOString()
     });
+
+    // Skip notification if we're already recording something
+    if (currentRecordingMeetingId) {
+      logger.info('[JOURNEY-8-SKIP] Skipping notification - already recording', {
+        currentRecordingMeetingId,
+        detectedMeeting: data.meetingTitle
+      });
+      return;
+    }
 
     // Try to find a matching scheduled meeting
     let matchedMeeting = data.suggestedMeeting;
@@ -750,53 +829,7 @@ function setupMeetingDetectionHandlers() {
           throw new Error('Recording service not initialized');
         }
 
-        logger.info('[JOURNEY-9d-pre] Calling recordingService.startRecording');
-        await recordingService.startRecording(meetingToRecord.id);
-        logger.info('[JOURNEY-9d-post] recordingService.startRecording completed');
-
-        // Verify recording state
-        const recordingState = recordingService.getRecordingState();
-        logger.info('[JOURNEY-9d-verify] Recording started and verified', {
-          requestedMeetingId: meetingToRecord.id,
-          recordingMeetingId: recordingState?.meetingId,
-          isRecording: recordingState?.isRecording,
-          matchesRequested: recordingState?.meetingId === meetingToRecord.id
-        });
-
-        if (recordingState?.meetingId !== meetingToRecord.id) {
-          logger.error('[JOURNEY-9d-ERROR] Recording meeting ID mismatch!', {
-            expected: meetingToRecord.id,
-            actual: recordingState?.meetingId
-          });
-        }
-
-        // Show the app and navigate to the recording meeting
-        if (mainWindow) {
-          logger.info('[JOURNEY-9e] Opening app to recording meeting', {
-            meetingId: meetingToRecord.id,
-            title: meetingToRecord.title,
-            recordingMeetingId: recordingState?.meetingId
-          });
-
-          // Show and focus the window
-          mainWindow.show();
-          mainWindow.focus();
-
-          // Send the meeting to the UI with explicit recording confirmation
-          mainWindow.webContents.send(IpcChannels.RECORDING_STARTED, {
-            meetingId: meetingToRecord.id,
-            meeting: meetingToRecord,
-            title: meetingToRecord.title,
-            recordingState: recordingState
-          });
-
-          mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
-
-          logger.info('[JOURNEY-9f] App opened successfully to recording meeting', {
-            sentMeetingId: meetingToRecord.id,
-            recordingActive: recordingState?.isRecording
-          });
-        }
+        await startRecordingOnly(meetingToRecord, '[JOURNEY-9d]');
 
       } catch (error) {
         logger.error('[JOURNEY-9-ERROR] Failed to start recording from notification', {
@@ -860,6 +893,128 @@ function setupMeetingDetectionHandlers() {
     if (mainWindow) {
       mainWindow.webContents.send(IpcChannels.ERROR_OCCURRED, error);
     }
+  });
+
+  // Listen for calendar meeting reminders (proactive notifications)
+  calendarService.on('meeting-reminder', async (event) => {
+    logger.info('[MEETING-REMINDER] Meeting reminder triggered', {
+      title: event.title,
+      start: event.start,
+      minutesBeforeStart: Math.round((new Date(event.start).getTime() - Date.now()) / (1000 * 60))
+    });
+
+    const notification = new Notification({
+      title: `Meeting starting soon: ${event.title}`,
+      body: 'Click to start recording',
+      timeoutType: 'never',
+      urgency: 'normal'
+    });
+
+    notification.on('click', async () => {
+      logger.info('[MEETING-REMINDER] Notification clicked for upcoming meeting', {
+        eventId: event.id,
+        title: event.title
+      });
+
+      try {
+        // Find or create meeting and start recording
+        const meetings = await storageService.getAllMeetings();
+        let meeting = meetings.find(m => m.calendarEventId === event.id);
+
+        if (!meeting) {
+          logger.info('[MEETING-REMINDER] Creating new meeting from calendar event');
+          meeting = await storageService.createMeeting({
+            title: event.title,
+            date: new Date(event.start),
+            status: 'recording',
+            startTime: new Date(),
+            calendarEventId: event.id,
+            meetingUrl: event.meetingUrl,
+            attendees: event.attendees || [],
+            notes: '',
+            transcript: ''
+          });
+        } else {
+          logger.info('[MEETING-REMINDER] Using existing meeting from calendar event');
+          await storageService.updateMeeting(meeting.id, {
+            status: 'recording',
+            startTime: new Date()
+          });
+          meeting = await storageService.getMeeting(meeting.id);
+        }
+
+        if (!meeting) {
+          throw new Error('Failed to create or retrieve meeting');
+        }
+
+        await startRecordingWithBrowserLaunch(meeting, '[MEETING-REMINDER]');
+      } catch (error) {
+        logger.error('[MEETING-REMINDER] Failed to start recording from reminder', {
+          error: error instanceof Error ? error.message : String(error),
+          eventId: event.id,
+          title: event.title
+        });
+
+        const errorNotification = new Notification({
+          title: 'Recording Failed',
+          body: 'Could not start recording for the upcoming meeting',
+          urgency: 'critical'
+        });
+        errorNotification.show();
+      }
+    });
+
+    notification.show();
+  });
+}
+
+// Helper function for reactive notifications - only start recording (no browser launch)
+async function startRecordingOnly(meeting: Meeting, logPrefix: string): Promise<void> {
+  await recordingService.startRecording(meeting.id);
+
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send(IpcChannels.RECORDING_STARTED, { meetingId: meeting.id });
+    mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
+  }
+
+  logger.info(`${logPrefix} Successfully started recording`, {
+    meetingId: meeting.id,
+    title: meeting.title
+  });
+}
+
+// Helper function for proactive notifications - start recording AND launch browser
+async function startRecordingWithBrowserLaunch(meeting: Meeting, logPrefix: string): Promise<void> {
+  // Open meeting URL in default browser if available
+  if (meeting.meetingUrl) {
+    logger.info(`${logPrefix} Opening meeting URL in browser`, {
+      url: meeting.meetingUrl,
+      meetingTitle: meeting.title
+    });
+    try {
+      await shell.openExternal(meeting.meetingUrl);
+    } catch (urlError) {
+      logger.warn(`${logPrefix} Failed to open meeting URL`, {
+        url: meeting.meetingUrl,
+        error: urlError instanceof Error ? urlError.message : String(urlError)
+      });
+    }
+  }
+
+  await recordingService.startRecording(meeting.id);
+
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send(IpcChannels.RECORDING_STARTED, { meetingId: meeting.id });
+    mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
+  }
+
+  logger.info(`${logPrefix} Successfully started recording with browser launch`, {
+    meetingId: meeting.id,
+    title: meeting.title
   });
 }
 
@@ -992,6 +1147,12 @@ app.whenReady().then(async () => {
   
   // Setup meeting detection handlers
   setupMeetingDetectionHandlers();
+
+  // Start calendar meeting reminders if calendar is connected
+  if (settingsService.getSettings()?.googleCalendarConnected) {
+    calendarService.startMeetingReminders();
+    logger.info('Started meeting reminder service for calendar notifications');
+  }
 
   // Listen for auto-stop recording events from the RecordingService
   recordingService.on('recording-auto-stopped', async (data) => {

@@ -30,6 +30,10 @@ const api = {
     ipcRenderer.invoke(IpcChannels.CORRECT_TRANSCRIPT, meetingId),
   generateInsights: (meetingId: string) =>
     ipcRenderer.invoke(IpcChannels.GENERATE_INSIGHTS, meetingId),
+  generateTeamSummary: (meetingId: string) =>
+    ipcRenderer.invoke(IpcChannels.GENERATE_TEAM_SUMMARY, meetingId),
+  shareToSlack: (data: { meetingId: string; content: string }) =>
+    ipcRenderer.invoke(IpcChannels.SHARE_TO_SLACK, data),
 
   // Calendar
   connectCalendar: () => 

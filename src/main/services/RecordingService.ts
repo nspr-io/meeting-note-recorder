@@ -83,7 +83,32 @@ export class RecordingService extends EventEmitter {
           // Try to initialize the SDK (may fail if not installed)
           try {
             const RecallAiSdk = require('@recallai/desktop-sdk').default;
-            
+
+            // INTERCEPT and disable SDK notifications by overriding Notification API
+            logger.info('Disabling SDK notifications by intercepting Notification API');
+            const originalNotification = global.Notification;
+            if (originalNotification) {
+              // Override global Notification to prevent SDK from showing notifications
+              global.Notification = class MockNotification {
+                constructor(title, options) {
+                  logger.info(`[SDK-NOTIFICATION-BLOCKED] Blocked SDK notification: ${title}`, options);
+                  // Don't actually create the notification - return a mock object
+                  return {
+                    onclick: null,
+                    onerror: null,
+                    onshow: null,
+                    onclose: null,
+                    close: () => {},
+                    addEventListener: () => {},
+                    removeEventListener: () => {}
+                  };
+                }
+                static permission = 'granted';
+                static requestPermission = () => Promise.resolve('granted');
+              };
+              logger.info('Successfully intercepted Notification API to block SDK notifications');
+            }
+
             // First set up event listeners BEFORE init
             logger.info('Setting up SDK event listeners BEFORE init');
             this.setupSDKEventListeners();
@@ -92,7 +117,10 @@ export class RecordingService extends EventEmitter {
               apiUrl: baseApiUrl,
               api_url: baseApiUrl, // SDK accepts both keys
               acquirePermissionsOnStartup: ['accessibility', 'screen-capture', 'microphone'],
-              restartOnError: true
+              restartOnError: true,
+              showNotifications: false, // Disable SDK notifications
+              silentMode: true,
+              notificationsEnabled: false
             });
             logger.info('[REGION-CHECK] SDK will use:', { sdk_api_url: baseApiUrl });
             
@@ -101,7 +129,10 @@ export class RecordingService extends EventEmitter {
               api_url: baseApiUrl, // ensure both formats work
               acquirePermissionsOnStartup: ['accessibility', 'screen-capture', 'microphone'],
               restartOnError: true,
-              dev: process.env.NODE_ENV === 'development' // Enable dev mode for better logging
+              dev: process.env.NODE_ENV === 'development', // Enable dev mode for better logging
+              showNotifications: false, // Disable SDK automatic notifications
+              silentMode: true, // Additional option to suppress notifications
+              notificationsEnabled: false // Alternative naming for notification control
             });
             
             // Add timeout to SDK init
@@ -110,8 +141,14 @@ export class RecordingService extends EventEmitter {
             });
             
             await Promise.race([initPromise, timeoutPromise]);
-            
+
             logger.info('RecallAI SDK initialized successfully');
+
+            // RESTORE original Notification API after SDK init so our app notifications work
+            if (originalNotification) {
+              global.Notification = originalNotification;
+              logger.info('Restored original Notification API after SDK initialization');
+            }
             
             // Request accessibility permission explicitly
             logger.info('Requesting accessibility permission from SDK');
@@ -624,24 +661,40 @@ export class RecordingService extends EventEmitter {
 
       this.currentUploadToken = uploadData.upload_token;
 
-      // Find the current meeting window
-      // If we don't have a window ID, try to detect meetings first
+      // If we don't have a window ID, wait for meeting detection
       if (!this.currentWindowId) {
-        logger.info('No current window ID, detecting active meetings...');
-        const RecallAiSdk = require('@recallai/desktop-sdk').default;
+        logger.info('[RECORDING-START] No current window ID, waiting for meeting detection...', {
+          meetingId,
+          currentWindowId: this.currentWindowId
+        });
 
-        // Detect current meetings
-        const meetings = await RecallAiSdk.detectMeetings();
-        logger.info('Detected meetings:', { count: meetings?.length, meetings });
+        // Wait up to 10 seconds for a meeting to be detected
+        for (let i = 0; i < 10; i++) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
 
-        if (meetings && meetings.length > 0) {
-          // Use the first detected meeting window
-          this.currentWindowId = meetings[0].window?.id || meetings[0].id;
-          logger.info('Using detected meeting window', { windowId: this.currentWindowId });
-        } else {
-          logger.warn('No active meeting windows detected, recording may not capture properly');
-          // Fallback - this may not work but worth trying
-          this.currentWindowId = `meeting-${meetingId}`;
+          if (this.currentWindowId) {
+            logger.info('[RECORDING-START] Found window ID after waiting', {
+              windowId: this.currentWindowId,
+              waitTime: `${i + 1} seconds`
+            });
+            break;
+          }
+
+          logger.info('[RECORDING-START] Still waiting for meeting detection...', {
+            attempt: i + 1,
+            maxAttempts: 10
+          });
+        }
+
+        // If still no window ID after waiting, throw error
+        if (!this.currentWindowId) {
+          const errorMsg = 'No meeting window detected after waiting 10 seconds. Please make sure you\'re in an active meeting (Zoom, Teams, etc.) before starting recording.';
+          logger.error('[RECORDING-START-ERROR] Missing window ID after wait', {
+            error: errorMsg,
+            meetingId,
+            waitTime: '10 seconds'
+          });
+          throw new Error(errorMsg);
         }
       }
 

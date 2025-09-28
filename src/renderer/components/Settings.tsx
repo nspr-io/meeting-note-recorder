@@ -166,6 +166,7 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
   const [storagePath, setStoragePath] = useState(settings?.storagePath || '');
   const [autoStart, setAutoStart] = useState(settings?.autoStartOnBoot || false);
   const [isCalendarConnected, setIsCalendarConnected] = useState(settings?.googleCalendarConnected || false);
+  const [slackWebhookUrl, setSlackWebhookUrl] = useState(settings?.slackWebhookUrl || '');
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info', text: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isConnectingCalendar, setIsConnectingCalendar] = useState(false);
@@ -180,6 +181,7 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
       setStoragePath(settings.storagePath);
       setAutoStart(settings.autoStartOnBoot);
       setIsCalendarConnected(settings.googleCalendarConnected);
+      setSlackWebhookUrl(settings.slackWebhookUrl || '');
     }
 
     // Load permission status
@@ -416,7 +418,45 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
           )}
         </div>
       </Section>
-      
+
+      <Section>
+        <SectionTitle>Slack Integration</SectionTitle>
+        <div style={{ fontSize: '13px', color: '#86868b', marginBottom: '16px' }}>
+          Share meeting summaries to your team's Slack channel using webhook integration.
+        </div>
+
+        <FormGroup>
+          <Label>Webhook URL</Label>
+          <PasswordInput
+            type="password"
+            value={slackWebhookUrl}
+            onChange={(e) => setSlackWebhookUrl(e.target.value)}
+            placeholder="https://hooks.slack.com/services/..."
+          />
+          <div style={{ fontSize: '11px', color: '#86868b', marginTop: '4px' }}>
+            Create a webhook in your Slack workspace to enable sharing. Visit slack.com/apps to set up.
+          </div>
+        </FormGroup>
+
+        <Button
+          onClick={async () => {
+            try {
+              setIsSaving(true);
+              await onUpdateSettings({ slackWebhookUrl });
+              setStatusMessage({ type: 'success', text: 'Slack webhook saved successfully' });
+              setTimeout(() => setStatusMessage(null), 3000);
+            } catch (error) {
+              setStatusMessage({ type: 'error', text: 'Failed to save Slack webhook' });
+            } finally {
+              setIsSaving(false);
+            }
+          }}
+          disabled={isSaving}
+        >
+          {isSaving ? 'Saving...' : 'Save Webhook'}
+        </Button>
+      </Section>
+
       <Section>
         <SectionTitle>System Permissions</SectionTitle>
         <div style={{ fontSize: '13px', marginBottom: '16px' }}>

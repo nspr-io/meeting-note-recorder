@@ -22,9 +22,12 @@ export interface Meeting {
   notes: string;
   transcript: string;
   insights?: string; // JSON string containing summary, action items, decisions
+  teamSummary?: string; // JSON string containing team-appropriate summary
+  slackSharedAt?: Date; // Timestamp when shared to Slack
   filePath?: string;
   createdAt?: Date;
   updatedAt?: Date;
+  autoRecordApproved?: boolean; // Flag to track if user pre-approved recording
 }
 
 export interface MeetingNotification {
@@ -62,6 +65,7 @@ export interface AppSettings {
   googleCalendarConnected: boolean;
   autoStartOnBoot: boolean;
   selectedCalendars: string[];
+  slackWebhookUrl?: string;
 }
 
 export interface CalendarEvent {
@@ -117,6 +121,8 @@ export enum IpcChannels {
   OPEN_EXTERNAL = 'open-external',
   CORRECT_TRANSCRIPT = 'correct-transcript',
   GENERATE_INSIGHTS = 'generate-insights',
+  GENERATE_TEAM_SUMMARY = 'generate-team-summary',
+  SHARE_TO_SLACK = 'share-to-slack',
   GET_PROFILE = 'get-profile',
   UPDATE_PROFILE = 'update-profile',
 

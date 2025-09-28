@@ -165,6 +165,110 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
   }
 
   /**
+   * Generate team summary from meeting notes and transcript
+   */
+  async generateTeamSummary(meeting: Meeting): Promise<string> {
+    if (!this.anthropic) {
+      logger.info('Team summary generation skipped - no Anthropic API key configured');
+      throw new Error('Team summary generation not available');
+    }
+
+    logger.info(`Starting team summary generation for meeting ${meeting.id}`);
+
+    try {
+      const systemPrompt = await this.getSystemPromptForType('team-summary', meeting, null);
+      const prompt = this.buildPrompt(meeting, null);
+
+      const response = await this.anthropic.messages.create({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 4096,
+        temperature: 0.3,
+        system: systemPrompt,
+        messages: [{
+          role: 'user',
+          content: prompt
+        }]
+      });
+
+      if (response.content[0].type === 'text') {
+        const teamSummaryJson = response.content[0].text.trim();
+
+        // Validate it's proper JSON
+        try {
+          JSON.parse(teamSummaryJson);
+        } catch (e) {
+          logger.error('Invalid JSON response from AI:', e);
+          throw new Error('Invalid response format from AI');
+        }
+
+        logger.info(`Team summary generation completed for meeting ${meeting.id}`);
+        return teamSummaryJson;
+      }
+
+      throw new Error('Unexpected response format from AI');
+
+    } catch (error) {
+      logger.error('Failed to generate team summary:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Share content to Slack webhook
+   */
+  async shareToSlack(webhookUrl: string, content: string): Promise<void> {
+    if (!webhookUrl) {
+      throw new Error('No Slack webhook URL configured');
+    }
+
+    logger.info('Sharing content to Slack');
+
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: content,
+          unfurl_links: false,
+          unfurl_media: false
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Slack webhook failed: ${response.status} ${errorText}`);
+      }
+
+      logger.info('Content shared to Slack successfully');
+    } catch (error) {
+      logger.error('Failed to share to Slack:', error);
+      throw error;
+    }
+  }
+
+  private async getSystemPromptForType(promptType: string, meeting: Meeting, userProfile?: UserProfile | null): Promise<string> {
+    try {
+      if (!this.promptService) {
+        logger.warn('PromptService not available, using fallback prompt');
+        throw new Error('PromptService not initialized');
+      }
+      return await this.promptService.getInterpolatedPrompt(promptType, {
+        userProfile,
+        meeting,
+        transcript: meeting.transcript,
+        notes: meeting.notes
+      });
+    } catch (error) {
+      logger.error(`Failed to load ${promptType} prompt, using fallback:`, error);
+      // Fallback prompt based on type
+      if (promptType === 'team-summary') {
+        return 'You are preparing a team update. Create a sanitized summary removing personal notes or sensitive information. Focus on key decisions, action items with owners, and required follow-ups. Return JSON with: summary, actionItems, keyDecisions, followUps.';
+      }
+      return 'You are an experienced Executive Assistant. Analyze the meeting content and produce structured insights in JSON format with summary, actionItems, keyDecisions, followUps, and notesHighlights.';
+    }
+  }
+
+  /**
    * Check if insights service is available
    */
   isAvailable(): boolean {

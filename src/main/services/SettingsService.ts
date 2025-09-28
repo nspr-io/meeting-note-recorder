@@ -17,7 +17,8 @@ export class SettingsService {
     autoStartOnBoot: false,
     selectedCalendars: [],
     recallApiKey: process.env.RECALL_API_KEY || '',
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY || ''
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+    slackWebhookUrl: ''
   };
 
   constructor() {
@@ -65,13 +66,15 @@ export class SettingsService {
       autoStartOnBoot: this.store.get('autoStartOnBoot') || false,
       selectedCalendars: this.store.get('selectedCalendars') || [],
       recallApiKey: this.getApiKey(),
-      anthropicApiKey: this.getAnthropicApiKey()
+      anthropicApiKey: this.getAnthropicApiKey(),
+      slackWebhookUrl: this.store.get('slackWebhookUrl') || ''
     } : this.store.store;
     // Include the API keys from environment or store
     return {
       ...settings,
       recallApiKey: this.getApiKey(),
-      anthropicApiKey: this.getAnthropicApiKey()
+      anthropicApiKey: this.getAnthropicApiKey(),
+      slackWebhookUrl: this.store.get ? this.store.get('slackWebhookUrl') || '' : this.store.store?.slackWebhookUrl || ''
     };
   }
 
