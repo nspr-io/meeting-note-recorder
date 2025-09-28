@@ -43,9 +43,10 @@ export class MeetingDetectionService extends EventEmitter {
   }
 
   private setupSDKEventListeners(): void {
+    logger.info('[DETECTION] Setting up SDK event listeners');
     // Listen for meetings detected by the RecallAI SDK
     this.recordingService.on('sdk-meeting-detected', async (event: MeetingDetectedEvent) => {
-      logger.info('[JOURNEY-3] Meeting detection service received SDK event', {
+      logger.info('[DETECTION-FLOW] Meeting detected by SDK', {
         ...event,
         timestamp: new Date().toISOString()
       });
@@ -122,12 +123,17 @@ export class MeetingDetectionService extends EventEmitter {
   }
 
   async startMonitoring(): Promise<void> {
+    logger.info('[DETECTION] startMonitoring called', {
+      isMonitoring: this.isMonitoring,
+      timestamp: new Date().toISOString()
+    });
+
     if (this.isMonitoring) {
-      logger.warn('Meeting detection already running');
+      logger.warn('[DETECTION] Meeting detection already running');
       return;
     }
 
-    logger.info('Meeting detection service ready (SDK handles detection)');
+    logger.info('[DETECTION] Meeting detection service starting');
     this.isMonitoring = true;
     
     // The RecallAI SDK automatically detects meetings once initialized
@@ -136,7 +142,10 @@ export class MeetingDetectionService extends EventEmitter {
   }
 
   stopMonitoring(): void {
-    logger.info('Stopping meeting detection monitoring');
+    logger.info('[DETECTION] Stopping meeting detection', {
+      detectedCount: this.detectedMeetings.size,
+      dismissedCount: this.dismissedMeetings.size
+    });
     this.isMonitoring = false;
     this.detectedMeetings.clear();
     this.dismissedMeetings.clear();
@@ -147,6 +156,10 @@ export class MeetingDetectionService extends EventEmitter {
   }
 
   private async findMatchingCalendarEvent(detectedMeeting: MeetingDetectedEvent): Promise<CalendarEvent | undefined> {
+    logger.debug('[DETECTION] Finding matching calendar event', {
+      platform: detectedMeeting.platform,
+      title: detectedMeeting.meetingTitle
+    });
     try {
       // Get upcoming calendar events
       const upcomingEvents = await this.calendarService.getUpcomingEvents();
@@ -186,6 +199,10 @@ export class MeetingDetectionService extends EventEmitter {
   }
 
   async createManualMeeting(title: string): Promise<Meeting> {
+    logger.info('[DETECTION] Creating manual meeting', {
+      title,
+      timestamp: new Date().toISOString()
+    });
     const meetingId = uuidv4();
     const meeting: Meeting = {
       id: meetingId,
@@ -201,8 +218,12 @@ export class MeetingDetectionService extends EventEmitter {
     };
 
     await this.storageService.saveMeeting(meeting);
-    logger.info('Created manual meeting', { meetingId, title });
-    
+    logger.info('[DETECTION] Manual meeting created', {
+      meetingId,
+      title,
+      platform: 'manual'
+    });
+
     return meeting;
   }
 

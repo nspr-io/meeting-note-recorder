@@ -640,13 +640,18 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     // When viewing completed meetings, parse the stored transcript
     if (meeting.status !== 'recording') {
       if (meeting.transcript) {
-        setTranscriptSegments(parseTranscript(meeting.transcript));
+        const parsed = parseTranscript(meeting.transcript);
+        setTranscriptSegments(parsed);
+        // Clear the cache when we parse from stored transcript to avoid duplicates
+        transcriptCache.set(meeting.id, parsed);
       } else {
         setTranscriptSegments([]);
+        transcriptCache.set(meeting.id, []);
       }
     } else if (meeting.status === 'recording' && !isRecording) {
       // Just started recording - clear old segments
       setTranscriptSegments([]);
+      transcriptCache.set(meeting.id, []);
     }
   }, [meeting.id, meeting.status, meeting.transcript, meeting.title]);
 
@@ -707,8 +712,16 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     };
   }, [meeting.id, onRefresh]);
 
+  // Create a stable reference for the transcript handler
+  const handleTranscriptUpdateRef = useRef<any>(null);
+
   // Listen for real-time transcript updates
   useEffect(() => {
+    // Remove any existing listener before adding a new one
+    if (handleTranscriptUpdateRef.current) {
+      (window as any).electronAPI?.removeListener?.('transcript-update', handleTranscriptUpdateRef.current);
+    }
+
     const handleTranscriptUpdate = (data: any) => {
       console.log('[MeetingDetailFinal] Received transcript update:', data);
       if (data.meetingId !== meeting.id) return;
@@ -739,18 +752,19 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       });
     };
 
-    // Import IpcChannels to use the correct channel name
-    const IpcChannels = {
-      TRANSCRIPT_UPDATE: 'transcript-update'
-    };
+    // Store the handler reference
+    handleTranscriptUpdateRef.current = handleTranscriptUpdate;
 
     // Listen for transcript updates using the correct channel
-    (window as any).electronAPI?.on?.(IpcChannels.TRANSCRIPT_UPDATE, handleTranscriptUpdate);
+    (window as any).electronAPI?.on?.('transcript-update', handleTranscriptUpdate);
 
     return () => {
-      (window as any).electronAPI?.removeListener?.(IpcChannels.TRANSCRIPT_UPDATE, handleTranscriptUpdate);
+      if (handleTranscriptUpdateRef.current) {
+        (window as any).electronAPI?.removeListener?.('transcript-update', handleTranscriptUpdateRef.current);
+        handleTranscriptUpdateRef.current = null;
+      }
     };
-  }, [meeting.id, meeting.status, isRecording]);
+  }, [meeting.id]);
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -1097,6 +1111,22 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   Join Meeting
                 </Button>
               )}
+              {meeting.calendarInviteUrl && (
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    if (meeting.calendarInviteUrl) {
+                      (window as any).electronAPI.openExternal(meeting.calendarInviteUrl);
+                    }
+                  }}
+                  style={{
+                    marginRight: '8px',
+                    border: '1px solid #e2e8f0'
+                  }}
+                >
+                  📅 Calendar Event
+                </Button>
+              )}
               {!isRecording && (
                 <Button
                   variant="primary"
@@ -1118,7 +1148,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   variant="danger"
                   onClick={async () => {
                     try {
-                      await (window as any).electronAPI.stopRecording();
+                      await (window as any).electronAPI.stopRecording(meeting.id);
                       setIsRecording(false);
                     } catch (error) {
                       console.error('Failed to stop recording:', error);
@@ -1332,19 +1362,9 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                       </Button>
                     )}
                   </TranscriptHeader>
-                  {/* Show saved transcript if available */}
-                  {meeting.transcript && parseTranscript(meeting.transcript).map((segment, index) => (
-                    <TranscriptSegment key={`saved-${index}`}>
-                      <TranscriptMeta>
-                        <TranscriptTime>{segment.time}</TranscriptTime>
-                        <TranscriptSpeaker>{segment.speaker}</TranscriptSpeaker>
-                      </TranscriptMeta>
-                      <TranscriptText>{(segment as any).text}</TranscriptText>
-                    </TranscriptSegment>
-                  ))}
-                  {/* Show real-time transcript segments */}
+                  {/* Show transcript (real-time updates during recording, parsed saved transcript after) */}
                   {transcriptSegments.map((segment, index) => (
-                    <TranscriptSegment key={`realtime-${index}`}>
+                    <TranscriptSegment key={index}>
                       <TranscriptMeta>
                         <TranscriptTime>{segment.time}</TranscriptTime>
                         <TranscriptSpeaker>{segment.speaker}</TranscriptSpeaker>

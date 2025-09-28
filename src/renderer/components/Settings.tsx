@@ -161,7 +161,7 @@ interface SettingsProps {
 
 function Settings({ settings, onUpdateSettings }: SettingsProps) {
   const [apiKey, setApiKey] = useState(settings?.recallApiKey || '');
-  const [apiUrl, setApiUrl] = useState(settings?.recallApiUrl || 'https://us-east-1.recall.ai');
+  const [apiUrl, setApiUrl] = useState(settings?.recallApiUrl || 'https://us-west-2.recall.ai');
   const [anthropicApiKey, setAnthropicApiKey] = useState(settings?.anthropicApiKey || '');
   const [storagePath, setStoragePath] = useState(settings?.storagePath || '');
   const [autoStart, setAutoStart] = useState(settings?.autoStartOnBoot || false);

@@ -17,6 +17,42 @@ import { IpcChannels, Meeting, UserProfile, SearchOptions } from '../shared/type
 
 const logger = getLogger();
 
+// Add process-level error handlers to catch all uncaught exceptions
+process.on('uncaughtException', (error) => {
+  logger.error('[PROCESS-ERROR] Uncaught Exception:', {
+    error: error.message,
+    stack: error.stack,
+    name: error.name,
+    timestamp: new Date().toISOString()
+  });
+  console.error('[PROCESS-ERROR] Uncaught Exception:', error);
+
+  // Try to save any pending data before potential crash
+  if (storageService) {
+    logger.error('[PROCESS-ERROR] Attempting emergency cache save...');
+    storageService.forceSave().catch(err => {
+      logger.error('[PROCESS-ERROR] Emergency save failed:', err);
+    });
+  }
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('[PROCESS-ERROR] Unhandled Rejection at:', {
+    promise: promise,
+    reason: reason,
+    timestamp: new Date().toISOString()
+  });
+  console.error('[PROCESS-ERROR] Unhandled Rejection at:', promise, 'reason:', reason);
+
+  // Try to save any pending data
+  if (storageService) {
+    logger.error('[PROCESS-ERROR] Attempting cache save after unhandled rejection...');
+    storageService.forceSave().catch(err => {
+      logger.error('[PROCESS-ERROR] Emergency save failed:', err);
+    });
+  }
+});
+
 let mainWindow: BrowserWindow | null = null;
 let meetingDetectionService: MeetingDetectionService;
 let recordingService: RecordingService;
@@ -63,252 +99,6 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
-  });
-}
-
-async function initializeServices() {
-  logger.info('Initializing services...');
-  
-  // Initialize permission service first
-  permissionService = new PermissionService();
-  const permissionStatus = await permissionService.checkAllPermissions();
-  logger.info('Permission status', permissionStatus);
-  
-  // Don't automatically request permissions on startup - let user do it manually
-  // or wait until they try to record
-  const hasRequiredPermissions = await permissionService.hasRequiredPermissions();
-  if (!hasRequiredPermissions) {
-    logger.info('Some permissions missing - user can grant them via Settings or when starting recording');
-  }
-  
-  settingsService = new SettingsService();
-  await settingsService.initialize();
-  logger.info('Settings service initialized', settingsService.getSettings());
-
-  try {
-    logger.info('Creating PromptService instance...');
-    promptService = new PromptService();
-    logger.info('PromptService instance created, initializing...');
-    await promptService.initialize();
-    logger.info('Prompt service initialized successfully');
-  } catch (error) {
-    logger.error('FATAL: Failed to initialize PromptService:', error);
-    // Continue without PromptService for now to avoid breaking the app
-    promptService = null;
-  }
-
-  storageService = new StorageService(settingsService);
-  await storageService.initialize();
-
-  searchService = new SearchService();
-  const meetings = await storageService.getAllMeetings();
-  searchService.updateIndex(meetings);
-
-  calendarService = new CalendarService();
-
-  recordingService = new RecordingService(storageService, promptService);
-  
-  // Initialize recording service with API key and URL from settings
-  const settings = settingsService.getSettings();
-  if (settings.recallApiKey) {
-    // Force us-west-2 region for the API
-    const apiUrl = 'https://us-west-2.recall.ai';
-    await recordingService.initialize(settings.recallApiKey, apiUrl, settings.anthropicApiKey);
-  } else {
-    logger.warn('No Recall API key found in settings');
-  }
-  
-  meetingDetectionService = new MeetingDetectionService(
-    settingsService,
-    recordingService,
-    storageService,
-    calendarService
-  );
-
-  // Listen for auto-stop recording events from the RecordingService
-  recordingService.on('recording-auto-stopped', async (data) => {
-    logger.info('Recording auto-stopped by SDK', {
-      reason: data?.reason || 'unknown',
-      meetingId: data?.meetingId,
-      transcriptCount: data?.transcriptCount
-    });
-
-    const meetingId = data?.meetingId || currentRecordingMeetingId;
-    currentRecordingMeetingId = null;
-
-    if (meetingId) {
-      // Update meeting status to completed
-      await storageService.updateMeeting(meetingId, { status: 'completed' });
-
-      if (mainWindow) {
-        mainWindow.webContents.send(IpcChannels.RECORDING_STOPPED);
-        mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
-
-        // Send notification about auto-stop
-        mainWindow.webContents.send('recording-auto-stopped', {
-          meetingId,
-          reason: data?.reason || 'meeting-ended',
-          transcriptCount: data?.transcriptCount || 0
-        });
-      }
-    }
-  });
-
-  // IMPORTANT: Register event listener BEFORE starting monitoring
-  // Otherwise we miss events that fire during initialization
-  logger.info('Registering meeting detection event listener');
-  meetingDetectionService.on('meeting-detected', async (event) => {
-      logger.info('🔔 [JOURNEY-START] Meeting detected event received', {
-        event: JSON.stringify(event, null, 2)
-      });
-      // Extract proper meeting title from various sources
-      const meetingTitle = event.meetingTitle || 
-                          event.suggestedMeeting?.title || 
-                          `${event.platform.charAt(0).toUpperCase() + event.platform.slice(1)} Meeting`;
-      
-      logger.info('🔔 Meeting detected, preparing notification', {
-        title: meetingTitle,
-        platform: event.platform,
-        windowId: event.windowId,
-        fullEvent: event
-      });
-      
-      // Store the window ID for recording
-      if (event.windowId) {
-        recordingService.setCurrentWindow(event.windowId);
-        logger.info('Set current window for recording', { windowId: event.windowId });
-      }
-      
-      // Create notification - just title and body, no actions to avoid dropdown
-      const notification = new Notification({
-        title: `Meeting: ${meetingTitle}`,
-        body: `Click to start recording`,
-        silent: false
-      });
-      
-      // Handle click on notification body  
-      notification.on('click', async () => {
-        logger.info('👆 [JOURNEY-NOTIFICATION-CLICKED] User clicked notification', { 
-          title: meetingTitle,
-          windowId: event.windowId 
-        });
-        
-        try {
-          // Create meeting with proper title
-          logger.info('📝 [JOURNEY-CREATING-MEETING] Creating new meeting...');
-          const meeting = await storageService.createMeeting({
-            title: meetingTitle,
-            platform: event.platform,
-            status: 'active'
-          });
-          
-          logger.info('✅ [JOURNEY-MEETING-CREATED] Meeting created successfully', {
-            meeting: JSON.stringify(meeting, null, 2)
-          });
-          
-          // Start recording (windowId already set above)
-          logger.info('🎬 [JOURNEY-START-RECORDING] Starting SDK recording...');
-          await recordingService.startRecording(meeting.id);
-          logger.info('✅ [JOURNEY-RECORDING-STARTED] Recording started');
-          
-          logger.info('Recording started, updating UI');
-
-          // Set the current recording meeting ID
-          currentRecordingMeetingId = meeting.id;
-
-          if (mainWindow) {
-            // Show and focus the window
-            mainWindow.show();
-            mainWindow.focus();
-
-            // Send the complete meeting object along with the recording started event
-            // This ensures the UI has all the data it needs immediately
-            logger.info('📨 [JOURNEY-SEND-TO-UI] Sending RECORDING_STARTED event to renderer', {
-              meetingId: meeting.id,
-              hasWindow: !!mainWindow
-            });
-            mainWindow.webContents.send(IpcChannels.RECORDING_STARTED, {
-              meetingId: meeting.id,
-              meeting: meeting,  // Send the full meeting object
-              title: meetingTitle
-            });
-
-            // Also update the meetings list
-            logger.info('📨 [JOURNEY-SEND-TO-UI] Sending MEETINGS_UPDATED event');
-            mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
-
-            logger.info('Meeting opened in UI', { meetingId: meeting.id });
-          }
-        } catch (error) {
-          logger.error('Failed to start recording from notification', { error, title: meetingTitle });
-          
-          // Show error notification
-          const errorNotification = new Notification({
-            title: 'Recording Failed',
-            body: 'Could not start recording. Please check logs.'
-          });
-          errorNotification.show();
-        }
-      });
-      
-      notification.show();
-      logger.info('Notification shown', { title: meetingTitle });
-      
-      // Also notify the renderer
-      if (mainWindow) {
-        mainWindow.webContents.send(IpcChannels.MEETING_DETECTED, event);
-      }
-    });
-
-  // Now actually START the meeting detection service
-  try {
-    await meetingDetectionService.startMonitoring();
-    logger.info('Meeting detection service started successfully');
-  } catch (error) {
-    logger.error('Failed to start meeting detection service', error);
-  }
-
-  // Start meeting reminders if calendar is connected
-  if (calendarService.isAuthenticated()) {
-    calendarService.startMeetingReminders();
-    logger.info('Meeting reminder service started');
-  }
-
-  // Setup calendar meeting reminder handler
-  calendarService.on('meeting-reminder', (event) => {
-    logger.info('Meeting reminder triggered', { title: event.title, start: event.start });
-
-    const notification = new Notification({
-      title: 'Meeting Starting Soon',
-      body: `${event.title} starts in 1 minute`,
-      actions: [
-        { type: 'button', text: 'Open Meeting' }
-      ]
-    });
-
-    notification.on('click', () => {
-      logger.info('Notification clicked for meeting', event.title);
-
-      // Open meeting link in browser
-      if (event.meetingUrl) {
-        shell.openExternal(event.meetingUrl);
-        logger.info('Opened meeting URL', event.meetingUrl);
-      }
-
-      // Focus our app window
-      if (mainWindow) {
-        mainWindow.show();
-        mainWindow.focus();
-
-        // Send event to renderer to show meeting ready for recording
-        mainWindow.webContents.send('meeting-ready', {
-          calendarEvent: event,
-          readyToRecord: true
-        });
-      }
-    });
-
-    notification.show();
   });
 }
 
@@ -575,18 +365,32 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle(IpcChannels.STOP_RECORDING, async () => {
-    logger.info('Stop recording requested');
+  ipcMain.handle(IpcChannels.STOP_RECORDING, async (_, meetingIdFromUI?: string) => {
+    logger.info('Stop recording requested', { meetingIdFromUI });
     try {
-      const meetingId = currentRecordingMeetingId;
-      await recordingService.stopRecording();
+      const meetingId = currentRecordingMeetingId || meetingIdFromUI;
+      const recordingStopped = await recordingService.stopRecording();
       currentRecordingMeetingId = null;
-      
-      if (meetingId) {
-        // Update meeting status to completed
-        await storageService.updateMeeting(meetingId, { status: 'completed' });
+
+      // If recording service didn't stop anything but we have a meeting ID,
+      // it means the meeting was stuck in recording state (e.g., after app restart)
+      if (!recordingStopped && meetingId) {
+        logger.info('Cleaning up stuck recording state for meeting', { meetingId });
+        const meeting = await storageService.getMeeting(meetingId);
+        if (meeting && meeting.status === 'recording') {
+          await storageService.updateMeeting(meetingId, {
+            status: 'completed',
+            endTime: new Date()
+          });
+        }
+      } else if (meetingId) {
+        // Normal stop recording flow
+        await storageService.updateMeeting(meetingId, {
+          status: 'completed',
+          endTime: new Date()
+        });
       }
-      
+
       if (mainWindow) {
         mainWindow.webContents.send(IpcChannels.RECORDING_STOPPED);
         mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
@@ -851,15 +655,41 @@ function setupMeetingDetectionHandlers() {
             title: matchedMeeting.title
           });
 
-          // Update the meeting status to recording
-          await storageService.updateMeeting(matchedMeeting.id, {
-            status: 'recording',
-            startTime: new Date(),
-            platform: data.platform as Meeting['platform']
-          });
+          // First check if the meeting actually exists in storage
+          try {
+            const existingMeeting = await storageService.getMeeting(matchedMeeting.id);
+            if (existingMeeting) {
+              // Update the existing meeting status to recording
+              await storageService.updateMeeting(matchedMeeting.id, {
+                status: 'recording',
+                startTime: new Date(),
+                platform: data.platform as Meeting['platform']
+              });
+              meetingToRecord = await storageService.getMeeting(matchedMeeting.id);
+            } else {
+              throw new Error('Meeting not found in storage');
+            }
+          } catch (error) {
+            // Meeting doesn't exist in storage, create it
+            logger.info('[JOURNEY-9a-fallback] Meeting not in storage, creating new', {
+              calendarEventId: matchedMeeting.id,
+              title: matchedMeeting.title
+            });
 
-          // Get the updated meeting
-          meetingToRecord = await storageService.getMeeting(matchedMeeting.id);
+            meetingToRecord = await storageService.createMeeting({
+              title: matchedMeeting.title || data.meetingTitle || 'Untitled Meeting',
+              date: matchedMeeting.date || new Date(),
+              status: 'recording',
+              startTime: new Date(),
+              platform: data.platform as Meeting['platform'],
+              calendarEventId: matchedMeeting.calendarEventId || matchedMeeting.id,
+              meetingUrl: matchedMeeting.meetingUrl,
+              calendarInviteUrl: matchedMeeting.calendarInviteUrl,
+              attendees: matchedMeeting.attendees || [],
+              notes: matchedMeeting.notes || '',
+              transcript: ''
+            });
+          }
         } else {
           // Create new meeting for recording
           logger.info('[JOURNEY-9b] Creating new meeting for recording', {
@@ -867,31 +697,62 @@ function setupMeetingDetectionHandlers() {
             windowId: data.windowId
           });
 
-          meetingToRecord = await storageService.createMeeting({
-            title: data.meetingTitle || 'Untitled Meeting',
-            date: new Date(),
-            status: 'recording',
-            startTime: new Date(),
-            platform: data.platform as Meeting['platform'],
-            notes: '',
-            transcript: ''
-          });
+          try {
+            logger.info('[JOURNEY-9b-pre-create] About to call storageService.createMeeting');
 
-          logger.info('[JOURNEY-9c] New meeting created', {
-            meetingId: meetingToRecord.id,
-            title: meetingToRecord.title,
-            status: meetingToRecord.status
-          });
+            meetingToRecord = await storageService.createMeeting({
+              title: data.meetingTitle || 'Untitled Meeting',
+              date: new Date(),
+              status: 'recording',
+              startTime: new Date(),
+              platform: data.platform as Meeting['platform'],
+              notes: '',
+              transcript: ''
+            });
+
+            logger.info('[JOURNEY-9c] New meeting created successfully', {
+              meetingId: meetingToRecord.id,
+              title: meetingToRecord.title,
+              status: meetingToRecord.status
+            });
+
+            // Force save immediately after creation
+            logger.info('[JOURNEY-9c-force-save] Forcing cache save after meeting creation');
+            try {
+              await storageService.forceSave();
+              logger.info('[JOURNEY-9c-force-save-success] Cache saved successfully');
+            } catch (saveError) {
+              logger.error('[JOURNEY-9c-force-save-error] Failed to force save cache', {
+                error: saveError instanceof Error ? saveError.message : String(saveError),
+                stack: saveError instanceof Error ? saveError.stack : undefined
+              });
+            }
+          } catch (createError) {
+            logger.error('[JOURNEY-9b-ERROR] Failed to create meeting', {
+              error: createError instanceof Error ? createError.message : String(createError),
+              stack: createError instanceof Error ? createError.stack : undefined,
+              name: createError instanceof Error ? createError.name : undefined
+            });
+            throw createError;
+          }
         }
 
         // Start recording with proper meeting ID
         logger.info('[JOURNEY-9d] About to start recording', {
           meetingId: meetingToRecord.id,
           meetingTitle: meetingToRecord.title,
-          meetingStatus: meetingToRecord.status
+          meetingStatus: meetingToRecord.status,
+          recordingServiceExists: !!recordingService,
+          recordingServiceInitialized: recordingService?.getInitializedStatus()
         });
 
+        if (!recordingService) {
+          throw new Error('Recording service not initialized');
+        }
+
+        logger.info('[JOURNEY-9d-pre] Calling recordingService.startRecording');
         await recordingService.startRecording(meetingToRecord.id);
+        logger.info('[JOURNEY-9d-post] recordingService.startRecording completed');
 
         // Verify recording state
         const recordingState = recordingService.getRecordingState();
@@ -941,8 +802,21 @@ function setupMeetingDetectionHandlers() {
         logger.error('[JOURNEY-9-ERROR] Failed to start recording from notification', {
           error: error instanceof Error ? error.message : String(error),
           stack: error instanceof Error ? error.stack : undefined,
-          windowId: data.windowId
+          name: error instanceof Error ? error.name : undefined,
+          windowId: data.windowId,
+          timestamp: new Date().toISOString()
         });
+
+        // Try to save any pending data
+        try {
+          logger.info('[JOURNEY-9-ERROR-SAVE] Attempting emergency save after error');
+          await storageService.forceSave();
+          logger.info('[JOURNEY-9-ERROR-SAVE] Emergency save completed');
+        } catch (saveError) {
+          logger.error('[JOURNEY-9-ERROR-SAVE-FAILED] Emergency save failed', {
+            error: saveError instanceof Error ? saveError.message : String(saveError)
+          });
+        }
 
         // Show error notification
         const errorNotification = new Notification({
@@ -996,8 +870,14 @@ async function initializeSDKInBackground() {
   
   const settings = settingsService.getSettings();
   if (settings.recallApiKey) {
-    const apiUrl = 'https://us-west-2.recall.ai';
-    
+    // Prioritize environment variable to prevent region mismatch with API key
+    const apiUrl = process.env.RECALL_API_URL || settings.recallApiUrl || 'https://us-west-2.recall.ai';
+    logger.info('[API-CONFIG] Initializing SDK with API configuration', {
+      apiUrl,
+      hasApiKey: !!settings.recallApiKey,
+      source: process.env.RECALL_API_URL ? 'env' : (settings.recallApiUrl ? 'settings' : 'default')
+    });
+
     try {
       await recordingService.initialize(settings.recallApiKey, apiUrl, settings.anthropicApiKey);
       
@@ -1062,19 +942,20 @@ async function syncCalendarSilently() {
 }
 
 app.whenReady().then(async () => {
-  // Create window first so UI appears immediately
-  createWindow();
-  
-  // Initialize basic services (fast) and setup IPC handlers immediately
-  // so the UI can function while SDK initializes in background
-  logger.info('Initializing core services...');
-  
-  // Initialize permission service first
-  permissionService = new PermissionService();
-  await permissionService.checkAllPermissions();
+  try {
+    // Create window first so UI appears immediately
+    createWindow();
 
-  settingsService = new SettingsService();
-  await settingsService.initialize();
+    // Initialize basic services (fast) and setup IPC handlers immediately
+    // so the UI can function while SDK initializes in background
+    logger.info('Initializing core services...');
+
+    // Initialize permission service first
+    permissionService = new PermissionService();
+    await permissionService.checkAllPermissions();
+
+    settingsService = new SettingsService();
+    await settingsService.initialize();
 
   try {
     logger.info('Creating PromptService instance...');
@@ -1111,7 +992,36 @@ app.whenReady().then(async () => {
   
   // Setup meeting detection handlers
   setupMeetingDetectionHandlers();
-  
+
+  // Listen for auto-stop recording events from the RecordingService
+  recordingService.on('recording-auto-stopped', async (data) => {
+    logger.info('Recording auto-stopped by SDK', {
+      reason: data?.reason || 'unknown',
+      meetingId: data?.meetingId,
+      transcriptCount: data?.transcriptCount
+    });
+
+    const meetingId = data?.meetingId || currentRecordingMeetingId;
+    currentRecordingMeetingId = null;
+
+    if (meetingId) {
+      // Update meeting status to completed
+      await storageService.updateMeeting(meetingId, { status: 'completed' });
+
+      if (mainWindow) {
+        mainWindow.webContents.send(IpcChannels.RECORDING_STOPPED);
+        mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
+
+        // Send notification about auto-stop
+        mainWindow.webContents.send('recording-auto-stopped', {
+          meetingId,
+          reason: data?.reason || 'meeting-ended',
+          transcriptCount: data?.transcriptCount || 0
+        });
+      }
+    }
+  });
+
   // Initialize SDK in background (this can take 75+ seconds)
   initializeSDKInBackground();
   
@@ -1137,6 +1047,33 @@ app.whenReady().then(async () => {
       createWindow();
     }
   });
+  } catch (error) {
+    logger.error('[APP-INIT-ERROR] Fatal error during app initialization', {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      name: error instanceof Error ? error.name : undefined,
+      timestamp: new Date().toISOString()
+    });
+
+    // Try to save any pending data before potential crash
+    if (storageService) {
+      try {
+        logger.info('[APP-INIT-ERROR] Attempting emergency save...');
+        await storageService.forceSave();
+        logger.info('[APP-INIT-ERROR] Emergency save completed');
+      } catch (saveError) {
+        logger.error('[APP-INIT-ERROR] Emergency save failed:', saveError);
+      }
+    }
+
+    // Show error dialog to user
+    const { dialog } = require('electron');
+    dialog.showErrorBox('Application Error',
+      'Failed to initialize the application. Please check the logs and restart.');
+
+    // Re-throw to let Electron handle it
+    throw error;
+  }
 });
 
 app.on('window-all-closed', () => {

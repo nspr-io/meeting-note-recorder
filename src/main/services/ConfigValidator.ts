@@ -1,0 +1,169 @@
+import { AppSettings } from '../../shared/types';
+import * as path from 'path';
+import * as fs from 'fs';
+
+/**
+ * Configuration validator for AppSettings
+ * Ensures all settings are valid before use
+ */
+export class ConfigValidator {
+  /**
+   * Validate entire settings object
+   */
+  static validateSettings(settings: AppSettings): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+
+    // Validate API URL
+    if (settings.recallApiUrl) {
+      if (!this.isValidUrl(settings.recallApiUrl)) {
+        errors.push(`Invalid Recall API URL: ${settings.recallApiUrl}`);
+      }
+      if (!settings.recallApiUrl.includes('recall.ai')) {
+        errors.push(`Recall API URL should be a recall.ai domain: ${settings.recallApiUrl}`);
+      }
+    }
+
+    // Validate API keys format (if provided)
+    if (settings.recallApiKey) {
+      if (!this.isValidApiKey(settings.recallApiKey)) {
+        errors.push('Invalid Recall API key format');
+      }
+    }
+
+    if (settings.anthropicApiKey) {
+      if (!this.isValidAnthropicKey(settings.anthropicApiKey)) {
+        errors.push('Invalid Anthropic API key format');
+      }
+    }
+
+    // Validate storage path
+    if (settings.storagePath) {
+      const pathErrors = this.validateStoragePath(settings.storagePath);
+      errors.push(...pathErrors);
+    }
+
+    // Validate calendars array
+    if (!Array.isArray(settings.selectedCalendars)) {
+      errors.push('selectedCalendars must be an array');
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors
+    };
+  }
+
+  /**
+   * Validate URL format
+   */
+  static isValidUrl(url: string): boolean {
+    try {
+      new URL(url);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Validate Recall API key format
+   */
+  static isValidApiKey(key: string): boolean {
+    // Recall API keys are typically 40 character hex strings
+    return /^[a-f0-9]{40,}$/i.test(key) || key.length > 20;
+  }
+
+  /**
+   * Validate Anthropic API key format
+   */
+  static isValidAnthropicKey(key: string): boolean {
+    // Anthropic keys typically start with 'sk-ant-'
+    return key.startsWith('sk-ant-') || key.length > 20;
+  }
+
+  /**
+   * Validate storage path
+   */
+  static validateStoragePath(storagePath: string): string[] {
+    const errors: string[] = [];
+
+    if (!path.isAbsolute(storagePath)) {
+      errors.push('Storage path must be an absolute path');
+    }
+
+    // Check if parent directory exists
+    const parentDir = path.dirname(storagePath);
+    if (!fs.existsSync(parentDir)) {
+      errors.push(`Parent directory does not exist: ${parentDir}`);
+    }
+
+    // Check for potentially dangerous paths
+    const dangerousPaths = ['/System', '/Library', '/usr', '/bin', '/sbin', '/etc'];
+    if (dangerousPaths.some(dangerous => storagePath.startsWith(dangerous))) {
+      errors.push(`Storage path should not be in system directory: ${storagePath}`);
+    }
+
+    return errors;
+  }
+
+  /**
+   * Migrate settings from old format to new format
+   */
+  static migrateSettings(oldSettings: any): AppSettings {
+    const migrated: AppSettings = {
+      recallApiUrl: oldSettings.recallApiUrl || oldSettings.apiUrl || 'https://us-west-2.recall.ai',
+      storagePath: oldSettings.storagePath || path.join(process.env.HOME || '', 'Documents', 'MeetingRecordings'),
+      googleCalendarConnected: oldSettings.googleCalendarConnected || false,
+      autoStartOnBoot: oldSettings.autoStartOnBoot || false,
+      selectedCalendars: oldSettings.selectedCalendars || [],
+    };
+
+    // Migrate API keys if present
+    if (oldSettings.recallApiKey) {
+      migrated.recallApiKey = oldSettings.recallApiKey;
+    }
+    if (oldSettings.anthropicApiKey) {
+      migrated.anthropicApiKey = oldSettings.anthropicApiKey;
+    }
+
+    return migrated;
+  }
+
+  /**
+   * Get safe default settings
+   */
+  static getDefaults(): AppSettings {
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    return {
+      recallApiUrl: 'https://us-west-2.recall.ai',
+      storagePath: path.join(home, 'Documents', 'MeetingRecordings'),
+      googleCalendarConnected: false,
+      autoStartOnBoot: false,
+      selectedCalendars: [],
+    };
+  }
+
+  /**
+   * Sanitize settings before saving
+   */
+  static sanitizeSettings(settings: AppSettings): AppSettings {
+    const sanitized = { ...settings };
+
+    // Remove trailing slashes from URLs
+    if (sanitized.recallApiUrl) {
+      sanitized.recallApiUrl = sanitized.recallApiUrl.replace(/\/+$/, '');
+    }
+
+    // Normalize path separators
+    if (sanitized.storagePath) {
+      sanitized.storagePath = path.normalize(sanitized.storagePath);
+    }
+
+    // Ensure arrays are arrays
+    if (!Array.isArray(sanitized.selectedCalendars)) {
+      sanitized.selectedCalendars = [];
+    }
+
+    return sanitized;
+  }
+}

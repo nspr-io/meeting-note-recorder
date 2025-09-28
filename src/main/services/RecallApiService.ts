@@ -1,6 +1,7 @@
-import { getLogger } from './LoggingService';
+import { createServiceLogger } from './ServiceLogger';
+import { ApiError, ErrorHandler, NetworkError } from './ServiceError';
 
-const logger = getLogger();
+const logger = createServiceLogger('RecallApiService');
 
 export interface SdkUploadResponse {
   id: string;
@@ -59,7 +60,7 @@ export class RecallApiService {
 
       } catch (error: any) {
         // Network error - definitely worth retrying
-        lastError = error;
+        lastError = new NetworkError(`${operation} network failed`, error);
         logger.warn(`[RETRY] ${operation} attempt ${attempt} failed with network error`, {
           error: error.message,
           attempt,
@@ -95,8 +96,9 @@ export class RecallApiService {
    *    - For AssemblyAI: Standard API key with transcription access
    */
   async createSdkUpload(meetingId: string, meetingTitle: string): Promise<SdkUploadResponse> {
+    const uploadStartTime = Date.now();
     try {
-      logger.info('[SDK-UPLOAD-START] Creating SDK upload', {
+      logger.info('[API-UPLOAD] Creating SDK upload session', {
         meetingId,
         meetingTitle,
         apiUrl: this.apiUrl,
@@ -127,8 +129,10 @@ export class RecallApiService {
         }
       };
 
-      logger.info('[SDK-UPLOAD-REQUEST-1] Trying Deepgram streaming provider', {
-        request: deepgramRequest
+      logger.info('[API-UPLOAD] Trying Deepgram provider', {
+        meetingId,
+        meetingTitle,
+        provider: 'deepgram_streaming'
       });
 
       let response = await this.retryApiCall(
@@ -145,7 +149,7 @@ export class RecallApiService {
 
       if (!response.ok) {
         const errorText = await response.text();
-        logger.warn('[SDK-UPLOAD-FAIL-1] Deepgram provider failed', {
+        logger.warn('[API-UPLOAD] Deepgram provider failed', {
           status: response.status,
           error: errorText,
           parsedError: (() => {
@@ -177,8 +181,10 @@ export class RecallApiService {
           }
         };
 
-        logger.info('[SDK-UPLOAD-REQUEST-2] Trying AssemblyAI streaming provider as fallback', {
-          request: assemblyAiRequest
+        logger.info('[API-UPLOAD] Trying AssemblyAI provider as fallback', {
+          meetingId,
+          meetingTitle,
+          provider: 'assembly_ai_streaming'
         });
 
         response = await this.retryApiCall(
@@ -217,11 +223,12 @@ export class RecallApiService {
       }
 
       const data = await response.json();
-      logger.info('[SDK-UPLOAD-RESPONSE] Upload created', {
+      logger.info('[API-UPLOAD] Upload session created successfully', {
         uploadId: data.id,
         status: data.status,
         hasUploadToken: !!data.upload_token,
-        fullResponse: data
+        durationMs: Date.now() - uploadStartTime,
+        meetingId
       });
       logger.info('[REGION-CHECK] API using:', {
         recall_api_region: new URL(this.apiUrl).hostname
@@ -234,14 +241,19 @@ export class RecallApiService {
       };
 
       this.activeUploads.set(meetingId, uploadData);
-      logger.info('[SDK-UPLOAD-COMPLETE] SDK upload saved', {
+      logger.info('[API-UPLOAD] Upload session stored', {
         uploadId: data.id,
-        meetingId
+        meetingId,
+        activeUploadsCount: this.activeUploads.size
       });
 
       return uploadData;
-    } catch (error) {
-      logger.error('Failed to create SDK upload', { error });
+    } catch (error: any) {
+      logger.error('[API-UPLOAD] Failed to create SDK upload', {
+        error: error.message,
+        meetingId,
+        durationMs: Date.now() - uploadStartTime
+      });
       throw error;
     }
   }
@@ -250,12 +262,19 @@ export class RecallApiService {
    * Get the status of an SDK upload
    */
   async getSdkUploadStatus(uploadId: string): Promise<SdkUploadResponse> {
+    logger.debug('[API-STATUS] Getting upload status', {
+      uploadId,
+      timestamp: new Date().toISOString()
+    });
     try {
-      const response = await fetch(`${this.apiUrl}/api/v1/sdk-upload/${uploadId}/`, {
-        headers: {
-          'Authorization': `Token ${this.apiKey}`
-        }
-      });
+      const response = await this.retryApiCall(
+        () => fetch(`${this.apiUrl}/api/v1/sdk-upload/${uploadId}/`, {
+          headers: {
+            'Authorization': `Token ${this.apiKey}`
+          }
+        }),
+        `Get SDK Upload Status (${uploadId})`
+      );
 
       if (!response.ok) {
         throw new Error(`Failed to get SDK upload status: ${response.status}`);
@@ -280,14 +299,17 @@ export class RecallApiService {
   async createTranscript(recordingId: string): Promise<void> {
     try {
       logger.info('Creating transcript for recording', { recordingId });
-      
-      const response = await fetch(`${this.apiUrl}/api/v1/recording/${recordingId}/create_transcript/`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Token ${this.apiKey}`,
-          'Content-Type': 'application/json'
-        }
-      });
+
+      const response = await this.retryApiCall(
+        () => fetch(`${this.apiUrl}/api/v1/recording/${recordingId}/create_transcript/`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Token ${this.apiKey}`,
+            'Content-Type': 'application/json'
+          }
+        }),
+        `Create Transcript (${recordingId})`
+      );
 
       if (!response.ok) {
         throw new Error(`Failed to create transcript: ${response.status}`);
@@ -305,8 +327,13 @@ export class RecallApiService {
    * Note: Real-time transcripts are delivered via SDK events during recording
    */
   async getTranscript(recordingId: string): Promise<TranscriptResponse[]> {
+    logger.info('[API-TRANSCRIPT] Fetching transcript', {
+      recordingId,
+      timestamp: new Date().toISOString()
+    });
+    const fetchStart = Date.now();
     try {
-      logger.info('Fetching transcript from API', {
+      logger.debug('[API-TRANSCRIPT] Making API request', {
         recordingId,
         url: `${this.apiUrl}/api/v1/recording/${recordingId}/transcript/`
       });
@@ -335,13 +362,11 @@ export class RecallApiService {
       }
 
       const data = await response.json();
-      logger.info('Transcript API response', {
+      logger.info('[API-TRANSCRIPT] Transcript received', {
         recordingId,
         hasTranscript: !!data.transcript,
-        hasWords: !!data.transcript?.words,
         wordCount: data.transcript?.words?.length || 0,
-        dataKeys: Object.keys(data),
-        transcriptKeys: data.transcript ? Object.keys(data.transcript) : []
+        durationMs: Date.now() - fetchStart
       });
 
       // Parse the transcript data into our format

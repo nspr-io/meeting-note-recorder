@@ -24,8 +24,8 @@ const api = {
   // Recording
   startRecording: (meetingId: string) =>
     ipcRenderer.invoke(IpcChannels.START_RECORDING, meetingId),
-  stopRecording: () =>
-    ipcRenderer.invoke(IpcChannels.STOP_RECORDING),
+  stopRecording: (meetingId?: string) =>
+    ipcRenderer.invoke(IpcChannels.STOP_RECORDING, meetingId),
   correctTranscript: (meetingId: string) =>
     ipcRenderer.invoke(IpcChannels.CORRECT_TRANSCRIPT, meetingId),
   generateInsights: (meetingId: string) =>
@@ -75,7 +75,7 @@ const api = {
   requestPermissions: () =>
     ipcRenderer.invoke('request-permissions'),
   
-  // Event listeners
+  // Event listeners - Fixed to properly handle listener removal
   on: (channel: string, callback: Function) => {
     const validChannels = [
       IpcChannels.MEETING_DETECTED,
@@ -90,14 +90,23 @@ const api = {
       'correction-progress',
       'correction-completed',
     ];
-    
+
     if (validChannels.includes(channel as any)) {
-      ipcRenderer.on(channel, (_, ...args) => callback(...args));
+      // Create a wrapper function that we can reference for removal
+      const wrapper = (_: any, ...args: any[]) => callback(...args);
+      // Store the wrapper on the callback so we can remove it later
+      (callback as any).__ipcWrapper = wrapper;
+      ipcRenderer.on(channel, wrapper);
     }
   },
-  
+
   removeListener: (channel: string, callback: Function) => {
-    ipcRenderer.removeListener(channel, callback as any);
+    // Remove using the stored wrapper function
+    const wrapper = (callback as any).__ipcWrapper;
+    if (wrapper) {
+      ipcRenderer.removeListener(channel, wrapper);
+      delete (callback as any).__ipcWrapper;
+    }
   },
 };
 

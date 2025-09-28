@@ -357,21 +357,32 @@ export class StorageService {
   private async cleanupStuckRecordings(): Promise<void> {
     console.log('Cleaning up stuck recordings...');
     let cleanupCount = 0;
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000); // 1 hour threshold
 
     for (const [id, meeting] of this.meetingsCache.entries()) {
       if (meeting.status === 'recording' || meeting.status === 'active') {
-        // Update status to completed if it was stuck in recording
-        meeting.status = 'completed';
-        this.meetingsCache.set(id, meeting);
+        // Only clean up if the recording started more than an hour ago
+        // (reasonable assumption that recordings don't last > 1 hour without activity)
+        const startTime = meeting.startTime ? new Date(meeting.startTime) : meeting.date;
+        if (startTime < oneHourAgo) {
+          console.log(`Cleaning up stuck recording: ${meeting.title} (started ${startTime})`);
+          // Update status to completed if it was stuck in recording
+          meeting.status = 'completed';
+          meeting.endTime = meeting.endTime || now; // Set end time if not set
+          this.meetingsCache.set(id, meeting);
 
-        // Update the file if it exists
-        if (meeting.filePath) {
-          try {
-            await this.saveMeetingToFile(meeting);
-            cleanupCount++;
-          } catch (error) {
-            console.error(`Failed to update stuck meeting ${id}:`, error);
+          // Update the file if it exists
+          if (meeting.filePath) {
+            try {
+              await this.saveMeetingToFile(meeting);
+              cleanupCount++;
+            } catch (error) {
+              console.error(`Failed to update stuck meeting ${id}:`, error);
+            }
           }
+        } else {
+          console.log(`Keeping recent recording: ${meeting.title} (started ${startTime})`);
         }
       }
     }
@@ -563,10 +574,24 @@ ${meeting.transcript || ''}`;
       cacheSize: this.meetingsCache.size
     });
 
-    await this.saveCacheToDisk(); // Save cache after creating meeting
-    console.log('[JOURNEY-STORAGE-5] Cache saved to disk', {
-      id: meeting.id
+    console.log('[JOURNEY-STORAGE-4.5] About to save cache to disk', {
+      id: meeting.id,
+      cacheSize: this.meetingsCache.size
     });
+
+    try {
+      await this.saveCacheToDisk(); // Save cache after creating meeting
+      console.log('[JOURNEY-STORAGE-5] Cache saved to disk', {
+        id: meeting.id
+      });
+    } catch (error) {
+      console.error('[JOURNEY-STORAGE-5-ERROR] Failed to save cache to disk', {
+        id: meeting.id,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      throw error; // Re-throw to ensure the error propagates
+    }
 
     return meeting;
   }
@@ -770,17 +795,26 @@ ${meeting.transcript || ''}`;
             // Check for existing prep note
             const prepNoteContent = await this.checkForPrepNote(event);
 
-            // Process description to extract meeting URL and clean notes
+            // Process description to extract clean notes (meeting URL now comes from calendar)
             let processedNotes = prepNoteContent || '';
-            let meetingUrl = event.meetingUrl;
             let platform: Meeting['platform'] = 'googlemeet'; // Default
+
+            // Detect platform from the meeting URL if available
+            if (event.meetingUrl) {
+              if (event.meetingUrl.includes('zoom.us')) platform = 'zoom';
+              else if (event.meetingUrl.includes('meet.google.com')) platform = 'googlemeet';
+              else if (event.meetingUrl.includes('teams.microsoft.com')) platform = 'teams';
+              else if (event.meetingUrl.includes('webex.com')) platform = 'webex';
+            }
 
             if (!prepNoteContent && event.description) {
               try {
                 const processed = await this.descriptionProcessor.processDescription(event.description);
                 processedNotes = processed.notes;
-                meetingUrl = processed.meetingUrl || event.meetingUrl;
-                platform = (processed.platform as Meeting['platform']) || 'googlemeet';
+                // Use detected platform if description processing found one
+                if (processed.platform) {
+                  platform = processed.platform as Meeting['platform'];
+                }
               } catch (error) {
                 console.log('Description processing failed, using fallback:', error);
                 processedNotes = event.description || '';
@@ -794,7 +828,7 @@ ${meeting.transcript || ''}`;
               endTime: event.end,
               attendees: event.attendees,
               calendarEventId: event.id,
-              meetingUrl,
+              meetingUrl: event.meetingUrl,
               calendarInviteUrl: event.htmlLink,
               status: 'scheduled',
               notes: processedNotes,
@@ -875,16 +909,34 @@ ${meeting.transcript || ''}`;
   }
 
   private async saveCacheToDisk(): Promise<void> {
+    console.log('[CACHE-SAVE-1] Starting saveCacheToDisk');
     try {
       const meetings = Array.from(this.meetingsCache.values());
+      console.log(`[CACHE-SAVE-2] Preparing to save ${meetings.length} meetings`);
+
       await fs.writeFile(
-        this.cacheFilePath, 
+        this.cacheFilePath,
         JSON.stringify(meetings, null, 2),
         'utf-8'
       );
-      console.log(`Saved ${meetings.length} meetings to cache`);
+
+      console.log(`[CACHE-SAVE-3] Successfully saved ${meetings.length} meetings to cache`);
     } catch (error) {
-      console.error('Failed to save cache:', error);
+      console.error('[CACHE-SAVE-ERROR] Failed to save cache:', error);
+      console.error('[CACHE-SAVE-ERROR] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      throw error; // Re-throw to propagate the error
+    }
+  }
+
+  // Public method for emergency saves from process error handlers
+  async forceSave(): Promise<void> {
+    console.log('[FORCE-SAVE] Attempting emergency cache save...');
+    try {
+      await this.saveCacheToDisk();
+      console.log('[FORCE-SAVE] Emergency save successful');
+    } catch (error) {
+      console.error('[FORCE-SAVE] Emergency save failed:', error);
+      throw error;
     }
   }
 
@@ -925,15 +977,37 @@ ${meeting.transcript || ''}`;
     // Clear existing timer if any
     this.stopAutoSave(meetingId);
 
+    console.log(`[AUTO-SAVE] Starting auto-save for meeting ${meetingId} with interval ${interval}ms`);
+
     const timer = setInterval(async () => {
-      const meeting = this.meetingsCache.get(meetingId);
-      if (meeting) {
-        const markdown = this.formatMeetingToMarkdown(meeting);
-        await fs.writeFile(meeting.filePath!, markdown, 'utf-8');
+      try {
+        const meeting = this.meetingsCache.get(meetingId);
+        if (meeting) {
+          if (!meeting.filePath) {
+            // Generate file path if it doesn't exist
+            const fileName = this.generateFileName(meeting);
+            meeting.filePath = path.join(this.storagePath, fileName);
+            console.log(`[AUTO-SAVE] Generated file path for meeting ${meetingId}: ${meeting.filePath}`);
+          }
+
+          const markdown = this.formatMeetingToMarkdown(meeting);
+          await fs.writeFile(meeting.filePath, markdown, 'utf-8');
+          console.log(`[AUTO-SAVE] Saved meeting ${meetingId} to ${meeting.filePath}`);
+
+          // Also save cache periodically
+          await this.saveCacheToDisk();
+        } else {
+          console.warn(`[AUTO-SAVE] Meeting ${meetingId} not found in cache, stopping auto-save`);
+          this.stopAutoSave(meetingId);
+        }
+      } catch (error) {
+        console.error(`[AUTO-SAVE-ERROR] Failed to auto-save meeting ${meetingId}:`, error);
+        console.error('[AUTO-SAVE-ERROR] Stack:', error instanceof Error ? error.stack : 'No stack');
       }
     }, interval);
 
     this.autoSaveTimers.set(meetingId, timer);
+    console.log(`[AUTO-SAVE] Auto-save timer created for meeting ${meetingId}`);
   }
 
   stopAutoSave(meetingId: string): void {

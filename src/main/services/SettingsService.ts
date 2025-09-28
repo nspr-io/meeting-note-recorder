@@ -2,6 +2,10 @@ import Store from 'electron-store';
 import path from 'path';
 import { app } from 'electron';
 import { AppSettings, UserProfile } from '../../shared/types';
+import { ConfigValidator } from './ConfigValidator';
+import { createServiceLogger } from './ServiceLogger';
+
+const logger = createServiceLogger('SettingsService');
 
 export class SettingsService {
   private store: any; // Using any to work around TypeScript issues with electron-store in tests
@@ -24,18 +28,29 @@ export class SettingsService {
   }
 
   async initialize(): Promise<void> {
+    // Validate current settings
+    const currentSettings = this.getSettings();
+    const validation = ConfigValidator.validateSettings(currentSettings);
+
+    if (!validation.valid) {
+      logger.warn('Settings validation errors:', validation.errors);
+      // Apply safe defaults for invalid settings
+      const safeDefaults = ConfigValidator.getDefaults();
+      await this.updateSettings(safeDefaults);
+    }
+
     // Ensure storage directory exists
     const storagePath = this.getSettings().storagePath;
     const fs = require('fs').promises;
-    
+
     try {
       await fs.mkdir(storagePath, { recursive: true });
     } catch (error) {
-      console.error('Failed to create storage directory:', error);
+      logger.error('Failed to create storage directory:', error);
     }
-    
+
     // Log current settings for debugging
-    console.log('Settings initialized:', {
+    logger.info('Settings initialized:', {
       googleCalendarConnected: this.store.get ? this.store.get('googleCalendarConnected') : this.store.store?.googleCalendarConnected,
       hasApiKey: !!this.getApiKey(),
       storagePath: this.store.get ? this.store.get('storagePath') : this.store.store?.storagePath

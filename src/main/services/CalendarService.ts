@@ -178,17 +178,43 @@ export class CalendarService extends EventEmitter {
     this.calendar = null;
   }
 
-  private hasConferenceLink(event: any): boolean {
-    // Check various fields where conference links might be stored
-    const fieldsToCheck = [
-      event.description || '',
-      event.location || '',
-      event.hangoutLink || '',
-      event.conferenceData?.entryPoints?.map((ep: any) => ep.uri).join(' ') || ''
-    ].join(' ');
+  private extractMeetingUrl(event: any): string | undefined {
+    // First try native conference data
+    if (event.hangoutLink) {
+      return event.hangoutLink;
+    }
 
-    // Check if any conference pattern matches
-    return this.conferencePatterns.some(pattern => pattern.test(fieldsToCheck));
+    if (event.conferenceData?.entryPoints) {
+      const videoEntry = event.conferenceData.entryPoints.find((ep: any) =>
+        ep.entryPointType === 'video' || ep.uri?.includes('http')
+      );
+      if (videoEntry?.uri) {
+        return videoEntry.uri;
+      }
+    }
+
+    // Fallback to searching in description and location
+    const textToSearch = `${event.description || ''} ${event.location || ''}`;
+    for (const pattern of this.conferencePatterns) {
+      const match = textToSearch.match(pattern);
+      if (match) {
+        // Extract the full URL if we matched a pattern
+        const urlMatch = textToSearch.match(/https?:\/\/[^\s<>"]+/gi);
+        if (urlMatch) {
+          for (const url of urlMatch) {
+            if (pattern.test(url)) {
+              return url;
+            }
+          }
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private hasConferenceLink(event: any): boolean {
+    return !!this.extractMeetingUrl(event);
   }
 
   async fetchUpcomingMeetings(): Promise<CalendarEvent[]> {
@@ -252,6 +278,7 @@ export class CalendarService extends EventEmitter {
         description: event.description,
         location: event.location,
         calendarId: 'primary',
+        meetingUrl: this.extractMeetingUrl(event),
         htmlLink: event.htmlLink,
       }));
     } catch (error: any) {
@@ -285,6 +312,7 @@ export class CalendarService extends EventEmitter {
         description: event.description,
         location: event.location,
         calendarId: 'primary',
+        meetingUrl: this.extractMeetingUrl(event),
         htmlLink: event.htmlLink,
       };
     } catch (error) {
