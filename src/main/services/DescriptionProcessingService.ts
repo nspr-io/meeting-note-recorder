@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getLogger } from './LoggingService';
+import { detectPlatform } from '../../shared/utils/PlatformDetector';
 
 const logger = getLogger();
 
@@ -83,7 +84,7 @@ Ignore: email signatures, cancellation links, scheduling system metadata, boiler
       const parsed = JSON.parse(responseText);
       return {
         meetingUrl: parsed.meetingUrl || undefined,
-        platform: parsed.platform || this.detectPlatform(parsed.meetingUrl),
+        platform: parsed.platform || detectPlatform(parsed.meetingUrl),
         notes: parsed.notes || ''
       };
     } catch (parseError) {
@@ -116,7 +117,7 @@ Ignore: email signatures, cancellation links, scheduling system metadata, boiler
       const match = description.match(pattern);
       if (match) {
         meetingUrl = match[0];
-        platform = this.detectPlatform(meetingUrl);
+        platform = detectPlatform(meetingUrl);
         break;
       }
     }
@@ -181,22 +182,8 @@ Ignore: email signatures, cancellation links, scheduling system metadata, boiler
 
     return {
       meetingUrl,
-      platform: meetingUrl ? this.detectPlatform(meetingUrl) : undefined,
+      platform: meetingUrl ? detectPlatform(meetingUrl) : undefined,
       notes
     };
-  }
-
-  private detectPlatform(url: string | undefined): string {
-    if (!url) return 'other';
-
-    if (url.includes('zoom.us')) return 'zoom';
-    if (url.includes('meet.google.com')) return 'meet';
-    if (url.includes('teams.microsoft.com') || url.includes('teams.live.com')) return 'teams';
-    if (url.includes('webex.com')) return 'webex';
-    if (url.includes('slack.com')) return 'slack';
-    if (url.includes('whereby.com')) return 'other';
-    if (url.includes('gotomeeting.com')) return 'other';
-
-    return 'other';
   }
 }

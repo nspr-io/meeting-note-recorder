@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, ErrorInfo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, ErrorInfo } from 'react';
 import styled from '@emotion/styled';
 import { Meeting, Attendee, IpcChannels } from '../../shared/types';
 import { format, formatDistanceToNow } from 'date-fns';
@@ -732,59 +732,55 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     };
   }, [meeting.id, onRefresh]);
 
-  // Create a stable reference for the transcript handler
-  const handleTranscriptUpdateRef = useRef<any>(null);
-
   // Listen for real-time transcript updates
-  useEffect(() => {
-    // Remove any existing listener before adding a new one
-    if (handleTranscriptUpdateRef.current) {
-      (window as any).electronAPI?.removeListener?.('transcript-update', handleTranscriptUpdateRef.current);
-    }
+  // IMPORTANT: We use useCallback with meeting.id dependency to create a stable handler
+  // that updates when meeting changes but doesn't cause duplicate listeners
+  const handleTranscriptUpdate = useCallback((data: any) => {
+    console.log('[MeetingDetailFinal] Received transcript update:', data);
+    if (data.meetingId !== meeting.id) return;
 
-    const handleTranscriptUpdate = (data: any) => {
-      console.log('[MeetingDetailFinal] Received transcript update:', data);
-      if (data.meetingId !== meeting.id) return;
+    setTranscriptSegments(prev => {
+      // Check for duplicates before adding
+      const isDuplicate = prev.some(
+        s => s.timestamp === data.timestamp &&
+             s.text === data.text
+      );
 
-      setTranscriptSegments(prev => {
-        // Check for duplicates before adding
-        const isDuplicate = prev.some(
-          s => s.timestamp === data.timestamp &&
-               s.text === data.text
-        );
+      if (!isDuplicate) {
+        const newSegment = {
+          id: `${Date.now()}-${Math.random()}`,
+          time: format(new Date(data.timestamp), 'HH:mm:ss'),
+          speaker: data.speaker || 'Unknown Speaker',
+          text: data.text,
+          timestamp: data.timestamp
+        };
 
-        if (!isDuplicate) {
-          const newSegment = {
-            id: `${Date.now()}-${Math.random()}`,
-            time: format(new Date(data.timestamp), 'HH:mm:ss'),
-            speaker: data.speaker || 'Unknown Speaker',
-            text: data.text,
-            timestamp: data.timestamp
-          };
+        const updated = [...prev, newSegment];
 
-          const updated = [...prev, newSegment];
-
-          // Update cache immediately
-          transcriptCache.set(meeting.id, updated);
-          return updated;
-        }
-        return prev;
-      });
-    };
-
-    // Store the handler reference
-    handleTranscriptUpdateRef.current = handleTranscriptUpdate;
-
-    // Listen for transcript updates using the correct channel
-    (window as any).electronAPI?.on?.('transcript-update', handleTranscriptUpdate);
-
-    return () => {
-      if (handleTranscriptUpdateRef.current) {
-        (window as any).electronAPI?.removeListener?.('transcript-update', handleTranscriptUpdateRef.current);
-        handleTranscriptUpdateRef.current = null;
+        // Update cache immediately
+        transcriptCache.set(meeting.id, updated);
+        return updated;
       }
-    };
+      return prev;
+    });
   }, [meeting.id]);
+
+  // Set up transcript listener with proper cleanup
+  useEffect(() => {
+    console.log('[MeetingDetailFinal] Setting up transcript listener for meeting:', meeting.id);
+
+    // Use the IPC channel directly without the wrapper issue
+    const channel = 'transcript-update';
+
+    // Register the listener
+    (window as any).electronAPI?.on?.(channel, handleTranscriptUpdate);
+
+    // Return cleanup function
+    return () => {
+      console.log('[MeetingDetailFinal] Cleaning up transcript listener for meeting:', meeting.id);
+      (window as any).electronAPI?.removeListener?.(channel, handleTranscriptUpdate);
+    };
+  }, [handleTranscriptUpdate]); // Depend on the memoized handler, not meeting.id directly
 
   const handleSave = async () => {
     setIsSaving(true);

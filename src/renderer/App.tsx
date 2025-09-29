@@ -489,22 +489,26 @@ function App() {
     let filtered: Meeting[];
 
     if (tabMode === 'upcoming') {
-      // Show future meetings and currently recording meetings
-      filtered = meetings.filter(m =>
-        new Date(m.date) >= now ||
-        m.status === 'recording' ||
-        m.status === 'active'
-      );
+      // Show meetings that haven't ended yet (or are actively recording)
+      filtered = meetings.filter(m => {
+        // Use endTime if available, otherwise assume 1 hour after start time
+        const endTime = m.endTime ? new Date(m.endTime) : new Date(new Date(m.date).getTime() + 60 * 60 * 1000);
+        return endTime >= now ||
+               m.status === 'recording' ||
+               m.status === 'active';
+      });
     } else {
-      // Show past meetings - only those with notes or transcripts
-      filtered = meetings.filter(m =>
-        (new Date(m.date) < now || m.status === 'completed') &&
-        m.status !== 'recording' &&
-        m.status !== 'active' &&
-        // Only show past meetings that have actual content
-        ((m.notes && m.notes.trim().length > 0) ||
-         (m.transcript && m.transcript.trim().length > 0))
-      );
+      // Show past meetings - only those that have ended and have content
+      filtered = meetings.filter(m => {
+        // Use endTime if available, otherwise assume 1 hour after start time
+        const endTime = m.endTime ? new Date(m.endTime) : new Date(new Date(m.date).getTime() + 60 * 60 * 1000);
+        return (endTime < now || m.status === 'completed') &&
+               m.status !== 'recording' &&
+               m.status !== 'active' &&
+               // Only show past meetings that have actual content
+               ((m.notes && m.notes.trim().length > 0) ||
+                (m.transcript && m.transcript.trim().length > 0));
+      });
     }
     
     // Sort meetings by date - upcoming meetings in ascending order, past in descending

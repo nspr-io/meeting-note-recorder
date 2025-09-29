@@ -87,17 +87,6 @@ function notifySettingsUpdated(settings: any) {
   notifyUI(IpcChannels.SETTINGS_UPDATED, settings);
 }
 
-function scheduleNotificationCleanup(notificationId: string, delayMs: number = 30000) {
-  setTimeout(() => {
-    if (activeNotifications.has(notificationId)) {
-      logger.info('[NOTIFICATION-CLEANUP] Removing old notification reference', {
-        notificationId
-      });
-      activeNotifications.delete(notificationId);
-    }
-  }, delayMs);
-}
-
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -214,7 +203,9 @@ function setupIpcHandlers() {
     // Update search index
     const allMeetings = await storageService.getAllMeetings();
     searchService.updateIndex(allMeetings);
-    notifyMeetingsUpdated();
+    if (mainWindow) {
+      mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
+    }
     return newMeeting;
   });
 
@@ -938,7 +929,7 @@ function setupMeetingDetectionHandlers() {
           throw new Error('Recording service not initialized');
         }
 
-        await startRecording(meetingToRecord, { logPrefix: '[JOURNEY-9d]', openBrowser: false });
+        await startRecordingOnly(meetingToRecord, '[JOURNEY-9d]');
 
       } catch (error) {
         logger.error('[JOURNEY-9-ERROR] Failed to start recording from notification', {
@@ -1012,7 +1003,14 @@ function setupMeetingDetectionHandlers() {
     }
 
     // Clean up notification references after 30 seconds
-    scheduleNotificationCleanup(notificationId);
+    setTimeout(() => {
+      if (activeNotifications.has(notificationId)) {
+        logger.info('[NOTIFICATION-CLEANUP] Removing old notification reference', {
+          notificationId
+        });
+        activeNotifications.delete(notificationId);
+      }
+    }, 30000);
   });
 
   recordingService.on('transcript-chunk', async (chunk) => {
@@ -1057,27 +1055,15 @@ function setupMeetingDetectionHandlers() {
     const notification = new Notification({
       title: `Meeting starting soon: ${event.title}`,
       body: 'Click to start recording',
-      timeoutType: 'default',  // Use system default timeout behavior
-      urgency: 'normal',
-      closeButtonText: 'Dismiss'
+      timeoutType: 'never',
+      urgency: 'normal'
     });
 
     // Store notification to prevent garbage collection
     const reminderNotificationId = `reminder-${event.id}-${Date.now()}`;
     activeNotifications.set(reminderNotificationId, notification);
 
-    // Auto-close notification after 60 seconds
-    const autoCloseTimer = setTimeout(() => {
-      logger.info('[MEETING-REMINDER] Auto-closing notification after 60 seconds');
-      notification.close();
-      activeNotifications.delete(reminderNotificationId);
-    }, 60000);
-
     notification.on('click', async () => {
-      // Clear auto-close timer and close notification immediately
-      clearTimeout(autoCloseTimer);
-      notification.close();
-      activeNotifications.delete(reminderNotificationId);
       logger.info('[MEETING-REMINDER] Notification clicked for upcoming meeting', {
         eventId: event.id,
         title: event.title
@@ -1114,7 +1100,7 @@ function setupMeetingDetectionHandlers() {
           throw new Error('Failed to create or retrieve meeting');
         }
 
-        await startRecording(meeting, { logPrefix: '[MEETING-REMINDER]', openBrowser: true });
+        await startRecordingWithBrowserLaunch(meeting, '[MEETING-REMINDER]');
       } catch (error) {
         logger.error('[MEETING-REMINDER] Failed to start recording from reminder', {
           error: error instanceof Error ? error.message : String(error),
@@ -1131,29 +1117,46 @@ function setupMeetingDetectionHandlers() {
       }
     });
 
-    // Handle manual dismissal (user clicks close button)
-    notification.on('close', () => {
-      logger.info('[MEETING-REMINDER] Notification manually dismissed');
-      clearTimeout(autoCloseTimer);
-      activeNotifications.delete(reminderNotificationId);
-    });
-
     notification.show();
+
+    // Clean up notification reference after 30 seconds
+    setTimeout(() => {
+      if (activeNotifications.has(reminderNotificationId)) {
+        activeNotifications.delete(reminderNotificationId);
+      }
+    }, 30000);
   });
 }
 
-// Consolidated helper function for starting recording with optional browser launch
-async function startRecording(meeting: Meeting, options: { logPrefix: string; openBrowser?: boolean }): Promise<void> {
-  // Open meeting URL in browser if requested
-  if (options.openBrowser && meeting.meetingUrl) {
-    logger.info(`${options.logPrefix} Opening meeting URL in browser`, {
+// Helper function for reactive notifications - only start recording (no browser launch)
+async function startRecordingOnly(meeting: Meeting, logPrefix: string): Promise<void> {
+  await recordingService.startRecording(meeting.id);
+
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send(IpcChannels.RECORDING_STARTED, { meetingId: meeting.id });
+    mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
+  }
+
+  logger.info(`${logPrefix} Successfully started recording`, {
+    meetingId: meeting.id,
+    title: meeting.title
+  });
+}
+
+// Helper function for proactive notifications - start recording AND launch browser
+async function startRecordingWithBrowserLaunch(meeting: Meeting, logPrefix: string): Promise<void> {
+  // Open meeting URL in default browser if available
+  if (meeting.meetingUrl) {
+    logger.info(`${logPrefix} Opening meeting URL in browser`, {
       url: meeting.meetingUrl,
       meetingTitle: meeting.title
     });
     try {
       await shell.openExternal(meeting.meetingUrl);
     } catch (urlError) {
-      logger.warn(`${options.logPrefix} Failed to open meeting URL`, {
+      logger.warn(`${logPrefix} Failed to open meeting URL`, {
         url: meeting.meetingUrl,
         error: urlError instanceof Error ? urlError.message : String(urlError)
       });
@@ -1165,13 +1168,13 @@ async function startRecording(meeting: Meeting, options: { logPrefix: string; op
   if (mainWindow) {
     mainWindow.show();
     mainWindow.focus();
-    notifyRecordingStarted(meeting.id);
+    mainWindow.webContents.send(IpcChannels.RECORDING_STARTED, { meetingId: meeting.id });
+    mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
   }
 
-  logger.info(`${options.logPrefix} Successfully started recording`, {
+  logger.info(`${logPrefix} Successfully started recording with browser launch`, {
     meetingId: meeting.id,
-    title: meeting.title,
-    browserLaunched: options.openBrowser && !!meeting.meetingUrl
+    title: meeting.title
   });
 }
 

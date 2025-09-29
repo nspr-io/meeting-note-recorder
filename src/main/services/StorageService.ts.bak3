@@ -64,12 +64,12 @@ export class StorageService {
         try {
           await this.attemptPrepNoteAdoption(filePath);
         } catch (error) {
-          logger.error(`[PREP-NOTES] Failed to process ${file}:`, error);
+          console.error(`[PREP-NOTES] Failed to process ${file}:`, error);
           // Continue with other files even if one fails
         }
       }
     } catch (error) {
-      logger.error('[PREP-NOTES] Failed to scan for prep notes:', error);
+      console.error('[PREP-NOTES] Failed to scan for prep notes:', error);
     }
   }
 
@@ -104,7 +104,7 @@ export class StorageService {
         logger.info(`[PREP-NOTES] No match found, will be adopted when meeting is created`);
       }
     } catch (error) {
-      logger.error(`[PREP-NOTES] Failed to process ${filePath}:`, error);
+      console.error(`[PREP-NOTES] Failed to process ${filePath}:`, error);
     }
   }
 
@@ -266,7 +266,7 @@ export class StorageService {
             bestMatch = { score: matchScore, content: bodyContent.trim(), filePath };
           }
         } catch (fileError) {
-          logger.error(`[PREP-NOTES] Error reading ${file}:`, fileError);
+          console.error(`[PREP-NOTES] Error reading ${file}:`, fileError);
           // Continue with other files
         }
       }
@@ -285,13 +285,13 @@ export class StorageService {
           });
           await fs.writeFile(bestMatch.filePath, updatedContent, 'utf-8');
         } catch (markError) {
-          logger.error('[PREP-NOTES] Failed to mark prep note:', markError);
+          console.error('[PREP-NOTES] Failed to mark prep note:', markError);
         }
 
         return bestMatch.content;
       }
     } catch (error) {
-      logger.error('[PREP-NOTES] Error checking for prep notes:', error);
+      console.error('[PREP-NOTES] Error checking for prep notes:', error);
     }
 
     return null;
@@ -328,7 +328,7 @@ export class StorageService {
             await fs.unlink(filePath);
             logger.info(`[PREP-NOTES] Renamed ${path.basename(filePath)} to ${newFileName}`);
           } catch (unlinkError) {
-            logger.error(`[PREP-NOTES] Failed to remove old file ${filePath}:`, unlinkError);
+            console.error(`[PREP-NOTES] Failed to remove old file ${filePath}:`, unlinkError);
             // Non-critical error - continue
           }
         } catch (writeError) {
@@ -353,7 +353,7 @@ export class StorageService {
 
       logger.info(`[PREP-NOTES] Successfully adopted prep note for meeting: ${meeting.title}`);
     } catch (error) {
-      logger.error(`[PREP-NOTES] Failed to adopt prep note for meeting ${meeting.title}:`, error);
+      console.error(`[PREP-NOTES] Failed to adopt prep note for meeting ${meeting.title}:`, error);
       throw error;
     }
   }
@@ -382,7 +382,7 @@ export class StorageService {
               await this.saveMeetingToFile(meeting);
               cleanupCount++;
             } catch (error) {
-              logger.error(`Failed to update stuck meeting ${id}:`, error);
+              console.error(`Failed to update stuck meeting ${id}:`, error);
             }
           }
         } else {
@@ -413,7 +413,7 @@ export class StorageService {
         }
       }
     } catch (error) {
-      logger.error('Failed to load meetings:', error);
+      console.error('Failed to load meetings:', error);
     }
   }
 
@@ -457,7 +457,7 @@ export class StorageService {
 
       return meeting;
     } catch (error) {
-      logger.error(`Failed to load meeting from ${filePath}:`, error);
+      console.error(`Failed to load meeting from ${filePath}:`, error);
       return null;
     }
   }
@@ -590,7 +590,7 @@ ${meeting.transcript || ''}`;
         id: meeting.id
       });
     } catch (error) {
-      logger.error('[JOURNEY-STORAGE-5-ERROR] Failed to save cache to disk', {
+      console.error('[JOURNEY-STORAGE-5-ERROR] Failed to save cache to disk', {
         id: meeting.id,
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined
@@ -611,7 +611,7 @@ ${meeting.transcript || ''}`;
 
     const meeting = this.meetingsCache.get(id);
     if (!meeting) {
-      logger.error('[JOURNEY-STORAGE-UPDATE-ERROR] Meeting not found', { id });
+      console.error('[JOURNEY-STORAGE-UPDATE-ERROR] Meeting not found', { id });
       throw new Error(`Meeting ${id} not found`);
     }
 
@@ -696,7 +696,7 @@ ${meeting.transcript || ''}`;
       try {
         await fs.unlink(meeting.filePath);
       } catch (error) {
-        logger.error(`Failed to delete meeting file: ${error}`);
+        console.error(`Failed to delete meeting file: ${error}`);
       }
     }
 
@@ -842,7 +842,7 @@ ${meeting.transcript || ''}`;
             result.added++;
           }
         } catch (error: any) {
-          logger.error(`Error processing calendar event ${event.id}:`, error);
+          console.error(`Error processing calendar event ${event.id}:`, error);
           result.errors.push(`Failed to process event "${event.title}": ${error?.message || String(error)}`);
         }
       }
@@ -878,7 +878,7 @@ ${meeting.transcript || ''}`;
       return result;
 
     } catch (error: any) {
-      logger.error('Smart sync failed:', error);
+      console.error('Smart sync failed:', error);
       result.errors.push(`Smart sync failed: ${error?.message || String(error)}`);
       return result;
     }
@@ -924,8 +924,8 @@ ${meeting.transcript || ''}`;
 
       logger.info(`[CACHE-SAVE-3] Successfully saved ${meetings.length} meetings to cache`);
     } catch (error) {
-      logger.error('[CACHE-SAVE-ERROR] Failed to save cache:', error);
-      logger.error('[CACHE-SAVE-ERROR] Stack trace:', error instanceof Error ? error.stack : 'No stack');
+      console.error('[CACHE-SAVE-ERROR] Failed to save cache:', error);
+      console.error('[CACHE-SAVE-ERROR] Stack trace:', error instanceof Error ? error.stack : 'No stack');
       throw error; // Re-throw to propagate the error
     }
   }
@@ -937,7 +937,7 @@ ${meeting.transcript || ''}`;
       await this.saveCacheToDisk();
       logger.info('[FORCE-SAVE] Emergency save successful');
     } catch (error) {
-      logger.error('[FORCE-SAVE] Emergency save failed:', error);
+      console.error('[FORCE-SAVE] Emergency save failed:', error);
       throw error;
     }
   }
@@ -952,7 +952,7 @@ ${meeting.transcript || ''}`;
 
     const meeting = this.meetingsCache.get(meetingId);
     if (!meeting) {
-      logger.error('[JOURNEY-TRANSCRIPT-ERROR] Meeting not found for transcript', { meetingId });
+      console.error('[JOURNEY-TRANSCRIPT-ERROR] Meeting not found for transcript', { meetingId });
       throw new Error(`Meeting ${meetingId} not found`);
     }
 
@@ -999,12 +999,12 @@ ${meeting.transcript || ''}`;
           // Also save cache periodically
           await this.saveCacheToDisk();
         } else {
-          logger.warn(`[AUTO-SAVE] Meeting ${meetingId} not found in cache, stopping auto-save`);
+          console.warn(`[AUTO-SAVE] Meeting ${meetingId} not found in cache, stopping auto-save`);
           this.stopAutoSave(meetingId);
         }
       } catch (error) {
-        logger.error(`[AUTO-SAVE-ERROR] Failed to auto-save meeting ${meetingId}:`, error);
-        logger.error('[AUTO-SAVE-ERROR] Stack:', error instanceof Error ? error.stack : 'No stack');
+        console.error(`[AUTO-SAVE-ERROR] Failed to auto-save meeting ${meetingId}:`, error);
+        console.error('[AUTO-SAVE-ERROR] Stack:', error instanceof Error ? error.stack : 'No stack');
       }
     }, interval);
 

@@ -81,16 +81,17 @@ export class RecordingService extends EventEmitter {
           this.recallApiService = new RecallApiService(apiKey, baseApiUrl);
 
           // Try to initialize the SDK (may fail if not installed)
+          // INTERCEPT and disable SDK notifications by overriding Notification API
+          logger.info('Disabling SDK notifications by intercepting Notification API');
+          const originalNotification = global.Notification;
+
           try {
             const RecallAiSdk = require('@recallai/desktop-sdk').default;
 
-            // INTERCEPT and disable SDK notifications by overriding Notification API
-            logger.info('Disabling SDK notifications by intercepting Notification API');
-            const originalNotification = global.Notification;
             if (originalNotification) {
               // Override global Notification to prevent SDK from showing notifications
               global.Notification = class MockNotification {
-                constructor(title, options) {
+                constructor(title: string, options?: any) {
                   logger.info(`[SDK-NOTIFICATION-BLOCKED] Blocked SDK notification: ${title}`, options);
                   // Don't actually create the notification - return a mock object
                   return {
@@ -105,14 +106,14 @@ export class RecordingService extends EventEmitter {
                 }
                 static permission = 'granted';
                 static requestPermission = () => Promise.resolve('granted');
-              };
+              } as any;
               logger.info('Successfully intercepted Notification API to block SDK notifications');
             }
 
             // First set up event listeners BEFORE init
             logger.info('Setting up SDK event listeners BEFORE init');
             this.setupSDKEventListeners();
-            
+
             logger.info('Starting SDK init with config:', {
               apiUrl: baseApiUrl,
               api_url: baseApiUrl, // SDK accepts both keys
@@ -123,7 +124,7 @@ export class RecordingService extends EventEmitter {
               notificationsEnabled: false
             });
             logger.info('[REGION-CHECK] SDK will use:', { sdk_api_url: baseApiUrl });
-            
+
             const initPromise = RecallAiSdk.init({
               apiUrl: baseApiUrl,
               api_url: baseApiUrl, // ensure both formats work
@@ -134,22 +135,16 @@ export class RecordingService extends EventEmitter {
               silentMode: true, // Additional option to suppress notifications
               notificationsEnabled: false // Alternative naming for notification control
             });
-            
+
             // Add timeout to SDK init
             const timeoutPromise = new Promise((_, reject) => {
               setTimeout(() => reject(new Error('SDK init timeout after 30 seconds')), 30000);
             });
-            
+
             await Promise.race([initPromise, timeoutPromise]);
 
             logger.info('RecallAI SDK initialized successfully');
 
-            // RESTORE original Notification API after SDK init so our app notifications work
-            if (originalNotification) {
-              global.Notification = originalNotification;
-              logger.info('Restored original Notification API after SDK initialization');
-            }
-            
             // Request accessibility permission explicitly
             logger.info('Requesting accessibility permission from SDK');
             try {
@@ -158,14 +153,20 @@ export class RecordingService extends EventEmitter {
             } catch (permErr) {
               logger.warn('Failed to request accessibility permission:', permErr);
             }
-            
+
             // Start debugging after init
             this.sdkDebugger.startDebugging();
             await SDKDebugger.checkSDKPermissions();
-            
+
           } catch (sdkError) {
             logger.error('RecallAI SDK not available or init failed', sdkError);
             throw new Error('Failed to initialize RecallAI SDK');
+          } finally {
+            // ALWAYS restore original Notification API, even on error, so our app notifications work
+            if (originalNotification) {
+              global.Notification = originalNotification;
+              logger.info('Restored original Notification API after SDK initialization');
+            }
           }
         } catch (apiError) {
           logger.error('Failed to initialize RecallAI API', apiError);
@@ -821,6 +822,22 @@ export class RecordingService extends EventEmitter {
       return false;
     }
 
+    // CRITICAL FIX: Set isRecording to false IMMEDIATELY to prevent concurrent calls
+    // Store the meetingId before clearing the state
+    const meetingId = this.recordingState.meetingId;
+    const startTime = this.recordingState.startTime;
+
+    logger.info('[RECORDING-STOP] Setting isRecording to false immediately to prevent race conditions', {
+      meetingId,
+      timestamp: new Date().toISOString()
+    });
+
+    // Set isRecording to false immediately to prevent concurrent execution
+    this.recordingState = {
+      ...this.recordingState,
+      isRecording: false
+    };
+
     // Clear auto-save interval
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
@@ -828,16 +845,16 @@ export class RecordingService extends EventEmitter {
     }
 
     // Final flush of transcript buffer
-    if (this.recordingState.meetingId) {
-      await this.flushTranscriptBuffer(this.recordingState.meetingId);
+    if (meetingId) {
+      await this.flushTranscriptBuffer(meetingId);
     }
 
     const stopStart = Date.now();
     try {
       logger.info('[RECORDING-STOP] Beginning stop sequence', {
-        meetingId: this.recordingState.meetingId,
-        recordingDuration: this.recordingState.startTime ?
-          Date.now() - this.recordingState.startTime.getTime() : null
+        meetingId: meetingId,
+        recordingDuration: startTime ?
+          Date.now() - startTime.getTime() : null
       });
 
       if (this.currentWindowId) {
@@ -856,8 +873,6 @@ export class RecordingService extends EventEmitter {
           });
         }
       }
-
-      const meetingId = this.recordingState.meetingId;
 
       if (meetingId) {
         this.storageService.stopAutoSave(meetingId);
@@ -886,20 +901,21 @@ export class RecordingService extends EventEmitter {
           }
         }
 
-        // Update meeting status
+        // Update meeting status to completed
         await this.storageService.updateMeeting(meetingId, {
           status: 'completed',
-          duration: this.recordingState.startTime
-            ? Math.floor((Date.now() - this.recordingState.startTime.getTime()) / 1000 / 60)
+          duration: startTime
+            ? Math.floor((Date.now() - startTime.getTime()) / 1000 / 60)
             : undefined,
         });
-        
+
         // Clear the upload from API service
         if (this.recallApiService) {
           this.recallApiService.clearUpload(meetingId);
         }
       }
 
+      // Finalize the recording state (isRecording already set to false above)
       this.recordingState = {
         isRecording: false,
         connectionStatus: 'connected',

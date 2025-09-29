@@ -240,14 +240,16 @@ export class CalendarService extends EventEmitter {
       await this.refreshTokenIfNeeded();
 
       const now = new Date();
-      // Fetch events from now to 30 days in the future (no past meetings)
+      // Fetch events from 2 hours ago to 30 days in the future (to include ongoing meetings)
+      // This ensures meetings that have started but not ended still appear
+      const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
       const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
-      console.log('Fetching future events from', now.toISOString(), 'to', thirtyDaysFromNow.toISOString());
+      console.log('Fetching events from', twoHoursAgo.toISOString(), 'to', thirtyDaysFromNow.toISOString());
 
       const response = await this.calendar.events.list({
         calendarId: 'primary',
-        timeMin: now.toISOString(),
+        timeMin: twoHoursAgo.toISOString(),
         timeMax: thirtyDaysFromNow.toISOString(),
         maxResults: 250,
         singleEvents: true,
@@ -256,7 +258,12 @@ export class CalendarService extends EventEmitter {
 
       console.log('Calendar API response:', response.data.items?.length || 0, 'events found');
 
-      const events = response.data.items || [];
+      // Filter to only include meetings that haven't ended yet
+      const events = (response.data.items || []).filter((event: any) => {
+        if (!event.end) return true; // Include if no end time specified
+        const endTime = new Date(event.end.dateTime || event.end.date);
+        return endTime > now; // Only include if meeting hasn't ended yet
+      });
 
       // Filter events to only include those with conference links
       const eventsWithConference = events.filter((event: any) => {

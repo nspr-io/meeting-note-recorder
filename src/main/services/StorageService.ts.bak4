@@ -999,7 +999,7 @@ ${meeting.transcript || ''}`;
           // Also save cache periodically
           await this.saveCacheToDisk();
         } else {
-          logger.warn(`[AUTO-SAVE] Meeting ${meetingId} not found in cache, stopping auto-save`);
+          console.warn(`[AUTO-SAVE] Meeting ${meetingId} not found in cache, stopping auto-save`);
           this.stopAutoSave(meetingId);
         }
       } catch (error) {
