@@ -699,7 +699,7 @@ async function findMatchingScheduledMeeting(detectedTitle?: string): Promise<Mee
 }
 
 // Store active notifications to prevent garbage collection
-const activeNotifications = new Map<string, Notification>();
+const activeNotifications = new Map<string, Notification | BrowserWindow>();
 
 function setupMeetingDetectionHandlers() {
   meetingDetectionService.on('meeting-detected', async (data) => {
@@ -840,27 +840,33 @@ function setupMeetingDetectionHandlers() {
           // Use the matched scheduled meeting
           logger.info('[JOURNEY-9a] Using matched scheduled meeting', {
             meetingId: matchedMeeting.id,
-            title: matchedMeeting.title
+            title: matchedMeeting.title,
+            calendarEventId: matchedMeeting.calendarEventId
           });
 
-          // First check if the meeting actually exists in storage
-          try {
-            const existingMeeting = await storageService.getMeeting(matchedMeeting.id);
-            if (existingMeeting) {
-              // Update the existing meeting status to recording
-              await storageService.updateMeeting(matchedMeeting.id, {
-                status: 'recording',
-                startTime: new Date(),
-                platform: data.platform as Meeting['platform']
-              });
-              meetingToRecord = await storageService.getMeeting(matchedMeeting.id);
-            } else {
-              throw new Error('Meeting not found in storage');
-            }
-          } catch (error) {
+          // Search for existing meeting by calendar event ID
+          const allMeetings = await storageService.getAllMeetings();
+          const calendarEventId = matchedMeeting.calendarEventId || matchedMeeting.id;
+          const existingMeeting = allMeetings.find(m => m.calendarEventId === calendarEventId);
+
+          if (existingMeeting) {
+            // Update the existing meeting status to recording
+            logger.info('[JOURNEY-9a-update] Found existing meeting in storage, updating', {
+              existingMeetingId: existingMeeting.id,
+              calendarEventId: calendarEventId,
+              currentStatus: existingMeeting.status
+            });
+
+            await storageService.updateMeeting(existingMeeting.id, {
+              status: 'recording',
+              startTime: new Date(),
+              platform: data.platform as Meeting['platform']
+            });
+            meetingToRecord = await storageService.getMeeting(existingMeeting.id);
+          } else {
             // Meeting doesn't exist in storage, create it
             logger.info('[JOURNEY-9a-fallback] Meeting not in storage, creating new', {
-              calendarEventId: matchedMeeting.id,
+              calendarEventId: calendarEventId,
               title: matchedMeeting.title
             });
 
@@ -870,7 +876,7 @@ function setupMeetingDetectionHandlers() {
               status: 'recording',
               startTime: new Date(),
               platform: data.platform as Meeting['platform'],
-              calendarEventId: matchedMeeting.calendarEventId || matchedMeeting.id,
+              calendarEventId: calendarEventId,
               meetingUrl: matchedMeeting.meetingUrl,
               calendarInviteUrl: matchedMeeting.calendarInviteUrl,
               attendees: matchedMeeting.attendees || [],
@@ -1054,91 +1060,196 @@ function setupMeetingDetectionHandlers() {
       minutesBeforeStart: Math.round((new Date(event.start).getTime() - Date.now()) / (1000 * 60))
     });
 
-    const notification = new Notification({
-      title: `Meeting starting soon: ${event.title}`,
-      body: 'Click to start recording',
-      timeoutType: 'default',  // Use system default timeout behavior
-      urgency: 'normal',
-      closeButtonText: 'Dismiss'
+    // Create custom notification window that stays visible for 90 seconds
+    const notificationWindow = new BrowserWindow({
+      width: 400,
+      height: 120,
+      frame: false,
+      resizable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      transparent: true,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true
+      }
     });
 
-    // Store notification to prevent garbage collection
+    // Position in top-right corner
+    const { screen } = require('electron');
+    const primaryDisplay = screen.getPrimaryDisplay();
+    const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
+    notificationWindow.setPosition(screenWidth - 420, 20);
+
+    // Make it stay on top of everything, including fullscreen
+    notificationWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    notificationWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+
+    // Load notification HTML
+    const notificationHTML = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: rgba(30, 30, 30, 0.95);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 16px;
+            color: white;
+            cursor: pointer;
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+          }
+          .title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: #fff;
+          }
+          .body {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.8);
+            margin-bottom: 8px;
+          }
+          .time {
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.5);
+          }
+          .close-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: rgba(255, 255, 255, 0.6);
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .close-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+          }
+        </style>
+      </head>
+      <body onclick="window.electronAPI?.notificationClicked()">
+        <button class="close-btn" onclick="event.stopPropagation(); window.electronAPI?.notificationClosed()">×</button>
+        <div class="title">Meeting starting soon: ${event.title}</div>
+        <div class="body">Click to start recording</div>
+        <div class="time">Starting in ${Math.round((new Date(event.start).getTime() - Date.now()) / (1000 * 60))} minute(s)</div>
+      </body>
+      </html>
+    `;
+
+    notificationWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(notificationHTML)}`);
+
+    // Store notification window to prevent garbage collection
     const reminderNotificationId = `reminder-${event.id}-${Date.now()}`;
-    activeNotifications.set(reminderNotificationId, notification);
+    activeNotifications.set(reminderNotificationId, notificationWindow);
 
-    // Auto-close notification after 60 seconds
+    // Auto-close notification after 90 seconds
     const autoCloseTimer = setTimeout(() => {
-      logger.info('[MEETING-REMINDER] Auto-closing notification after 60 seconds');
-      notification.close();
+      logger.info('[MEETING-REMINDER] Auto-closing notification after 90 seconds');
+      if (!notificationWindow.isDestroyed()) {
+        notificationWindow.close();
+      }
       activeNotifications.delete(reminderNotificationId);
-    }, 60000);
+    }, 90000);
 
-    notification.on('click', async () => {
-      // Clear auto-close timer and close notification immediately
-      clearTimeout(autoCloseTimer);
-      notification.close();
-      activeNotifications.delete(reminderNotificationId);
-      logger.info('[MEETING-REMINDER] Notification clicked for upcoming meeting', {
-        eventId: event.id,
-        title: event.title
-      });
+    // Handle notification click (body click) via webContents
+    notificationWindow.webContents.on('did-finish-load', () => {
+      // Inject IPC communication
+      notificationWindow.webContents.executeJavaScript(`
+        window.electronAPI = {
+          notificationClicked: () => {
+            window.location.href = 'notification://clicked';
+          },
+          notificationClosed: () => {
+            window.location.href = 'notification://closed';
+          }
+        };
+      `);
+    });
 
-      try {
-        // Find or create meeting and start recording
-        const meetings = await storageService.getAllMeetings();
-        let meeting = meetings.find(m => m.calendarEventId === event.id);
+    notificationWindow.webContents.on('will-navigate', async (e, url) => {
+      e.preventDefault();
 
-        if (!meeting) {
-          logger.info('[MEETING-REMINDER] Creating new meeting from calendar event');
-          meeting = await storageService.createMeeting({
-            title: event.title,
-            date: new Date(event.start),
-            status: 'recording',
-            startTime: new Date(),
-            calendarEventId: event.id,
-            meetingUrl: event.meetingUrl,
-            attendees: event.attendees || [],
-            notes: '',
-            transcript: ''
-          });
-        } else {
-          logger.info('[MEETING-REMINDER] Using existing meeting from calendar event');
-          await storageService.updateMeeting(meeting.id, {
-            status: 'recording',
-            startTime: new Date()
-          });
-          meeting = await storageService.getMeeting(meeting.id);
+      if (url === 'notification://clicked') {
+        // Clear auto-close timer and close notification immediately
+        clearTimeout(autoCloseTimer);
+        if (!notificationWindow.isDestroyed()) {
+          notificationWindow.close();
         }
+        activeNotifications.delete(reminderNotificationId);
 
-        if (!meeting) {
-          throw new Error('Failed to create or retrieve meeting');
-        }
-
-        await startRecording(meeting, { logPrefix: '[MEETING-REMINDER]', openBrowser: true });
-      } catch (error) {
-        logger.error('[MEETING-REMINDER] Failed to start recording from reminder', {
-          error: error instanceof Error ? error.message : String(error),
+        logger.info('[MEETING-REMINDER] Notification clicked for upcoming meeting', {
           eventId: event.id,
           title: event.title
         });
 
-        const errorNotification = new Notification({
-          title: 'Recording Failed',
-          body: 'Could not start recording for the upcoming meeting',
-          urgency: 'critical'
-        });
-        errorNotification.show();
+        try {
+          // Find or create meeting and start recording
+          const meetings = await storageService.getAllMeetings();
+          let meeting = meetings.find(m => m.calendarEventId === event.id);
+
+          if (!meeting) {
+            logger.info('[MEETING-REMINDER] Creating new meeting from calendar event');
+            meeting = await storageService.createMeeting({
+              title: event.title,
+              date: new Date(event.start),
+              status: 'recording',
+              startTime: new Date(),
+              calendarEventId: event.id,
+              meetingUrl: event.meetingUrl,
+              attendees: event.attendees || [],
+              notes: '',
+              transcript: ''
+            });
+          } else {
+            logger.info('[MEETING-REMINDER] Using existing meeting from calendar event');
+            await storageService.updateMeeting(meeting.id, {
+              status: 'recording',
+              startTime: new Date()
+            });
+            meeting = await storageService.getMeeting(meeting.id);
+          }
+
+          if (!meeting) {
+            throw new Error('Failed to create or retrieve meeting');
+          }
+
+          await startRecording(meeting, { logPrefix: '[MEETING-REMINDER]', openBrowser: true });
+        } catch (error) {
+          logger.error('[MEETING-REMINDER] Failed to start recording from reminder', {
+            error: error instanceof Error ? error.message : String(error),
+            eventId: event.id,
+            title: event.title
+          });
+
+          const errorNotification = new Notification({
+            title: 'Recording Failed',
+            body: 'Could not start recording for the upcoming meeting',
+            urgency: 'critical'
+          });
+          errorNotification.show();
+        }
+      } else if (url === 'notification://closed') {
+        // User clicked close button
+        logger.info('[MEETING-REMINDER] Notification manually dismissed');
+        clearTimeout(autoCloseTimer);
+        if (!notificationWindow.isDestroyed()) {
+          notificationWindow.close();
+        }
+        activeNotifications.delete(reminderNotificationId);
       }
     });
-
-    // Handle manual dismissal (user clicks close button)
-    notification.on('close', () => {
-      logger.info('[MEETING-REMINDER] Notification manually dismissed');
-      clearTimeout(autoCloseTimer);
-      activeNotifications.delete(reminderNotificationId);
-    });
-
-    notification.show();
   });
 }
 

@@ -619,10 +619,26 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
   // Update cache when segments change
   useEffect(() => {
+    console.log('[CACHE-UPDATE] Setting cache', {
+      meetingId: meeting.id,
+      meetingTitle: meeting.title,
+      segmentCount: transcriptSegments.length,
+      firstSegment: transcriptSegments[0]?.text?.substring(0, 50),
+      lastSegment: transcriptSegments[transcriptSegments.length - 1]?.text?.substring(0, 50)
+    });
     transcriptCache.set(meeting.id, transcriptSegments);
   }, [meeting.id, transcriptSegments]);
 
   useEffect(() => {
+    console.log('[MEETING-CHANGE] Effect triggered', {
+      meetingId: meeting.id,
+      meetingTitle: meeting.title,
+      meetingStatus: meeting.status,
+      isRecordingState: isRecording,
+      currentSegmentCount: transcriptSegments.length,
+      transcriptLength: meeting.transcript?.length || 0
+    });
+
     setNotes(meeting.notes || '');
     setEditedTitle(meeting.title); // Update title when meeting prop changes
     setHasChanges(false);
@@ -659,17 +675,34 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     // When recording is active, don't parse stored transcript (rely on real-time)
     // When viewing completed meetings, parse the stored transcript
     if (meeting.status !== 'recording') {
+      console.log('[MEETING-CHANGE] Loading transcript (not recording)');
       if (meeting.transcript) {
         const parsed = parseTranscript(meeting.transcript);
+        console.log('[MEETING-CHANGE] Parsed transcript segments:', parsed.length);
         setTranscriptSegments(parsed);
         // Clear the cache when we parse from stored transcript to avoid duplicates
         transcriptCache.set(meeting.id, parsed);
       } else {
+        console.log('[MEETING-CHANGE] No transcript, clearing segments');
         setTranscriptSegments([]);
         transcriptCache.set(meeting.id, []);
       }
     } else if (meeting.status === 'recording' && !isRecording) {
       // Just started recording - clear old segments
+      console.log('[MEETING-CHANGE] Just started recording, clearing segments');
+      setTranscriptSegments([]);
+      transcriptCache.set(meeting.id, []);
+    } else if (meeting.status === 'recording' && isRecording) {
+      // Recording in progress - load from cache to avoid duplication
+      console.log('[MEETING-CHANGE] Recording in progress, loading from cache');
+      const cachedSegments = transcriptCache.get(meeting.id) || [];
+      console.log('[MEETING-CHANGE] Loaded from cache:', cachedSegments.length, 'segments');
+      setTranscriptSegments(cachedSegments);
+    } else {
+      console.log('[MEETING-CHANGE] Unknown state, clearing segments', {
+        status: meeting.status,
+        isRecording: isRecording
+      });
       setTranscriptSegments([]);
       transcriptCache.set(meeting.id, []);
     }
@@ -736,10 +769,21 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   // IMPORTANT: We use useCallback with meeting.id dependency to create a stable handler
   // that updates when meeting changes but doesn't cause duplicate listeners
   const handleTranscriptUpdate = useCallback((data: any) => {
-    console.log('[MeetingDetailFinal] Received transcript update:', data);
-    if (data.meetingId !== meeting.id) return;
+    console.log('[TRANSCRIPT-UPDATE] Received', {
+      dataMeetingId: data.meetingId,
+      currentMeetingId: meeting.id,
+      matches: data.meetingId === meeting.id,
+      text: data.text?.substring(0, 50)
+    });
+
+    if (data.meetingId !== meeting.id) {
+      console.log('[TRANSCRIPT-UPDATE] Ignoring - not for current meeting');
+      return;
+    }
 
     setTranscriptSegments(prev => {
+      console.log('[TRANSCRIPT-UPDATE] Current segment count before add:', prev.length);
+
       // Check for duplicates before adding
       const isDuplicate = prev.some(
         s => s.timestamp === data.timestamp &&
@@ -756,11 +800,13 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
         };
 
         const updated = [...prev, newSegment];
+        console.log('[TRANSCRIPT-UPDATE] Added new segment, total now:', updated.length);
 
         // Update cache immediately
         transcriptCache.set(meeting.id, updated);
         return updated;
       }
+      console.log('[TRANSCRIPT-UPDATE] Duplicate detected, not adding');
       return prev;
     });
   }, [meeting.id]);

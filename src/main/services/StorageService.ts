@@ -36,14 +36,19 @@ export class StorageService {
     // First load from cache for instant display
     await this.loadCacheFromDisk();
 
+    // Load all meetings from markdown files to ensure we have the full state
+    // This must happen BEFORE cleanup so we can detect stuck recordings
+    await this.loadAllMeetings();
+
     // Clean up any stuck "recording" states from previous app crashes
+    // This now runs AFTER loading files, so it can detect and fix stuck recordings
     await this.cleanupStuckRecordings();
 
     // Scan for and adopt any prep notes
     await this.scanAndAdoptPrepNotes();
 
-    // Then load actual meeting files in background to update cache
-    this.loadAllMeetings().then(() => this.saveCacheToDisk());
+    // Save the cleaned-up cache to disk
+    await this.saveCacheToDisk();
   }
 
   private async scanAndAdoptPrepNotes(): Promise<void> {

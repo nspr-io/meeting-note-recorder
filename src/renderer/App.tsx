@@ -654,6 +654,7 @@ function App() {
           {viewMode === 'meetings' && (
             selectedMeeting ? (
               <MeetingDetailFinal
+                key={selectedMeeting.id}
                 meeting={selectedMeeting}
                 onUpdateMeeting={async (updates) => {
                   await window.electronAPI.updateMeeting(selectedMeeting.id, updates);
