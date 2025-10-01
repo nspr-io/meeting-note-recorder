@@ -184,6 +184,23 @@ function setupIpcHandlers() {
     return { success: true };
   });
 
+  ipcMain.handle(IpcChannels.CHECK_PREP_NOTE, async (_, meetingId) => {
+    try {
+      logger.info(`[IPC] Checking prep note for meeting: ${meetingId}`);
+      const updatedMeeting = await storageService.checkPrepNoteForMeeting(meetingId);
+
+      if (updatedMeeting && mainWindow) {
+        // Notify UI that meetings were updated
+        mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
+      }
+
+      return updatedMeeting;
+    } catch (error) {
+      logger.error('[IPC] Failed to check prep note:', error);
+      throw error;
+    }
+  });
+
   ipcMain.handle(IpcChannels.RESET_PROMPT, async (_, promptId) => {
     if (!promptService) {
       logger.error('PromptService not available - cannot reset prompt:', promptId);
@@ -211,6 +228,15 @@ function setupIpcHandlers() {
       sampleTitles: recentMeetings.slice(0, 5).map(m => ({ id: m.id, title: m.title }))
     });
     return recentMeetings;
+  });
+
+  ipcMain.handle(IpcChannels.GET_RECORDING_STATE, async () => {
+    const state = recordingService.getRecordingState();
+    let meeting = null;
+    if (state.meetingId) {
+      meeting = await storageService.getMeeting(state.meetingId);
+    }
+    return { ...state, meeting };
   });
 
   ipcMain.handle(IpcChannels.CREATE_MEETING, async (_, meeting: Partial<Meeting>) => {
@@ -539,8 +565,9 @@ function setupIpcHandlers() {
 
   ipcMain.handle(IpcChannels.SYNC_CALENDAR, async () => {
     try {
-      console.log('Starting smart calendar sync...');
-      const events = await calendarService.fetchUpcomingMeetings();
+      console.log('Starting smart calendar sync (manual)...');
+      // Manual sync fetches 30 days ahead
+      const events = await calendarService.fetchUpcomingMeetings(30);
       console.log(`Found ${events.length} calendar events`);
 
       // Use smart sync method
@@ -1250,7 +1277,8 @@ async function initializeSDKInBackground() {
       if (settings?.googleCalendarConnected && calendarService.isAuthenticated()) {
         setTimeout(async () => {
           try {
-            await syncCalendarSilently();
+            // Initial sync on startup fetches 30 days ahead
+            await syncCalendarSilently(30);
           } catch (error) {
             console.error('Auto-sync failed:', error);
           }
@@ -1265,10 +1293,10 @@ async function initializeSDKInBackground() {
   }
 }
 
-async function syncCalendarSilently() {
+async function syncCalendarSilently(daysAhead: number = 7) {
   try {
-    const events = await calendarService.fetchUpcomingMeetings();
-    console.log(`Auto-sync: Found ${events.length} calendar events`);
+    const events = await calendarService.fetchUpcomingMeetings(daysAhead);
+    console.log(`Auto-sync (${daysAhead} days): Found ${events.length} calendar events`);
 
     // Use smart sync method
     const syncResult = await storageService.smartSyncCalendarEvents(events);
@@ -1401,12 +1429,13 @@ app.whenReady().then(async () => {
     openAtLogin: settingsService.getSettings()?.autoStartOnBoot || false,
   });
   
-  // Set up periodic sync every 10 minutes
+  // Set up periodic sync every 10 minutes (only 7 days ahead for efficiency)
   setInterval(async () => {
     if (settingsService.getSettings()?.googleCalendarConnected && calendarService.isAuthenticated()) {
       console.log('Running periodic calendar sync...');
       try {
-        await syncCalendarSilently();
+        // Periodic syncs only fetch 7 days ahead to reduce load
+        await syncCalendarSilently(7);
       } catch (error) {
         console.error('Periodic sync failed:', error);
       }

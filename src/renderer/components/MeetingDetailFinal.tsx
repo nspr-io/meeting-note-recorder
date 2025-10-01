@@ -1,32 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback, ErrorInfo } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import styled from '@emotion/styled';
 import { Meeting, Attendee, IpcChannels } from '../../shared/types';
 import { format, formatDistanceToNow } from 'date-fns';
-import {
-  MDXEditor,
-  headingsPlugin,
-  listsPlugin,
-  quotePlugin,
-  thematicBreakPlugin,
-  markdownShortcutPlugin,
-  linkPlugin,
-  linkDialogPlugin,
-  tablePlugin,
-  codeBlockPlugin,
-  codeMirrorPlugin,
-  diffSourcePlugin,
-  toolbarPlugin,
-  UndoRedo,
-  BoldItalicUnderlineToggles,
-  ListsToggle,
-  BlockTypeSelect,
-  CreateLink,
-  InsertTable,
-  InsertCodeBlock,
-  DiffSourceToggleWrapper,
-  Separator
-} from '@mdxeditor/editor';
-import '@mdxeditor/editor/style.css';
+import MDEditor from '@uiw/react-md-editor';
 
 const Container = styled.div`
   display: flex;
@@ -282,111 +258,45 @@ const EditorContainer = styled.div`
   padding: 24px;
   background: white;
   min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 
-  .mdxeditor {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  .w-md-editor {
     border: 1px solid #e5e7eb;
     border-radius: 8px;
     background: white;
   }
 
-  .mdxeditor-toolbar {
+  .w-md-editor-toolbar {
     background: #fafafa;
     border-bottom: 1px solid #e5e7eb;
-    padding: 8px;
-    gap: 4px;
   }
 
-  .mdxeditor-toolbar-contents {
-    gap: 8px;
+  .w-md-editor-content {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
+`;
 
-  ._separator_1fwlh_97 {
-    background: #e5e7eb;
-    margin: 0 8px;
-  }
+const EditorToolbar = styled.div`
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+`;
 
-  .mdxeditor-root-contenteditable {
-    padding: 20px;
-    min-height: 400px;
-    position: relative;
+const EditorModeButton = styled.button<{ isActive?: boolean }>`
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1px solid ${props => props.isActive ? '#007AFF' : 'rgba(0, 0, 0, 0.1)'};
+  background: ${props => props.isActive ? '#007AFF' : 'white'};
+  color: ${props => props.isActive ? 'white' : '#333'};
 
-    /* Remove default paragraph margins */
-    p {
-      margin: 0;
-      padding: 0;
-      line-height: 1.6;
-    }
-
-    /* First paragraph should have no top margin */
-    > p:first-child {
-      margin-top: 0;
-    }
-  }
-
-  /* Override MDXEditor's placeholder positioning */
-  .mdxeditor [contenteditable="true"]:empty::before,
-  .mdxeditor .mdxeditor-root-contenteditable:empty::before {
-    content: attr(data-placeholder) !important;
-    position: absolute;
-    top: 20px;
-    left: 20px;
-    color: #999;
-    pointer-events: none;
-  }
-
-  /* Hide the default placeholder that appears above */
-  .mdxeditor [data-placeholder]:not(:empty)::before {
-    display: none !important;
-  }
-
-  /* Ensure the contenteditable area starts at the right position */
-  .mdxeditor [contenteditable="true"] {
-    min-height: inherit;
-  }
-
-  .mdxeditor-root-contenteditable h1 { font-size: 28px; font-weight: 700; margin: 20px 0 12px; }
-  .mdxeditor-root-contenteditable h2 { font-size: 24px; font-weight: 600; margin: 18px 0 10px; }
-  .mdxeditor-root-contenteditable h3 { font-size: 20px; font-weight: 600; margin: 16px 0 8px; }
-
-  .mdxeditor-root-contenteditable p {
-    line-height: 1.6;
-    margin: 12px 0;
-  }
-
-  .mdxeditor-root-contenteditable ul,
-  .mdxeditor-root-contenteditable ol {
-    padding-left: 24px;
-    margin: 12px 0;
-  }
-
-  .mdxeditor-root-contenteditable li {
-    margin: 4px 0;
-    line-height: 1.6;
-  }
-
-  .mdxeditor-root-contenteditable blockquote {
-    border-left: 3px solid #667eea;
-    padding-left: 16px;
-    margin: 16px 0;
-    color: #555;
-  }
-
-  .mdxeditor-root-contenteditable code {
-    background: #f3f4f6;
-    padding: 2px 6px;
-    border-radius: 3px;
-    font-family: 'SF Mono', Monaco, monospace;
-    font-size: 0.9em;
-  }
-
-  .mdxeditor-root-contenteditable pre {
-    background: #1e1e1e;
-    color: #d4d4d4;
-    padding: 16px;
-    border-radius: 6px;
-    overflow-x: auto;
-    margin: 16px 0;
+  &:hover {
+    background: ${props => props.isActive ? '#0051D5' : '#f0f0f0'};
   }
 `;
 
@@ -526,74 +436,10 @@ type ViewMode = 'notes' | 'transcript' | 'insights' | 'actions';
 // Module-level transcript cache to persist across component re-renders
 const transcriptCache = new Map<string, any[]>();
 
-// Error boundary for MDX Editor
-class MDXErrorBoundary extends React.Component<
-  { children: React.ReactNode; fallback: React.ReactNode },
-  { hasError: boolean }
-> {
-  constructor(props: { children: React.ReactNode; fallback: React.ReactNode }) {
-    super(props);
-    this.state = { hasError: false };
-  }
-
-  static getDerivedStateFromError(): { hasError: boolean } {
-    return { hasError: true };
-  }
-
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('MDX Editor Error:', error, errorInfo);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return this.props.fallback;
-    }
-
-    return this.props.children;
-  }
-}
-
-// Sanitize markdown content to prevent MDX parsing errors
-function sanitizeMarkdown(content: string): string {
-  if (!content) return content;
-
-  return content
-    // Remove or fix problematic HTML tags that MDX can't handle
-    .replace(/<br\s*\/?>/gi, '\n') // Convert <br> tags to newlines
-    .replace(/<\/br>/gi, '') // Remove invalid </br> closing tags
-    .replace(/<p\s*>/gi, '\n\n') // Convert <p> to paragraph breaks
-    .replace(/<\/p>/gi, '\n\n') // Convert </p> to paragraph breaks
-    .replace(/<div[^>]*>/gi, '\n') // Convert <div> to newlines
-    .replace(/<\/div>/gi, '\n') // Convert </div> to newlines
-
-    // Fix double backslashes and escape sequences
-    .replace(/\\\\/g, '\\') // Convert double backslashes to single
-    .replace(/\\n/g, '\n') // Convert literal \n to actual newlines
-    .replace(/\\t/g, '\t') // Convert literal \t to actual tabs
-
-    // Escape problematic characters that could be mistaken for JSX
-    .replace(/(?<!\\)</g, '\\<') // Escape unescaped < characters
-    .replace(/(?<!\\)>/g, '\\>') // Escape unescaped > characters
-    .replace(/(?<!\\)\{/g, '\\{') // Escape unescaped { characters
-    .replace(/(?<!\\)\}/g, '\\}') // Escape unescaped } characters
-
-    // Fix malformed HTML-like constructs
-    .replace(/<\/(?![a-zA-Z])/g, '\\<\\/')
-    .replace(/<(?![a-zA-Z/!])/g, '\\<')
-
-    // Clean up multiple consecutive newlines
-    .replace(/\n\n\n+/g, '\n\n')
-
-    // Fix markdown link syntax
-    .replace(/\[([^\]]*)\]\s*\(\s*([^)]*)\s*\)/g, '[$1]($2)')
-
-    // Remove any remaining problematic escape sequences
-    .replace(/\\([^\\<>{}ntr])/g, '$1'); // Remove unnecessary escapes except for our intentional ones
-}
-
 function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefresh }: MeetingDetailFinalProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('notes');
   const [notes, setNotes] = useState(meeting.notes || '');
+  const [editorPreviewMode, setEditorPreviewMode] = useState<'edit' | 'live' | 'preview'>('preview');
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
@@ -614,7 +460,6 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [editedTeamContent, setEditedTeamContent] = useState('');
   const [slackShared, setSlackShared] = useState(meeting.slackSharedAt);
   const [isSharing, setIsSharing] = useState(false);
-  const mdxEditorRef = useRef<any>(null);
   const isFirstRender = useRef(true);
 
   // Update cache when segments change
@@ -707,6 +552,40 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       transcriptCache.set(meeting.id, []);
     }
   }, [meeting.id, meeting.status, meeting.transcript, meeting.title]);
+
+  // Check for prep note on-demand when viewing a meeting without a file
+  useEffect(() => {
+    const checkForPrepNote = async () => {
+      // Only check if meeting has no file yet
+      if (!meeting.filePath) {
+        // Check if we already attempted to find prep note for this meeting in this session
+        const attemptedKey = `prep-check-${meeting.id}`;
+        const lastAttempt = sessionStorage.getItem(attemptedKey);
+
+        // Only search if we haven't checked in this session (hybrid approach)
+        if (!lastAttempt) {
+          console.log(`[PREP-NOTE-CHECK] Checking for prep note: ${meeting.title}`);
+          try {
+            const updatedMeeting = await window.electronAPI.checkPrepNote(meeting.id);
+
+            if (updatedMeeting?.filePath) {
+              console.log(`[PREP-NOTE-CHECK] Prep note found and adopted: ${updatedMeeting.filePath}`);
+              // Meeting will be updated via MEETINGS_UPDATED event from backend
+            } else {
+              console.log(`[PREP-NOTE-CHECK] No prep note found for: ${meeting.title}`);
+            }
+
+            // Mark as checked in this session
+            sessionStorage.setItem(attemptedKey, Date.now().toString());
+          } catch (error) {
+            console.error('[PREP-NOTE-CHECK] Failed to check for prep note:', error);
+          }
+        }
+      }
+    };
+
+    checkForPrepNote();
+  }, [meeting.id, meeting.filePath]);
 
   // Listen for recording started events
   useEffect(() => {
@@ -850,7 +729,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   };
 
   const handleNotesChange = (value: string) => {
-    // Ignore the first onChange trigger from MDXEditor mount
+    // Ignore the first onChange trigger from editor mount
     if (isFirstRender.current) {
       isFirstRender.current = false;
       setNotes(value);
@@ -1434,79 +1313,34 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
           {/* Notes Panel - Always rendered but hidden when not active */}
           <TabPanel isActive={viewMode === 'notes'}>
             <EditorContainer>
-              <MDXErrorBoundary
-                key={`boundary-${editorKey}`}
-                fallback={
-                  <div style={{
-                    padding: '20px',
-                    border: '1px solid #e1e5e9',
-                    borderRadius: '8px',
-                    backgroundColor: '#f8f9fa'
-                  }}>
-                    <h3 style={{ color: '#d73a49', marginBottom: '10px' }}>Editor Error</h3>
-                    <p>The markdown content contains syntax that cannot be parsed. Please switch to source mode to fix the content, or clear the notes to start fresh.</p>
-                    <button
-                      onClick={() => {
-                        setNotes('');
-                        setEditorKey(Date.now()); // Force fresh editor instance
-                      }}
-                      style={{
-                        marginTop: '10px',
-                        padding: '8px 16px',
-                        backgroundColor: '#0366d6',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Clear Notes
-                    </button>
-                  </div>
-                }
-              >
-                <MDXEditor
-                  key={`editor-${meeting.id}-${editorKey}`}
-                  ref={mdxEditorRef}
-                  markdown={sanitizeMarkdown(notes)}
-                  onChange={handleNotesChange}
-                  placeholder="Start typing your notes..."
-                  plugins={[
-                    headingsPlugin(),
-                    listsPlugin(),
-                    quotePlugin(),
-                    thematicBreakPlugin(),
-                    markdownShortcutPlugin(),
-                    linkPlugin(),
-                    linkDialogPlugin(),
-                    tablePlugin(),
-                    codeBlockPlugin({ defaultCodeBlockLanguage: 'js' }),
-                    codeMirrorPlugin({ codeBlockLanguages: { js: 'JavaScript', css: 'CSS', txt: 'Plain Text', tsx: 'TypeScript' } }),
-                    diffSourcePlugin({ viewMode: 'rich-text' }),
-                    toolbarPlugin({
-                      toolbarContents: () => (
-                        <>
-                          <UndoRedo />
-                          <Separator />
-                          <BoldItalicUnderlineToggles />
-                          <Separator />
-                          <BlockTypeSelect />
-                          <Separator />
-                          <ListsToggle />
-                          <Separator />
-                          <CreateLink />
-                          <InsertTable />
-                          <InsertCodeBlock />
-                          <Separator />
-                          <DiffSourceToggleWrapper>
-                            <div />
-                          </DiffSourceToggleWrapper>
-                        </>
-                      )
-                    })
-                  ]}
-                />
-              </MDXErrorBoundary>
+              <EditorToolbar>
+                <EditorModeButton
+                  isActive={editorPreviewMode === 'preview'}
+                  onClick={() => setEditorPreviewMode('preview')}
+                >
+                  📖 Preview
+                </EditorModeButton>
+                <EditorModeButton
+                  isActive={editorPreviewMode === 'live'}
+                  onClick={() => setEditorPreviewMode('live')}
+                >
+                  ⚡ Split
+                </EditorModeButton>
+                <EditorModeButton
+                  isActive={editorPreviewMode === 'edit'}
+                  onClick={() => setEditorPreviewMode('edit')}
+                >
+                  ✏️ Edit
+                </EditorModeButton>
+              </EditorToolbar>
+              <MDEditor
+                key={`editor-${meeting.id}-${editorKey}`}
+                value={notes}
+                onChange={(value) => handleNotesChange(value || '')}
+                height={400}
+                preview={editorPreviewMode}
+                hideToolbar={false}
+              />
             </EditorContainer>
           </TabPanel>
 
@@ -1779,45 +1613,13 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   </TranscriptHeader>
 
                   <div style={{ marginTop: '20px' }}>
-                    <MDXEditor
+                    <MDEditor
                       key={`team-editor-${meeting.id}`}
-                      markdown={editedTeamContent || formatTeamSummary(teamSummary)}
-                      onChange={setEditedTeamContent}
-                      placeholder="Edit team summary before sharing..."
-                      plugins={[
-                        headingsPlugin(),
-                        listsPlugin(),
-                        quotePlugin(),
-                        thematicBreakPlugin(),
-                        markdownShortcutPlugin(),
-                        linkPlugin(),
-                        linkDialogPlugin(),
-                        tablePlugin(),
-                        codeBlockPlugin(),
-                        codeMirrorPlugin(),
-                        diffSourcePlugin(),
-                        toolbarPlugin({
-                          toolbarContents: () => (
-                            <>
-                              <UndoRedo />
-                              <Separator />
-                              <BoldItalicUnderlineToggles />
-                              <Separator />
-                              <ListsToggle />
-                              <Separator />
-                              <BlockTypeSelect />
-                              <Separator />
-                              <CreateLink />
-                              <InsertTable />
-                              <InsertCodeBlock />
-                              <Separator />
-                              <DiffSourceToggleWrapper>
-                                <div />
-                              </DiffSourceToggleWrapper>
-                            </>
-                          )
-                        })
-                      ]}
+                      value={editedTeamContent || formatTeamSummary(teamSummary)}
+                      onChange={(value) => setEditedTeamContent(value || '')}
+                      height={400}
+                      preview={editorPreviewMode}
+                      hideToolbar={false}
                     />
                   </div>
                 </div>

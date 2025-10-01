@@ -1,16 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import styled from '@emotion/styled';
 import { UserProfile } from '../../shared/types';
-import {
-  MDXEditor,
-  headingsPlugin,
-  listsPlugin,
-  markdownShortcutPlugin,
-  toolbarPlugin,
-  BoldItalicUnderlineToggles,
-  ListsToggle,
-} from '@mdxeditor/editor';
-import '@mdxeditor/editor/style.css';
+import MDEditor from '@uiw/react-md-editor';
 
 const ProfileContainer = styled.div`
   padding: 24px;
@@ -101,45 +92,20 @@ const StatusMessage = styled.div<{ type: 'success' | 'error' | 'info' }>`
 
 
 const ProfileEditorContainer = styled.div`
-  .mdxeditor {
+  .w-md-editor {
     min-height: 150px;
-    max-height: 200px;
     border: 1px solid #d1d1d1;
     border-radius: 6px;
     font-size: 13px;
   }
 
-  .mdxeditor-toolbar {
+  .w-md-editor-toolbar {
     border-bottom: 1px solid #e5e5e7;
     background: #fafafa;
-    padding: 6px;
   }
 
-  .mdxeditor-root-contenteditable {
-    padding: 12px;
-    overflow-y: auto;
-    max-height: 150px;
-    position: relative;
-  }
-
-  /* Lexical-style placeholder positioning */
-  .mdxeditor .editor-placeholder {
-    color: #999;
-    overflow: hidden;
-    position: absolute;
-    text-overflow: ellipsis;
-    top: 0;
-    left: 12px;
+  .w-md-editor-content {
     font-size: 13px;
-    user-select: none;
-    display: inline-block;
-    pointer-events: none;
-  }
-
-  /* Ensure first paragraph has no extra margin that could push placeholder down */
-  .mdxeditor-root-contenteditable > p:first-child {
-    margin-top: 0 !important;
-    padding-top: 0 !important;
   }
 `;
 
@@ -155,8 +121,6 @@ function Profile({}: ProfileProps) {
   });
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info', text: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const aboutMeRef = useRef<any>(null);
-  const preferencesRef = useRef<any>(null);
 
   useEffect(() => {
     loadProfile();
@@ -230,24 +194,12 @@ function Profile({}: ProfileProps) {
         <FormGroup>
           <Label>About Me</Label>
           <ProfileEditorContainer>
-            <MDXEditor
-              ref={aboutMeRef}
-              markdown={profile.aboutMe}
-              onChange={(value) => setProfile({ ...profile, aboutMe: value })}
-              placeholder="Tell us about yourself, your role, and your expertise..."
-              plugins={[
-                headingsPlugin(),
-                listsPlugin(),
-                markdownShortcutPlugin(),
-                toolbarPlugin({
-                  toolbarContents: () => (
-                    <>
-                      <BoldItalicUnderlineToggles />
-                      <ListsToggle />
-                    </>
-                  )
-                })
-              ]}
+            <MDEditor
+              value={profile.aboutMe}
+              onChange={(value) => setProfile({ ...profile, aboutMe: value || '' })}
+              height={150}
+              preview="edit"
+              hideToolbar={false}
             />
           </ProfileEditorContainer>
         </FormGroup>
@@ -255,24 +207,12 @@ function Profile({}: ProfileProps) {
         <FormGroup>
           <Label>Meeting Preferences</Label>
           <ProfileEditorContainer>
-            <MDXEditor
-              ref={preferencesRef}
-              markdown={profile.preferences}
-              onChange={(value) => setProfile({ ...profile, preferences: value })}
-              placeholder="How do you prefer meetings to be run? Any specific requirements or preferences?"
-              plugins={[
-                headingsPlugin(),
-                listsPlugin(),
-                markdownShortcutPlugin(),
-                toolbarPlugin({
-                  toolbarContents: () => (
-                    <>
-                      <BoldItalicUnderlineToggles />
-                      <ListsToggle />
-                    </>
-                  )
-                })
-              ]}
+            <MDEditor
+              value={profile.preferences}
+              onChange={(value) => setProfile({ ...profile, preferences: value || '' })}
+              height={150}
+              preview="edit"
+              hideToolbar={false}
             />
           </ProfileEditorContainer>
         </FormGroup>

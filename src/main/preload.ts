@@ -14,7 +14,8 @@ const api = {
 
   // Meetings
   getMeetings: () => ipcRenderer.invoke(IpcChannels.GET_MEETINGS),
-  createMeeting: (meeting: Partial<Meeting>) => 
+  getRecordingState: () => ipcRenderer.invoke(IpcChannels.GET_RECORDING_STATE),
+  createMeeting: (meeting: Partial<Meeting>) =>
     ipcRenderer.invoke(IpcChannels.CREATE_MEETING, meeting),
   updateMeeting: (id: string, updates: Partial<Meeting>) => 
     ipcRenderer.invoke(IpcChannels.UPDATE_MEETING, id, updates),
@@ -70,6 +71,10 @@ const api = {
     ipcRenderer.invoke(IpcChannels.UPDATE_PROMPT, data),
   resetPrompt: (promptId: string) =>
     ipcRenderer.invoke(IpcChannels.RESET_PROMPT, promptId),
+
+  // Prep note linking
+  checkPrepNote: (meetingId: string) =>
+    ipcRenderer.invoke(IpcChannels.CHECK_PREP_NOTE, meetingId),
 
   // Permissions
   getPermissionStatus: () =>

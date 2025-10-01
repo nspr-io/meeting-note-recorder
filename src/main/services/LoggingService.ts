@@ -5,8 +5,15 @@ import { app } from 'electron';
 export class LoggingService {
   private logPath: string;
   private logStream: fs.WriteStream | null = null;
+  private consoleLogLevel: 'error' | 'warn' | 'info' | 'debug';
+  private logLevels = { error: 0, warn: 1, info: 2, debug: 3 };
 
   constructor() {
+    // Get log level from environment, default to 'warn' for dev
+    const envLogLevel = process.env.LOG_LEVEL?.toLowerCase();
+    this.consoleLogLevel = (['error', 'warn', 'info', 'debug'].includes(envLogLevel || '')
+      ? envLogLevel as 'error' | 'warn' | 'info' | 'debug'
+      : 'warn');
     // Store logs in user data directory
     const logsDir = path.join(app.getPath('userData'), 'logs');
     if (!fs.existsSync(logsDir)) {
@@ -45,25 +52,29 @@ export class LoggingService {
 
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: any) {
     const formattedMessage = this.formatMessage(level, message, data);
-    
-    // Write to file
+
+    // Always write to file
     if (this.logStream) {
       this.logStream.write(formattedMessage);
     }
-    
-    // Also log to console
-    switch (level) {
-      case 'error':
-        console.error(message, data || '');
-        break;
-      case 'warn':
-        console.warn(message, data || '');
-        break;
-      case 'debug':
-        console.debug(message, data || '');
-        break;
-      default:
-        console.log(message, data || '');
+
+    // Only log to console if level is at or below configured level
+    const shouldLogToConsole = this.logLevels[level] <= this.logLevels[this.consoleLogLevel];
+
+    if (shouldLogToConsole) {
+      switch (level) {
+        case 'error':
+          console.error(message, data || '');
+          break;
+        case 'warn':
+          console.warn(message, data || '');
+          break;
+        case 'debug':
+          console.debug(message, data || '');
+          break;
+        default:
+          console.log(message, data || '');
+      }
     }
   }
 

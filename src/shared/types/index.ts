@@ -110,6 +110,7 @@ export enum IpcChannels {
   UPDATE_MEETING = 'update-meeting',
   DELETE_MEETING = 'delete-meeting',
   GET_MEETINGS = 'get-meetings',
+  GET_RECORDING_STATE = 'get-recording-state',
   GET_SETTINGS = 'get-settings',
   UPDATE_SETTINGS = 'update-settings',
   CONNECT_CALENDAR = 'connect-calendar',
@@ -137,6 +138,9 @@ export enum IpcChannels {
   GET_PROMPT = 'get-prompt',
   UPDATE_PROMPT = 'update-prompt',
   RESET_PROMPT = 'reset-prompt',
+
+  // Prep note linking
+  CHECK_PREP_NOTE = 'check-prep-note',
 }
 
 export interface SearchOptions {

@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import { Global, css } from '@emotion/react';
+import '@uiw/react-md-editor/markdown-editor.css';
 
 const globalStyles = css`
   * {

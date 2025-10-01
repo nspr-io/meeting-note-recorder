@@ -23,4 +23,14 @@ module.exports = {
     '@recallai/desktop-sdk': 'commonjs @recallai/desktop-sdk',
     'electron-store': 'commonjs electron-store',
   },
+  // Memory optimizations for dev mode
+  cache: {
+    type: 'memory',
+    maxGenerations: 1,
+  },
+  optimization: {
+    removeAvailableModules: false,
+    removeEmptyChunks: false,
+    splitChunks: false,
+  },
 };

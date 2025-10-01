@@ -35,4 +35,14 @@ module.exports = {
     },
     port: 9000,
   },
+  // Memory optimizations for dev mode
+  cache: {
+    type: 'memory',
+    maxGenerations: 1,
+  },
+  optimization: {
+    removeAvailableModules: false,
+    removeEmptyChunks: false,
+    splitChunks: false,
+  },
 };

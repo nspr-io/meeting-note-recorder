@@ -4,6 +4,7 @@
   "description": "Local meeting recorder with automatic detection and note-taking",
   "main": "dist/main/index.js",
   "scripts": {
+    "dev:clean": "ps aux | grep -E 'meeting-note-recorder|webpack' | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true; lsof -ti:9000 | xargs kill -9 2>/dev/null || true; sleep 1; npm run dev",
     "dev": "concurrently -k \"npm run dev:main\" \"npm run dev:preload\" \"npm run dev:renderer\" \"wait-on http://localhost:9000 && electron .\"",
     "dev:main": "webpack --config webpack.main.config.js --mode development --watch",
     "dev:preload": "webpack --config webpack.preload.config.js --mode development --watch",

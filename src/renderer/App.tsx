@@ -371,6 +371,18 @@ function App() {
         meetings: loadedMeetings.map((m: Meeting) => ({ id: m.id, title: m.title, status: m.status }))
       });
       setMeetings(loadedMeetings);
+
+      // Restore recording state if active (HMR-safe)
+      const recState = await window.electronAPI.getRecordingState();
+      if (recState.isRecording && recState.meeting) {
+        console.log('[HMR-RECOVERY] Restoring active recording', {
+          meetingId: recState.meetingId,
+          title: recState.meeting.title
+        });
+        setIsRecording(true);
+        setSelectedMeeting(recState.meeting);
+        setTabMode('upcoming'); // Show upcoming tab where recording is
+      }
     } catch (error) {
       console.error('[JOURNEY-UI-LOAD-ERROR] Failed to load meetings:', error);
     }
@@ -557,8 +569,10 @@ function App() {
     if (tabMode === 'upcoming') {
       // Show meetings that haven't ended yet (or are actively recording)
       filtered = meetings.filter(m => {
-        // Use endTime if available, otherwise assume 1 hour after start time
-        const endTime = m.endTime ? new Date(m.endTime) : new Date(new Date(m.date).getTime() + 60 * 60 * 1000);
+        // Calculate end time: use endTime if available, otherwise use duration, fallback to 1 hour
+        const startTime = new Date(m.date).getTime();
+        const durationMs = m.duration ? m.duration * 60 * 1000 : 60 * 60 * 1000; // duration is in minutes
+        const endTime = m.endTime ? new Date(m.endTime) : new Date(startTime + durationMs);
         return endTime >= now ||
                m.status === 'recording' ||
                m.status === 'active';
@@ -566,8 +580,10 @@ function App() {
     } else {
       // Show past meetings - only those that have ended and have content
       filtered = meetings.filter(m => {
-        // Use endTime if available, otherwise assume 1 hour after start time
-        const endTime = m.endTime ? new Date(m.endTime) : new Date(new Date(m.date).getTime() + 60 * 60 * 1000);
+        // Calculate end time: use endTime if available, otherwise use duration, fallback to 1 hour
+        const startTime = new Date(m.date).getTime();
+        const durationMs = m.duration ? m.duration * 60 * 1000 : 60 * 60 * 1000; // duration is in minutes
+        const endTime = m.endTime ? new Date(m.endTime) : new Date(startTime + durationMs);
         return (endTime < now || m.status === 'completed') &&
                m.status !== 'recording' &&
                m.status !== 'active' &&

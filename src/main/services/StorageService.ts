@@ -156,8 +156,10 @@ export class StorageService {
       const content = await fs.readFile(filePath, 'utf-8');
       const { data: frontmatter } = matter(content);
 
-      // Skip if already has an ID (already adopted)
-      if (frontmatter.id) {
+      // Skip if already adopted by checking for app-specific fields
+      // Prep notes may have 'id' but won't have 'created_at' in ISO format with app structure
+      if (frontmatter.id && frontmatter.created_at && this.meetingsCache.has(frontmatter.id)) {
+        // This is already an adopted meeting file
         return;
       }
 
@@ -636,10 +638,10 @@ export class StorageService {
 
   private formatMeetingToMarkdown(meeting: Meeting): string {
     // Build frontmatter with only defined values
-    const dateStr = typeof meeting.date === 'string' 
-      ? meeting.date 
+    const dateStr = typeof meeting.date === 'string'
+      ? meeting.date
       : meeting.date.toISOString();
-    
+
     const frontmatter: any = {
       id: meeting.id,
       title: meeting.title,
@@ -653,7 +655,7 @@ export class StorageService {
         ? (meeting.updatedAt instanceof Date ? meeting.updatedAt.toISOString() : meeting.updatedAt)
         : new Date().toISOString(),
     };
-    
+
     // Only add optional fields if they're defined
     if (meeting.duration !== undefined) frontmatter.duration = meeting.duration;
     if (meeting.recallRecordingId !== undefined) frontmatter.recall_recording_id = meeting.recallRecordingId;
@@ -673,7 +675,16 @@ ${meeting.notes || ''}
 
 ${meeting.transcript || ''}`;
 
-    return matter.stringify(content, frontmatter);
+    // Use yaml library directly to ensure proper quoting of all strings
+    const yaml = require('yaml');
+
+    // Create a custom stringifier that quotes all string values
+    // Set global option for yaml v1.10.2 API
+    yaml.scalarOptions.str.defaultType = 'QUOTE_DOUBLE';
+    const yamlString = yaml.stringify(frontmatter);
+
+    // Manually construct the markdown with frontmatter
+    return `---\n${yamlString}---\n${content}`;
   }
 
   private async ensureDirectoryExists(filePath: string): Promise<void> {
@@ -823,6 +834,39 @@ ${meeting.transcript || ''}`;
     const shouldUpdateFile = fileExists && (notesChanged || transcriptChanged || updates.title || updates.date);
 
     if (shouldCreateFile || shouldUpdateFile) {
+      // If file exists, re-read it to get latest notes before updating
+      // This prevents overwriting user edits made outside the app
+      if (fileExists && meeting.filePath) {
+        try {
+          const fileContent = await fs.readFile(meeting.filePath, 'utf-8');
+          const matter = require('gray-matter');
+          const { content: bodyContent } = matter(fileContent);
+
+          // Extract notes and transcript from file content
+          const notesMatch = bodyContent.match(/# Meeting Notes\s+([\s\S]*?)(?=\n---\n|# Transcript|$)/);
+          const transcriptMatch = bodyContent.match(/# Transcript\s+([\s\S]*?)$/);
+
+          if (notesMatch && notesMatch[1].trim()) {
+            // Only update if cache is stale (file has content that cache doesn't)
+            if (!updatedMeeting.notes || updatedMeeting.notes.trim().length < notesMatch[1].trim().length) {
+              updatedMeeting.notes = notesMatch[1].trim();
+              logger.info('[FILE-SYNC] Preserved notes from file (longer than cache)', {
+                fileLength: notesMatch[1].trim().length,
+                cacheLength: (updatedMeeting.notes || '').trim().length
+              });
+            }
+          }
+
+          if (transcriptMatch && transcriptMatch[1].trim()) {
+            if (!updatedMeeting.transcript || updatedMeeting.transcript.trim().length < transcriptMatch[1].trim().length) {
+              updatedMeeting.transcript = transcriptMatch[1].trim();
+            }
+          }
+        } catch (error) {
+          logger.warn('[FILE-SYNC] Failed to read existing file, proceeding with cache data:', error);
+        }
+      }
+
       // If title or date changed AND file exists, rename file
       if ((updates.title || updates.date) && fileExists) {
         const oldPath = meeting.filePath!;
@@ -898,6 +942,135 @@ ${meeting.transcript || ''}`;
     return meeting;
   }
 
+  /**
+   * Check if a prep note exists for a specific meeting and adopt it if found
+   * This is called on-demand when viewing a meeting without a file
+   */
+  async checkPrepNoteForMeeting(meetingId: string): Promise<Meeting | null> {
+    const meeting = await this.getMeeting(meetingId);
+
+    if (!meeting) {
+      logger.warn(`[PREP-NOTE-CHECK] Meeting not found: ${meetingId}`);
+      return null;
+    }
+
+    // If meeting already has a file, nothing to do
+    if (meeting.filePath) {
+      logger.debug(`[PREP-NOTE-CHECK] Meeting already has file: ${meeting.title}`);
+      return meeting;
+    }
+
+    logger.info(`[PREP-NOTE-CHECK] Searching for prep note for meeting: ${meeting.title}`);
+
+    const storagePath = this.settingsService.getSettings().storagePath;
+    const meetingDate = new Date(meeting.date);
+    const year = format(meetingDate, 'yyyy');
+    const month = format(meetingDate, 'MM');
+
+    // Check current month, previous month, and next month
+    const prevMonth = new Date(meetingDate);
+    prevMonth.setMonth(prevMonth.getMonth() - 1);
+    const nextMonth = new Date(meetingDate);
+    nextMonth.setMonth(nextMonth.getMonth() + 1);
+
+    const dirsToScan = [
+      storagePath, // Root for legacy
+      path.join(storagePath, year, month),
+      path.join(storagePath, format(prevMonth, 'yyyy'), format(prevMonth, 'MM')),
+      path.join(storagePath, format(nextMonth, 'yyyy'), format(nextMonth, 'MM'))
+    ];
+
+    for (const dir of dirsToScan) {
+      try {
+        const files = await fs.readdir(dir);
+        const mdFiles = files.filter(f => f.endsWith('.md'));
+
+        for (const file of mdFiles) {
+          const filePath = path.join(dir, file);
+
+          try {
+            const content = await fs.readFile(filePath, 'utf-8');
+            const { data: frontmatter } = matter(content);
+
+            // Skip if already adopted by checking for app-specific fields
+            // Prep notes may have 'id' but won't have meetingsCache entry
+            if (frontmatter.id && frontmatter.created_at && this.meetingsCache.has(frontmatter.id)) {
+              continue;
+            }
+
+            // Parse filename for matching
+            const filename = path.basename(filePath, '.md');
+            const filenameParts = this.parseFilename(filename);
+
+            if (!filenameParts) {
+              continue;
+            }
+
+            // Try to match this prep note with our meeting
+            const isMatch = this.doesPrepNoteMatchMeeting(filenameParts, meeting);
+
+            if (isMatch) {
+              logger.info(`[PREP-NOTE-CHECK] Found matching prep note: ${file}`);
+              await this.adoptPrepNote(filePath, meeting, content);
+              // Return the updated meeting from cache
+              const updatedMeeting = await this.getMeeting(meetingId);
+              return updatedMeeting || null;
+            }
+          } catch (error) {
+            logger.debug(`[PREP-NOTE-CHECK] Error checking file ${file}:`, error);
+          }
+        }
+      } catch (error) {
+        // Directory might not exist, that's OK
+        logger.debug(`[PREP-NOTE-CHECK] Directory not accessible: ${dir}`);
+      }
+    }
+
+    logger.info(`[PREP-NOTE-CHECK] No prep note found for: ${meeting.title}`);
+    return meeting;
+  }
+
+  /**
+   * Helper to check if a prep note matches a specific meeting
+   */
+  private doesPrepNoteMatchMeeting(
+    filenameParts: { date: Date; calendarEventId?: string; titleKeywords: string[] },
+    meeting: Meeting
+  ): boolean {
+    // 1. Try exact calendar ID match (highest priority)
+    if (filenameParts.calendarEventId && meeting.calendarEventId) {
+      if (filenameParts.calendarEventId === meeting.calendarEventId) {
+        return true;
+      }
+    }
+
+    // 2. Check time window (±30 minutes)
+    const dateWindow = 30 * 60 * 1000;
+    const targetTime = filenameParts.date.getTime();
+    const meetingTime = new Date(meeting.date).getTime();
+
+    if (Math.abs(meetingTime - targetTime) > dateWindow) {
+      return false;
+    }
+
+    // 3. Calculate title match score
+    const meetingTitleLower = meeting.title.toLowerCase();
+    let matchCount = 0;
+
+    for (const keyword of filenameParts.titleKeywords) {
+      if (meetingTitleLower.includes(keyword.toLowerCase())) {
+        matchCount++;
+      }
+    }
+
+    // Require at least 50% keyword match
+    const matchRatio = filenameParts.titleKeywords.length > 0
+      ? matchCount / filenameParts.titleKeywords.length
+      : 0;
+
+    return matchRatio >= 0.5;
+  }
+
   async getAllMeetings(): Promise<Meeting[]> {
     return Array.from(this.meetingsCache.values())
       .sort((a, b) => {
@@ -964,18 +1137,21 @@ ${meeting.transcript || ''}`;
             const isTouched = this.isMeetingTouched(existingMeeting);
 
             if (isTouched) {
-              // Touched meeting: update date/time/title but preserve user data
-              logger.info(`Updating touched meeting: ${existingMeeting.title}`);
+              // Touched meeting: only update calendar metadata, preserve notes/transcript/status
+              logger.info(`Updating touched meeting (preserving user data): ${existingMeeting.title}`);
               await this.updateMeeting(existingMeeting.id, {
                 title: event.title,
                 date: event.start,
                 startTime: event.start,
                 endTime: event.end,
                 attendees: event.attendees,
+                meetingUrl: event.meetingUrl,
+                calendarInviteUrl: event.htmlLink,
                 updatedAt: new Date()
+                // Explicitly NOT updating: notes, transcript, status, filePath
               });
             } else {
-              // Untouched meeting: full update
+              // Untouched meeting: safe to do full update
               logger.info(`Updating untouched meeting: ${existingMeeting.title}`);
               await this.updateMeeting(existingMeeting.id, {
                 title: event.title,
@@ -983,6 +1159,8 @@ ${meeting.transcript || ''}`;
                 startTime: event.start,
                 endTime: event.end,
                 attendees: event.attendees,
+                meetingUrl: event.meetingUrl,
+                calendarInviteUrl: event.htmlLink,
                 updatedAt: new Date()
               });
             }

@@ -19,4 +19,14 @@ module.exports = {
     filename: 'preload.js',
     path: path.resolve(__dirname, 'dist/main'),
   },
+  // Memory optimizations for dev mode
+  cache: {
+    type: 'memory',
+    maxGenerations: 1,
+  },
+  optimization: {
+    removeAvailableModules: false,
+    removeEmptyChunks: false,
+    splitChunks: false,
+  },
 };

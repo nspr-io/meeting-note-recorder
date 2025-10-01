@@ -217,8 +217,8 @@ export class CalendarService extends EventEmitter {
     return !!this.extractMeetingUrl(event);
   }
 
-  async fetchUpcomingMeetings(): Promise<CalendarEvent[]> {
-    console.log('fetchUpcomingMeetings called');
+  async fetchUpcomingMeetings(daysAhead: number = 30): Promise<CalendarEvent[]> {
+    console.log('fetchUpcomingMeetings called with daysAhead:', daysAhead);
     console.log('Calendar object exists:', !!this.calendar);
     console.log('Is authenticated:', this.isAuthenticated());
 
@@ -240,17 +240,17 @@ export class CalendarService extends EventEmitter {
       await this.refreshTokenIfNeeded();
 
       const now = new Date();
-      // Fetch events from 2 hours ago to 30 days in the future (to include ongoing meetings)
+      // Fetch events from 2 hours ago to specified days in the future (to include ongoing meetings)
       // This ensures meetings that have started but not ended still appear
       const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
-      const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      const futureDate = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000);
 
-      console.log('Fetching events from', twoHoursAgo.toISOString(), 'to', thirtyDaysFromNow.toISOString());
+      console.log('Fetching events from', twoHoursAgo.toISOString(), 'to', futureDate.toISOString());
 
       const response = await this.calendar.events.list({
         calendarId: 'primary',
         timeMin: twoHoursAgo.toISOString(),
-        timeMax: thirtyDaysFromNow.toISOString(),
+        timeMax: futureDate.toISOString(),
         maxResults: 250,
         singleEvents: true,
         orderBy: 'startTime',
@@ -361,8 +361,8 @@ export class CalendarService extends EventEmitter {
     }
   }
 
-  async getUpcomingEvents(): Promise<CalendarEvent[]> {
-    return this.fetchUpcomingMeetings();
+  async getUpcomingEvents(daysAhead: number = 30): Promise<CalendarEvent[]> {
+    return this.fetchUpcomingMeetings(daysAhead);
   }
 
   async listCalendars(): Promise<Array<{ id: string; name: string }>> {
