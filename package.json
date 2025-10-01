@@ -38,13 +38,25 @@
     "files": [
       "dist/**/*",
       "node_modules/**/*",
-      "package.json"
+      "package.json",
+      "prompts/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "prompts",
+        "to": "prompts"
+      }
     ],
     "mac": {
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "This app needs access to your microphone to record meeting audio and create transcripts.",
+        "NSCameraUsageDescription": "This app needs access to your camera to record video meetings.",
+        "NSScreenCaptureDescription": "This app needs access to record screen content during meetings for transcription purposes."
+      }
     },
     "dmg": {
       "contents": [
