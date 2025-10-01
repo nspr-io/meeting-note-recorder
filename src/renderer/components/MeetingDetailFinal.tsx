@@ -784,11 +784,20 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     setTranscriptSegments(prev => {
       console.log('[TRANSCRIPT-UPDATE] Current segment count before add:', prev.length);
 
-      // Check for duplicates before adding
-      const isDuplicate = prev.some(
-        s => s.timestamp === data.timestamp &&
-             s.text === data.text
-      );
+      // Normalize timestamp for comparison (IPC serializes Date to string)
+      const newTimestamp = typeof data.timestamp === 'string'
+        ? new Date(data.timestamp).getTime()
+        : data.timestamp?.getTime?.() || Date.now();
+
+      // Check for duplicates before adding - compare text and normalized timestamps
+      const isDuplicate = prev.some(s => {
+        const existingTimestamp = typeof s.timestamp === 'string'
+          ? new Date(s.timestamp).getTime()
+          : s.timestamp?.getTime?.() || 0;
+
+        // Consider duplicate if same text and timestamp within 100ms (accounts for slight timing differences)
+        return s.text === data.text && Math.abs(existingTimestamp - newTimestamp) < 100;
+      });
 
       if (!isDuplicate) {
         const newSegment = {
@@ -1539,15 +1548,42 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                     )}
                   </TranscriptHeader>
                   {/* Show transcript (real-time updates during recording, parsed saved transcript after) */}
-                  {transcriptSegments.map((segment, index) => (
-                    <TranscriptSegment key={index}>
-                      <TranscriptMeta>
-                        <TranscriptTime>{segment.time}</TranscriptTime>
-                        <TranscriptSpeaker>{segment.speaker}</TranscriptSpeaker>
-                      </TranscriptMeta>
-                      <TranscriptText>{segment.text}</TranscriptText>
-                    </TranscriptSegment>
-                  ))}
+                  {(() => {
+                    // Group consecutive segments from the same speaker
+                    const groupedSegments: Array<{
+                      speaker: string;
+                      time: string;
+                      texts: string[];
+                    }> = [];
+
+                    transcriptSegments.forEach((segment, index) => {
+                      const lastGroup = groupedSegments[groupedSegments.length - 1];
+
+                      if (lastGroup && lastGroup.speaker === segment.speaker) {
+                        // Same speaker - add to existing group
+                        lastGroup.texts.push(segment.text);
+                      } else {
+                        // New speaker - create new group
+                        groupedSegments.push({
+                          speaker: segment.speaker,
+                          time: segment.time,
+                          texts: [segment.text]
+                        });
+                      }
+                    });
+
+                    return groupedSegments.map((group, index) => (
+                      <TranscriptSegment key={index}>
+                        <TranscriptMeta>
+                          <TranscriptTime>{group.time}</TranscriptTime>
+                          <TranscriptSpeaker>{group.speaker}</TranscriptSpeaker>
+                        </TranscriptMeta>
+                        <TranscriptText>
+                          {group.texts.join(' ')}
+                        </TranscriptText>
+                      </TranscriptSegment>
+                    ));
+                  })()}
                 </>
               ) : (
                 <EmptyState>

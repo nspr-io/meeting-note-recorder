@@ -701,6 +701,152 @@ async function findMatchingScheduledMeeting(detectedTitle?: string): Promise<Mee
 // Store active notifications to prevent garbage collection
 const activeNotifications = new Map<string, Notification | BrowserWindow>();
 
+// Helper function to create custom notification windows
+function createCustomNotification(config: {
+  title: string;
+  body: string;
+  subtitle?: string;
+  autoCloseMs?: number;
+  onClick?: () => void | Promise<void>;
+  onClose?: () => void;
+}): BrowserWindow {
+  const { title, body, subtitle, autoCloseMs = 5000, onClick, onClose } = config;
+
+  const notificationWindow = new BrowserWindow({
+    width: 400,
+    height: 120,
+    frame: false,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    transparent: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true
+    }
+  });
+
+  // Position in top-right corner
+  const { screen } = require('electron');
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width: screenWidth } = primaryDisplay.workAreaSize;
+  notificationWindow.setPosition(screenWidth - 420, 20);
+
+  // Make it stay on top of everything, including fullscreen
+  notificationWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  notificationWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+
+  // Load notification HTML
+  const notificationHTML = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: rgba(30, 30, 30, 0.95);
+          border-radius: 12px;
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          padding: 16px;
+          color: white;
+          cursor: pointer;
+          backdrop-filter: blur(20px);
+          -webkit-backdrop-filter: blur(20px);
+        }
+        .title {
+          font-size: 14px;
+          font-weight: 600;
+          margin-bottom: 6px;
+          color: #fff;
+        }
+        .body {
+          font-size: 12px;
+          color: rgba(255, 255, 255, 0.8);
+          margin-bottom: ${subtitle ? '8px' : '0'};
+        }
+        .subtitle {
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.5);
+        }
+        .close-btn {
+          position: absolute;
+          top: 8px;
+          right: 8px;
+          width: 20px;
+          height: 20px;
+          border-radius: 50%;
+          background: rgba(255, 255, 255, 0.1);
+          border: none;
+          color: rgba(255, 255, 255, 0.6);
+          cursor: pointer;
+          font-size: 14px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .close-btn:hover {
+          background: rgba(255, 255, 255, 0.2);
+        }
+      </style>
+    </head>
+    <body onclick="window.electronAPI?.notificationClicked()">
+      <button class="close-btn" onclick="event.stopPropagation(); window.electronAPI?.notificationClosed()">×</button>
+      <div class="title">${title}</div>
+      <div class="body">${body}</div>
+      ${subtitle ? `<div class="subtitle">${subtitle}</div>` : ''}
+    </body>
+    </html>
+  `;
+
+  notificationWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(notificationHTML)}`);
+
+  // Auto-close timer
+  const autoCloseTimer = setTimeout(() => {
+    if (!notificationWindow.isDestroyed()) {
+      notificationWindow.close();
+    }
+  }, autoCloseMs);
+
+  // Handle clicks via will-navigate
+  notificationWindow.webContents.on('did-finish-load', () => {
+    notificationWindow.webContents.executeJavaScript(`
+      window.electronAPI = {
+        notificationClicked: () => {
+          window.location.href = 'notification://clicked';
+        },
+        notificationClosed: () => {
+          window.location.href = 'notification://closed';
+        }
+      };
+    `);
+  });
+
+  notificationWindow.webContents.on('will-navigate', async (e, url) => {
+    e.preventDefault();
+
+    if (url === 'notification://clicked') {
+      clearTimeout(autoCloseTimer);
+      if (!notificationWindow.isDestroyed()) {
+        notificationWindow.close();
+      }
+      if (onClick) {
+        await onClick();
+      }
+    } else if (url === 'notification://closed') {
+      clearTimeout(autoCloseTimer);
+      if (!notificationWindow.isDestroyed()) {
+        notificationWindow.close();
+      }
+      if (onClose) {
+        onClose();
+      }
+    }
+  });
+
+  return notificationWindow;
+}
+
 function setupMeetingDetectionHandlers() {
   meetingDetectionService.on('meeting-detected', async (data) => {
     logger.info('[JOURNEY-8] Meeting detected event received in main process', {
@@ -747,91 +893,28 @@ function setupMeetingDetectionHandlers() {
 
     const notificationBody = 'Click to start recording';
 
-    logger.info('[NOTIFICATION-DEBUG-1] Creating notification', {
+    logger.info('[NOTIFICATION] Creating custom notification', {
       title: notificationTitle,
       body: notificationBody,
-      electronVersion: process.versions.electron,
-      platform: process.platform,
       timestamp: new Date().toISOString()
     });
 
-    // Show notification with longer timeout and single button (no actions array = simple click notification)
-    const notification = new Notification({
-      title: notificationTitle,
-      body: notificationBody,
-      silent: false,
-      timeoutType: 'never', // Keep notification visible longer
-      urgency: 'normal',
-      closeButtonText: 'Dismiss'
-    });
-
-    // Store notification to prevent GC
+    // Create custom notification window
     const notificationId = `${data.windowId}-${Date.now()}`;
-    activeNotifications.set(notificationId, notification);
+    const notificationWindow = createCustomNotification({
+      title: notificationTitle,
+      body: notificationBody,
+      autoCloseMs: 60000, // 60 seconds for meeting detection
+      onClick: async () => {
+        logger.info('[JOURNEY-9] Notification clicked - Start Recording', {
+          notificationId,
+          hasMatchedMeeting: !!matchedMeeting,
+          matchedMeetingTitle: matchedMeeting?.title,
+          windowId: data.windowId,
+          timestamp: new Date().toISOString()
+        });
 
-    logger.info('[NOTIFICATION-DEBUG-2] Notification created', {
-      notificationId,
-      hasListeners: notification.eventNames?.() || 'unknown',
-      timestamp: new Date().toISOString()
-    });
-
-    // Add multiple event listeners for debugging
-    notification.on('show', () => {
-      logger.info('[NOTIFICATION-DEBUG-3] Notification shown', {
-        notificationId,
-        timestamp: new Date().toISOString()
-      });
-
-      // Auto-show main window as fallback after 3 seconds if no click
-      setTimeout(() => {
-        if (!currentRecordingMeetingId && mainWindow) {
-          logger.info('[NOTIFICATION-FALLBACK] Auto-showing main window after 3s', {
-            notificationId,
-            windowId: data.windowId
-          });
-          mainWindow.show();
-          mainWindow.focus();
-          // Send meeting data to renderer for manual start
-          mainWindow.webContents.send('meeting-detected-fallback', meetingContext);
-        }
-      }, 3000);
-    });
-
-    notification.on('close', (event) => {
-      logger.info('[NOTIFICATION-DEBUG-4] Notification closed', {
-        notificationId,
-        closedByUser: (event as any)?.byUser || 'unknown',
-        timestamp: new Date().toISOString()
-      });
-      // Clean up stored notification
-      activeNotifications.delete(notificationId);
-    });
-
-    notification.on('failed', (event, error) => {
-      logger.error('[NOTIFICATION-DEBUG-ERROR] Notification failed', {
-        notificationId,
-        error: (error as any)?.message || 'unknown',
-        timestamp: new Date().toISOString()
-      });
-      // Clean up and show main window as fallback
-      activeNotifications.delete(notificationId);
-      if (mainWindow) {
-        mainWindow.show();
-        mainWindow.focus();
-        mainWindow.webContents.send('meeting-detected-fallback', meetingContext);
-      }
-    });
-
-    // Handle notification click (single button - Start Recording)
-    notification.on('click', async (event) => {
-      logger.info('[JOURNEY-9] Notification clicked - Start Recording', {
-        notificationId,
-        event: (event as any)?.type || 'unknown',
-        hasMatchedMeeting: !!matchedMeeting,
-        matchedMeetingTitle: matchedMeeting?.title,
-        windowId: data.windowId,
-        timestamp: new Date().toISOString()
-      });
+        activeNotifications.delete(notificationId);
 
       try {
         let meetingToRecord = matchedMeeting;
@@ -966,56 +1049,25 @@ function setupMeetingDetectionHandlers() {
           });
         }
 
-        // Show error notification
-        const errorNotification = new Notification({
+        // Show error notification using custom notification
+        createCustomNotification({
           title: 'Recording Failed',
           body: 'Could not start recording. Please check the app.',
-          urgency: 'critical'
+          autoCloseMs: 5000
         });
-        errorNotification.show();
+      }
+      },
+      onClose: () => {
+        logger.info('[NOTIFICATION] Notification manually closed', {
+          notificationId,
+          timestamp: new Date().toISOString()
+        });
+        activeNotifications.delete(notificationId);
       }
     });
 
-    // Clean up notification after click
-    notification.on('action', (event, index) => {
-      logger.info('[NOTIFICATION-DEBUG-5] Notification action triggered', {
-        notificationId,
-        action: event,
-        index,
-        timestamp: new Date().toISOString()
-      });
-    });
-
-    // Try to show notification with error handling
-    try {
-      logger.info('[NOTIFICATION-DEBUG-6] Calling notification.show()', {
-        notificationId,
-        timestamp: new Date().toISOString()
-      });
-
-      notification.show();
-
-      logger.info('[NOTIFICATION-DEBUG-7] notification.show() called successfully', {
-        notificationId,
-        isSupported: Notification.isSupported(),
-        timestamp: new Date().toISOString()
-      });
-    } catch (error) {
-      logger.error('[NOTIFICATION-ERROR] Failed to show notification', {
-        notificationId,
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        timestamp: new Date().toISOString()
-      });
-
-      // Fallback: immediately show main window
-      if (mainWindow) {
-        logger.info('[NOTIFICATION-FALLBACK-IMMEDIATE] Showing main window due to notification error');
-        mainWindow.show();
-        mainWindow.focus();
-        mainWindow.webContents.send('meeting-detected-fallback', meetingContext);
-      }
-    }
+    // Store notification window to prevent garbage collection
+    activeNotifications.set(notificationId, notificationWindow);
 
     // Clean up notification references after 30 seconds
     scheduleNotificationCleanup(notificationId);
@@ -1054,139 +1106,21 @@ function setupMeetingDetectionHandlers() {
 
   // Listen for calendar meeting reminders (proactive notifications)
   calendarService.on('meeting-reminder', async (event) => {
+    const minutesBeforeStart = Math.round((new Date(event.start).getTime() - Date.now()) / (1000 * 60));
+
     logger.info('[MEETING-REMINDER] Meeting reminder triggered', {
       title: event.title,
       start: event.start,
-      minutesBeforeStart: Math.round((new Date(event.start).getTime() - Date.now()) / (1000 * 60))
+      minutesBeforeStart
     });
 
-    // Create custom notification window that stays visible for 90 seconds
-    const notificationWindow = new BrowserWindow({
-      width: 400,
-      height: 120,
-      frame: false,
-      resizable: false,
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      transparent: true,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true
-      }
-    });
-
-    // Position in top-right corner
-    const { screen } = require('electron');
-    const primaryDisplay = screen.getPrimaryDisplay();
-    const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
-    notificationWindow.setPosition(screenWidth - 420, 20);
-
-    // Make it stay on top of everything, including fullscreen
-    notificationWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    notificationWindow.setAlwaysOnTop(true, 'screen-saver', 1);
-
-    // Load notification HTML
-    const notificationHTML = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: rgba(30, 30, 30, 0.95);
-            border-radius: 12px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 16px;
-            color: white;
-            cursor: pointer;
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-          }
-          .title {
-            font-size: 14px;
-            font-weight: 600;
-            margin-bottom: 6px;
-            color: #fff;
-          }
-          .body {
-            font-size: 12px;
-            color: rgba(255, 255, 255, 0.8);
-            margin-bottom: 8px;
-          }
-          .time {
-            font-size: 11px;
-            color: rgba(255, 255, 255, 0.5);
-          }
-          .close-btn {
-            position: absolute;
-            top: 8px;
-            right: 8px;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: rgba(255, 255, 255, 0.1);
-            border: none;
-            color: rgba(255, 255, 255, 0.6);
-            cursor: pointer;
-            font-size: 14px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          .close-btn:hover {
-            background: rgba(255, 255, 255, 0.2);
-          }
-        </style>
-      </head>
-      <body onclick="window.electronAPI?.notificationClicked()">
-        <button class="close-btn" onclick="event.stopPropagation(); window.electronAPI?.notificationClosed()">×</button>
-        <div class="title">Meeting starting soon: ${event.title}</div>
-        <div class="body">Click to start recording</div>
-        <div class="time">Starting in ${Math.round((new Date(event.start).getTime() - Date.now()) / (1000 * 60))} minute(s)</div>
-      </body>
-      </html>
-    `;
-
-    notificationWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(notificationHTML)}`);
-
-    // Store notification window to prevent garbage collection
     const reminderNotificationId = `reminder-${event.id}-${Date.now()}`;
-    activeNotifications.set(reminderNotificationId, notificationWindow);
-
-    // Auto-close notification after 90 seconds
-    const autoCloseTimer = setTimeout(() => {
-      logger.info('[MEETING-REMINDER] Auto-closing notification after 90 seconds');
-      if (!notificationWindow.isDestroyed()) {
-        notificationWindow.close();
-      }
-      activeNotifications.delete(reminderNotificationId);
-    }, 90000);
-
-    // Handle notification click (body click) via webContents
-    notificationWindow.webContents.on('did-finish-load', () => {
-      // Inject IPC communication
-      notificationWindow.webContents.executeJavaScript(`
-        window.electronAPI = {
-          notificationClicked: () => {
-            window.location.href = 'notification://clicked';
-          },
-          notificationClosed: () => {
-            window.location.href = 'notification://closed';
-          }
-        };
-      `);
-    });
-
-    notificationWindow.webContents.on('will-navigate', async (e, url) => {
-      e.preventDefault();
-
-      if (url === 'notification://clicked') {
-        // Clear auto-close timer and close notification immediately
-        clearTimeout(autoCloseTimer);
-        if (!notificationWindow.isDestroyed()) {
-          notificationWindow.close();
-        }
+    const notificationWindow = createCustomNotification({
+      title: `Meeting starting soon: ${event.title}`,
+      body: 'Click to start recording',
+      subtitle: `Starting in ${minutesBeforeStart} minute(s)`,
+      autoCloseMs: 90000, // 90 seconds
+      onClick: async () => {
         activeNotifications.delete(reminderNotificationId);
 
         logger.info('[MEETING-REMINDER] Notification clicked for upcoming meeting', {
@@ -1233,23 +1167,22 @@ function setupMeetingDetectionHandlers() {
             title: event.title
           });
 
-          const errorNotification = new Notification({
+          // Show error notification using custom notification
+          createCustomNotification({
             title: 'Recording Failed',
             body: 'Could not start recording for the upcoming meeting',
-            urgency: 'critical'
+            autoCloseMs: 5000
           });
-          errorNotification.show();
         }
-      } else if (url === 'notification://closed') {
-        // User clicked close button
+      },
+      onClose: () => {
         logger.info('[MEETING-REMINDER] Notification manually dismissed');
-        clearTimeout(autoCloseTimer);
-        if (!notificationWindow.isDestroyed()) {
-          notificationWindow.close();
-        }
         activeNotifications.delete(reminderNotificationId);
       }
     });
+
+    // Store notification window to prevent garbage collection
+    activeNotifications.set(reminderNotificationId, notificationWindow);
   });
 }
 
@@ -1366,6 +1299,11 @@ async function syncCalendarSilently() {
 
 app.whenReady().then(async () => {
   try {
+    // Force app to show in dock (macOS)
+    if (process.platform === 'darwin' && app.dock) {
+      app.dock.show();
+    }
+
     // Create window first so UI appears immediately
     createWindow();
 
