@@ -33,11 +33,10 @@ export class StorageService {
   }
 
   async initialize(): Promise<void> {
-    // First load from cache for instant display
-    await this.loadCacheFromDisk();
+    // Migrate existing flat files to year/month structure (one-time operation)
+    await this.migrateExistingFilesToYearMonth();
 
-    // Load all meetings from markdown files to ensure we have the full state
-    // This must happen BEFORE cleanup so we can detect stuck recordings
+    // Load all meetings from markdown files - this is the source of truth
     await this.loadAllMeetings();
 
     // Clean up any stuck "recording" states from previous app crashes
@@ -51,6 +50,59 @@ export class StorageService {
     await this.saveCacheToDisk();
   }
 
+  private async migrateExistingFilesToYearMonth(): Promise<void> {
+    const storagePath = this.settingsService.getSettings().storagePath;
+
+    try {
+      // Check if migration is needed by looking for .md files in root
+      const rootEntries = await fs.readdir(storagePath, { withFileTypes: true });
+      const rootMdFiles = rootEntries
+        .filter(entry => entry.isFile() && entry.name.endsWith('.md'))
+        .map(entry => entry.name);
+
+      if (rootMdFiles.length === 0) {
+        logger.info('[MIGRATION] No flat files to migrate');
+        return;
+      }
+
+      logger.info(`[MIGRATION] Found ${rootMdFiles.length} flat files to migrate`);
+
+      let migratedCount = 0;
+      let errorCount = 0;
+
+      for (const filename of rootMdFiles) {
+        try {
+          const oldPath = path.join(storagePath, filename);
+
+          // Parse the date from filename: YYYY-MM-DD-HH-mm-...
+          const dateMatch = filename.match(/^(\d{4})-(\d{2})-\d{2}/);
+          if (!dateMatch) {
+            logger.warn(`[MIGRATION] Skipping ${filename} - cannot parse date`);
+            continue;
+          }
+
+          const [, year, month] = dateMatch;
+          const newDir = path.join(storagePath, year, month);
+          const newPath = path.join(newDir, filename);
+
+          // Create directory and move file
+          await fs.mkdir(newDir, { recursive: true });
+          await fs.rename(oldPath, newPath);
+
+          migratedCount++;
+          logger.info(`[MIGRATION] Moved ${filename} to ${year}/${month}/`);
+        } catch (error) {
+          errorCount++;
+          logger.error(`[MIGRATION] Failed to migrate ${filename}:`, error);
+        }
+      }
+
+      logger.info(`[MIGRATION] Complete: ${migratedCount} migrated, ${errorCount} errors`);
+    } catch (error) {
+      logger.error('[MIGRATION] Migration failed:', error);
+    }
+  }
+
   private async scanAndAdoptPrepNotes(): Promise<void> {
     const storagePath = this.settingsService.getSettings().storagePath;
 
@@ -58,19 +110,40 @@ export class StorageService {
       // Ensure storage path exists
       await fs.mkdir(storagePath, { recursive: true });
 
-      const files = await fs.readdir(storagePath);
-      const mdFiles = files.filter(f => f.endsWith('.md'));
+      // Only scan current and next month for prep notes
+      const now = new Date();
+      const currentYear = format(now, 'yyyy');
+      const currentMonth = format(now, 'MM');
 
-      logger.info(`[PREP-NOTES] Scanning ${mdFiles.length} markdown files for prep notes`);
+      const nextMonth = new Date(now);
+      nextMonth.setMonth(nextMonth.getMonth() + 1);
+      const nextYear = format(nextMonth, 'yyyy');
+      const nextMonthStr = format(nextMonth, 'MM');
 
-      // Process files sequentially to avoid race conditions
-      for (const file of mdFiles) {
-        const filePath = path.join(storagePath, file);
+      const dirsToScan = [
+        storagePath, // Root for legacy files
+        path.join(storagePath, currentYear, currentMonth),
+        path.join(storagePath, nextYear, nextMonthStr)
+      ];
+
+      for (const dir of dirsToScan) {
         try {
-          await this.attemptPrepNoteAdoption(filePath);
+          const files = await fs.readdir(dir);
+          const mdFiles = files.filter(f => f.endsWith('.md'));
+
+          logger.info(`[PREP-NOTES] Scanning ${mdFiles.length} files in ${dir}`);
+
+          for (const file of mdFiles) {
+            const filePath = path.join(dir, file);
+            try {
+              await this.attemptPrepNoteAdoption(filePath);
+            } catch (error) {
+              logger.error(`[PREP-NOTES] Failed to process ${file}:`, error);
+            }
+          }
         } catch (error) {
-          logger.error(`[PREP-NOTES] Failed to process ${file}:`, error);
-          // Continue with other files even if one fails
+          // Directory might not exist yet, that's OK
+          logger.debug(`[PREP-NOTES] Directory ${dir} not accessible:`, error);
         }
       }
     } catch (error) {
@@ -206,73 +279,93 @@ export class StorageService {
     const storagePath = this.settingsService.getSettings().storagePath;
 
     try {
-      // Ensure directory exists
-      await fs.mkdir(storagePath, { recursive: true });
+      // Scan root (legacy), current month, and next month for prep notes
+      const now = new Date();
+      const currentYear = format(now, 'yyyy');
+      const currentMonth = format(now, 'MM');
 
-      const files = await fs.readdir(storagePath);
-      const mdFiles = files.filter(f => f.endsWith('.md'));
+      const nextMonth = new Date(now);
+      nextMonth.setMonth(nextMonth.getMonth() + 1);
+      const nextYear = format(nextMonth, 'yyyy');
+      const nextMonthStr = format(nextMonth, 'MM');
+
+      const dirsToScan = [
+        storagePath, // Root for legacy prep notes
+        path.join(storagePath, currentYear, currentMonth),
+        path.join(storagePath, nextYear, nextMonthStr)
+      ];
 
       // Track best match in case no perfect match is found
       let bestMatch: { score: number; content: string; filePath: string } | null = null;
 
-      for (const file of mdFiles) {
-        const filePath = path.join(storagePath, file);
-
+      for (const dir of dirsToScan) {
         try {
-          const content = await fs.readFile(filePath, 'utf-8');
-          const { data: frontmatter, content: bodyContent } = matter(content);
+          const files = await fs.readdir(dir);
+          const mdFiles = files.filter(f => f.endsWith('.md'));
 
-          // Skip if already has an ID (already adopted) or marked as pending
-          if (frontmatter.id || frontmatter.calendar_event_id_pending === event.id) {
-            continue;
-          }
+          for (const file of mdFiles) {
+            const filePath = path.join(dir, file);
 
-          // Parse filename for matching
-          const filename = path.basename(filePath, '.md');
-          const filenameParts = this.parseFilename(filename);
+            try {
+              const content = await fs.readFile(filePath, 'utf-8');
+              const { data: frontmatter, content: bodyContent } = matter(content);
 
-          if (!filenameParts) {
-            continue;
-          }
+              // Skip if already has an ID (already adopted) or marked as pending
+              if (frontmatter.id || frontmatter.calendar_event_id_pending === event.id) {
+                continue;
+              }
 
-          let matchScore = 0;
+              // Parse filename for matching
+              const filename = path.basename(filePath, '.md');
+              const filenameParts = this.parseFilename(filename);
 
-          // 1. Try exact calendar ID match (highest priority)
-          if (filenameParts.calendarEventId && filenameParts.calendarEventId === event.id) {
-            matchScore = 10; // Perfect match
-          } else {
-            // 2. Try date/time match with title keywords
-            const eventTime = new Date(event.start).getTime();
-            const fileTime = filenameParts.date.getTime();
-            const timeDiff = Math.abs(eventTime - fileTime);
+              if (!filenameParts) {
+                continue;
+              }
 
-            // Within 30 minutes
-            if (timeDiff < 30 * 60 * 1000) {
-              // Base score for time match
-              matchScore = 1 - (timeDiff / (30 * 60 * 1000));
+              let matchScore = 0;
 
-              // Check title keywords match
-              const eventTitleLower = event.title.toLowerCase();
-              let keywordMatches = 0;
-              for (const keyword of filenameParts.titleKeywords) {
-                if (eventTitleLower.includes(keyword.toLowerCase())) {
-                  keywordMatches++;
+              // 1. Try exact calendar ID match (highest priority)
+              if (filenameParts.calendarEventId && filenameParts.calendarEventId === event.id) {
+                matchScore = 10; // Perfect match
+              } else {
+                // 2. Try date/time match with title keywords
+                const eventTime = new Date(event.start).getTime();
+                const fileTime = filenameParts.date.getTime();
+                const timeDiff = Math.abs(eventTime - fileTime);
+
+                // Within 30 minutes
+                if (timeDiff < 30 * 60 * 1000) {
+                  // Base score for time match
+                  matchScore = 1 - (timeDiff / (30 * 60 * 1000));
+
+                  // Check title keywords match
+                  const eventTitleLower = event.title.toLowerCase();
+                  let keywordMatches = 0;
+                  for (const keyword of filenameParts.titleKeywords) {
+                    if (eventTitleLower.includes(keyword.toLowerCase())) {
+                      keywordMatches++;
+                    }
+                  }
+
+                  // Add score for keyword matches
+                  if (filenameParts.titleKeywords.length > 0) {
+                    matchScore += (keywordMatches / filenameParts.titleKeywords.length) * 2;
+                  }
                 }
               }
 
-              // Add score for keyword matches
-              if (filenameParts.titleKeywords.length > 0) {
-                matchScore += (keywordMatches / filenameParts.titleKeywords.length) * 2;
+              if (matchScore > 0 && (!bestMatch || matchScore > bestMatch.score)) {
+                bestMatch = { score: matchScore, content: bodyContent.trim(), filePath };
               }
+            } catch (fileError) {
+              logger.error(`[PREP-NOTES] Error reading ${file}:`, fileError);
+              // Continue with other files
             }
           }
-
-          if (matchScore > 0 && (!bestMatch || matchScore > bestMatch.score)) {
-            bestMatch = { score: matchScore, content: bodyContent.trim(), filePath };
-          }
-        } catch (fileError) {
-          logger.error(`[PREP-NOTES] Error reading ${file}:`, fileError);
-          // Continue with other files
+        } catch (dirError) {
+          // Directory might not exist yet, that's OK
+          logger.debug(`[PREP-NOTES] Directory not accessible: ${dir}`);
         }
       }
 
@@ -405,37 +498,111 @@ export class StorageService {
 
   private async loadAllMeetings(): Promise<void> {
     const storagePath = this.settingsService.getSettings().storagePath;
-    
+
     try {
-      const files = await fs.readdir(storagePath);
-      const mdFiles = files.filter(f => f.endsWith('.md'));
-      
-      for (const file of mdFiles) {
-        const filePath = path.join(storagePath, file);
+      // IMPORTANT: Clear the cache first to avoid mixing old/new data
+      this.meetingsCache.clear();
+      logger.info('[LOAD] Cleared existing cache before loading from files');
+
+      // Load previous month, current month, and next month
+      const now = new Date();
+
+      const previousMonth = new Date(now);
+      previousMonth.setMonth(previousMonth.getMonth() - 1);
+      const prevYear = format(previousMonth, 'yyyy');
+      const prevMonth = format(previousMonth, 'MM');
+
+      const currentYear = format(now, 'yyyy');
+      const currentMonth = format(now, 'MM');
+
+      const nextMonth = new Date(now);
+      nextMonth.setMonth(nextMonth.getMonth() + 1);
+      const nextYear = format(nextMonth, 'yyyy');
+      const nextMonthStr = format(nextMonth, 'MM');
+
+      const monthsToScan = [
+        { year: prevYear, month: prevMonth, label: 'previous' },
+        { year: currentYear, month: currentMonth, label: 'current' },
+        { year: nextYear, month: nextMonthStr, label: 'next' }
+      ];
+
+      logger.info(`[LOAD] Scanning previous, current, and next month directories`);
+
+      const mdFiles: string[] = [];
+
+      for (const { year, month, label } of monthsToScan) {
+        const monthPath = path.join(storagePath, year, month);
+        try {
+          const files = await fs.readdir(monthPath);
+          const monthMdFiles = files
+            .filter(f => f.endsWith('.md'))
+            .map(f => path.join(monthPath, f));
+          mdFiles.push(...monthMdFiles);
+          logger.info(`[LOAD] Found ${monthMdFiles.length} files in ${label} month (${year}/${month})`);
+        } catch (error) {
+          logger.debug(`[LOAD] ${label} month directory doesn't exist: ${monthPath}`);
+        }
+      }
+
+      logger.info(`[LOAD] Found ${mdFiles.length} total markdown files to load`);
+
+      let loadedCount = 0;
+      for (const filePath of mdFiles) {
         const meeting = await this.loadMeetingFromFile(filePath);
         if (meeting) {
           this.meetingsCache.set(meeting.id, meeting);
+          loadedCount++;
         }
       }
+
+      logger.info(`[LOAD] Successfully loaded ${loadedCount} meetings into cache`);
     } catch (error) {
       logger.error('Failed to load meetings:', error);
     }
+  }
+
+  private async scanForMarkdownFiles(directory: string): Promise<string[]> {
+    const mdFiles: string[] = [];
+
+    try {
+      const entries = await fs.readdir(directory, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const fullPath = path.join(directory, entry.name);
+
+        if (entry.isDirectory()) {
+          // Skip known non-meeting directories
+          if (['Meeting prep', 'Transcripts', 'Treated final notes', 'Treated_final_notes_BACKUP_20250915_102638'].includes(entry.name)) {
+            continue;
+          }
+          // Recursively scan subdirectories (YYYY/MM structure)
+          const subFiles = await this.scanForMarkdownFiles(fullPath);
+          mdFiles.push(...subFiles);
+        } else if (entry.isFile() && entry.name.endsWith('.md')) {
+          mdFiles.push(fullPath);
+        }
+      }
+    } catch (error) {
+      logger.error(`Failed to scan directory ${directory}:`, error);
+    }
+
+    return mdFiles;
   }
 
   private async loadMeetingFromFile(filePath: string): Promise<Meeting | null> {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       const { data, content: bodyContent } = matter(content);
-      
+
       // Parse the body content to separate notes and transcript
       const sections = bodyContent.split('---\n');
       const notesSection = sections.find(s => s.includes('# Meeting Notes')) || '';
       const transcriptSection = sections.find(s => s.includes('# Transcript')) || '';
-      
+
       const notes = notesSection
         .replace('# Meeting Notes', '')
         .trim();
-      
+
       const transcript = transcriptSection
         .replace('# Transcript', '')
         .trim();
@@ -509,9 +676,16 @@ ${meeting.transcript || ''}`;
     return matter.stringify(content, frontmatter);
   }
 
+  private async ensureDirectoryExists(filePath: string): Promise<void> {
+    const directory = path.dirname(filePath);
+    await fs.mkdir(directory, { recursive: true });
+  }
+
   private generateFileName(meeting: Meeting): string {
-    // Format: YYYY-MM-DD-HH-mm-[eventId]-title-slug.md
+    // Format: YYYY/MM/YYYY-MM-DD-HH-mm-[eventId]-title-slug.md
     const date = new Date(meeting.date);
+    const year = format(date, 'yyyy');
+    const month = format(date, 'MM');
     const dateStr = format(date, 'yyyy-MM-dd-HH-mm');
 
     // Include calendar event ID if available (sanitized for filesystem)
@@ -525,7 +699,8 @@ ${meeting.transcript || ''}`;
       .replace(/^-|-$/g, '')
       .substring(0, 100); // Limit length to avoid filesystem issues
 
-    return `${dateStr}-${eventIdPart}${titleSlug}.md`;
+    // Return path with year/month subdirectories: YYYY/MM/filename.md
+    return path.join(year, month, `${dateStr}-${eventIdPart}${titleSlug}.md`);
   }
 
   async createMeeting(data: Partial<Meeting>): Promise<Meeting> {
@@ -563,6 +738,7 @@ ${meeting.transcript || ''}`;
     const hasTranscript = meeting.transcript && meeting.transcript.trim().length > 0;
 
     if (hasNotes || hasTranscript) {
+      await this.ensureDirectoryExists(meeting.filePath);
       const markdown = this.formatMeetingToMarkdown(meeting);
       await fs.writeFile(meeting.filePath, markdown, 'utf-8');
       logger.info('[JOURNEY-STORAGE-3] Meeting file created immediately (has content)', {
@@ -655,11 +831,13 @@ ${meeting.transcript || ''}`;
         const newPath = path.join(storagePath, newFileName);
 
         if (oldPath !== newPath) {
+          await this.ensureDirectoryExists(newPath);
           await fs.rename(oldPath, newPath);
           updatedMeeting.filePath = newPath;
         }
       }
 
+      await this.ensureDirectoryExists(updatedMeeting.filePath!);
       const markdown = this.formatMeetingToMarkdown(updatedMeeting);
       await fs.writeFile(updatedMeeting.filePath!, markdown, 'utf-8');
 
@@ -730,8 +908,16 @@ ${meeting.transcript || ''}`;
   }
 
   async getMeetingByCalendarId(calendarId: string): Promise<Meeting | undefined> {
+    // Extract base ID (for recurring events, Google adds _timestamp suffix)
+    const baseCalendarId = calendarId.split('_')[0];
+
     return Array.from(this.meetingsCache.values())
-      .find(m => m.calendarEventId === calendarId);
+      .find(m => {
+        if (!m.calendarEventId) return false;
+        // Exact match or base ID match (for recurring events)
+        const baseStoredId = m.calendarEventId.split('_')[0];
+        return m.calendarEventId === calendarId || baseStoredId === baseCalendarId;
+      });
   }
 
   // Check if a meeting has been "touched" by the user (has notes, files, or changes)
@@ -997,6 +1183,7 @@ ${meeting.transcript || ''}`;
             logger.info(`[AUTO-SAVE] Generated file path for meeting ${meetingId}: ${meeting.filePath}`);
           }
 
+          await this.ensureDirectoryExists(meeting.filePath);
           const markdown = this.formatMeetingToMarkdown(meeting);
           await fs.writeFile(meeting.filePath, markdown, 'utf-8');
           logger.info(`[AUTO-SAVE] Saved meeting ${meetingId} to ${meeting.filePath}`);
@@ -1059,6 +1246,7 @@ ${meeting.transcript || ''}`;
 
     // Save to file
     meeting.filePath = filePath;
+    await this.ensureDirectoryExists(filePath);
     const markdown = this.formatMeetingToMarkdown(meeting);
     await fs.writeFile(filePath, markdown, 'utf-8');
 

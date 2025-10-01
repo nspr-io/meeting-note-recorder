@@ -114,7 +114,7 @@ function createWindow() {
 
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:9000');
-    mainWindow.webContents.openDevTools();
+    // mainWindow.webContents.openDevTools(); // Commented out - open manually with Cmd+Option+I if needed
   } else {
     const indexPath = path.join(__dirname, '../renderer/index.html');
     console.log('Loading index.html from:', indexPath);
@@ -199,13 +199,17 @@ function setupIpcHandlers() {
     const meetings = await storageService.getAllMeetings();
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    
+
     const recentMeetings = meetings.filter(m => {
       const meetingDate = new Date(m.date);
       return meetingDate >= thirtyDaysAgo || m.status === 'recording' || m.status === 'active';
     });
-    
-    logger.debug('Getting meetings', { total: meetings.length, returned: recentMeetings.length });
+
+    logger.info('[IPC-GET_MEETINGS] Sending meetings to renderer', {
+      total: meetings.length,
+      returned: recentMeetings.length,
+      sampleTitles: recentMeetings.slice(0, 5).map(m => ({ id: m.id, title: m.title }))
+    });
     return recentMeetings;
   });
 
@@ -1241,7 +1245,7 @@ async function initializeSDKInBackground() {
       await meetingDetectionService.startMonitoring();
       
       logger.info('SDK initialized successfully in background');
-      
+
       // Auto-sync calendar after SDK is ready if connected
       if (settings?.googleCalendarConnected && calendarService.isAuthenticated()) {
         setTimeout(async () => {
