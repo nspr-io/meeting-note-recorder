@@ -47,9 +47,41 @@ const AppTitle = styled.div`
   user-select: none;
 `;
 
-const SearchContainer = styled.div`
+const SearchWrapper = styled.div`
+  position: relative;
+`;
+
+const SearchContainer = styled.div<{ collapsed: boolean }>`
   background: #f9f9f9;
   border-bottom: 1px solid #e5e5e7;
+  transition: all 0.3s ease;
+  position: relative;
+  max-height: ${props => props.collapsed ? '0' : '400px'};
+  overflow: hidden;
+  opacity: ${props => props.collapsed ? '0' : '1'};
+`;
+
+const SearchToggle = styled.button<{ collapsed: boolean }>`
+  position: ${props => props.collapsed ? 'relative' : 'absolute'};
+  top: ${props => props.collapsed ? '0' : '8px'};
+  right: ${props => props.collapsed ? '0' : '12px'};
+  margin: ${props => props.collapsed ? '8px 12px' : '0'};
+  background: #ffffff;
+  border: 1px solid #e5e5e7;
+  color: #86868b;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s;
+  z-index: 10;
+  -webkit-app-region: no-drag;
+  float: ${props => props.collapsed ? 'right' : 'none'};
+
+  &:hover {
+    background: #e8e8e8;
+    color: #333;
+  }
 `;
 
 const MainContent = styled.div`
@@ -81,13 +113,45 @@ const MainContent = styled.div`
   }
 `;
 
-const Sidebar = styled.div`
+const SidebarWrapper = styled.div<{ collapsed: boolean }>`
+  position: relative;
+  width: ${props => props.collapsed ? '0' : 'auto'};
+  min-width: ${props => props.collapsed ? '0' : '200px'};
+  transition: all 0.3s ease;
+  overflow: visible;
+`;
+
+const Sidebar = styled.div<{ collapsed: boolean }>`
   background: #ffffff;
   display: flex;
   flex-direction: column;
-  position: relative;
   height: 100%;
-  min-width: 200px;
+  width: ${props => props.collapsed ? '0' : 'auto'};
+  opacity: ${props => props.collapsed ? '0' : '1'};
+  transition: all 0.3s ease;
+  overflow: hidden;
+`;
+
+const SidebarToggle = styled.button<{ collapsed: boolean }>`
+  position: absolute;
+  top: 50%;
+  left: ${props => props.collapsed ? '0' : 'calc(100% - 28px)'};
+  transform: translateY(-50%);
+  background: #ffffff;
+  border: 1px solid #e5e5e7;
+  color: #86868b;
+  font-size: 16px;
+  cursor: pointer;
+  padding: ${props => props.collapsed ? '24px 10px' : '8px 6px'};
+  border-radius: ${props => props.collapsed ? '0 8px 8px 0' : '4px'};
+  transition: all 0.3s ease;
+  z-index: 100;
+  box-shadow: ${props => props.collapsed ? '2px 0 8px rgba(0, 0, 0, 0.05)' : 'none'};
+
+  &:hover {
+    background: #f9f9f9;
+    color: #333;
+  }
 `;
 
 const SidebarContent = styled.div`
@@ -279,6 +343,8 @@ function App() {
   const [readyToRecordMeetings, setReadyToRecordMeetings] = useState<Set<string>>(new Set());
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+  const [searchCollapsed, setSearchCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     // Check if electronAPI is available
@@ -543,28 +609,44 @@ function App() {
         <AppTitle>Meeting Note Recorder</AppTitle>
       </TitleBar>
 
-      <SearchContainer>
-        <Search
-          onSelectMeeting={setSelectedMeeting}
-          currentMeeting={selectedMeeting}
-        />
-      </SearchContainer>
+      <SearchWrapper>
+        <SearchToggle
+          collapsed={searchCollapsed}
+          onClick={() => setSearchCollapsed(!searchCollapsed)}
+        >
+          {searchCollapsed ? '▼' : '▲'}
+        </SearchToggle>
+        <SearchContainer collapsed={searchCollapsed}>
+          <Search
+            onSelectMeeting={setSelectedMeeting}
+            currentMeeting={selectedMeeting}
+            collapsed={searchCollapsed}
+          />
+        </SearchContainer>
+      </SearchWrapper>
 
       <MainContent>
         <Split
           className="split"
-          sizes={[25, 75]}
-          minSize={[200, 400]}
+          sizes={sidebarCollapsed ? [0, 100] : [25, 75]}
+          minSize={sidebarCollapsed ? [0, 400] : [200, 400]}
           expandToMin={false}
-          gutterSize={6}
+          gutterSize={sidebarCollapsed ? 0 : 6}
           gutterAlign="center"
           snapOffset={30}
           dragInterval={1}
           direction="horizontal"
           cursor="col-resize"
         >
-          <Sidebar>
-            <SidebarContent>
+          <SidebarWrapper collapsed={sidebarCollapsed}>
+            <SidebarToggle
+              collapsed={sidebarCollapsed}
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            >
+              {sidebarCollapsed ? '▶' : '◀'}
+            </SidebarToggle>
+            <Sidebar collapsed={sidebarCollapsed}>
+              <SidebarContent>
               {viewMode === 'meetings' && (
                 <>
                   <TabBar>
@@ -648,7 +730,8 @@ function App() {
                 <span>Settings</span>
               </NavButton>
             </BottomNav>
-          </Sidebar>
+            </Sidebar>
+          </SidebarWrapper>
 
           <ContentArea>
           {viewMode === 'meetings' && (

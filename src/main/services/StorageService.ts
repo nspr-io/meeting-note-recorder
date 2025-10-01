@@ -942,6 +942,9 @@ ${meeting.transcript || ''}`;
     const result = { added: 0, updated: 0, deleted: 0, errors: [] as string[] };
 
     try {
+      // Scan for prep notes before syncing - picks up any notes created since startup
+      await this.scanAndAdoptPrepNotes();
+
       logger.info(`Smart sync: Processing ${calendarEvents.length} calendar events`);
 
       // Get existing meetings with calendar IDs

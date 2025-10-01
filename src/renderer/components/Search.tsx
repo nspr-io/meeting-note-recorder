@@ -4,8 +4,13 @@ import SearchBar from './SearchBar';
 import SearchResults from './SearchResults';
 import { Meeting, SearchOptions, SearchResult } from '../../shared/types';
 
-const SearchWrapper = styled.div`
+const SearchWrapper = styled.div<{ collapsed?: boolean }>`
   position: relative;
+  max-height: ${props => props.collapsed ? '0' : '300px'};
+  opacity: ${props => props.collapsed ? '0' : '1'};
+  transition: all 0.3s ease;
+  overflow: hidden;
+  pointer-events: ${props => props.collapsed ? 'none' : 'auto'};
 `;
 
 const Overlay = styled.div`
@@ -31,9 +36,10 @@ const Overlay = styled.div`
 interface SearchProps {
   onSelectMeeting: (meeting: Meeting) => void;
   currentMeeting?: Meeting | null;
+  collapsed?: boolean;
 }
 
-export default function Search({ onSelectMeeting, currentMeeting }: SearchProps) {
+export default function Search({ onSelectMeeting, currentMeeting, collapsed }: SearchProps) {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -124,7 +130,7 @@ export default function Search({ onSelectMeeting, currentMeeting }: SearchProps)
 
   return (
     <>
-      <SearchWrapper>
+      <SearchWrapper collapsed={collapsed}>
         {searchBar}
         {showResults && (
           <SearchResults
