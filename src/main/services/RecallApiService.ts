@@ -112,7 +112,7 @@ export class RecallApiService {
           transcript: {
             provider: {
               deepgram_streaming: {
-                model: "nova-2",  // Revert to proven working model from Oct 2
+                model: "nova-3-general",  // Testing Nova-3 with correct model identifier
                 language: "en-US",
                 smart_format: true,
                 punctuate: true,
