@@ -12,7 +12,7 @@ const Container = styled.div`
 `;
 
 const Header = styled.div`
-  padding: 20px 28px;
+  padding: 20px 24px;
   background: #ffffff;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 `;
@@ -255,7 +255,7 @@ const Content = styled.div`
 `;
 
 const EditorContainer = styled.div`
-  padding: 24px;
+  padding: 16px;
   background: white;
   min-height: 100%;
   display: flex;
@@ -277,167 +277,269 @@ const EditorContainer = styled.div`
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
 
-  /* Enhanced preview styling for better readability */
-  .w-md-editor-preview {
-    font-size: 15px !important;
-    line-height: 1.7 !important;
+  /* NUCLEAR OVERRIDE - Force full width preview with zero margins */
+  &.w-md-editor-show-preview,
+  & .w-md-editor.w-md-editor-show-preview,
+  & .w-md-editor-show-preview .w-md-editor-preview {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
   }
 
-  /* Target the markdown preview container with higher specificity */
+  /* Enhanced preview styling - Professional UX/UI Design */
+  & .w-md-editor-preview {
+    font-size: 15px !important;
+    line-height: 1.75 !important;
+    padding: 20px !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  /* Kill ALL centering and max-width from library */
+  & .w-md-editor-preview * {
+    max-width: none !important;
+  }
+
+  & .w-md-editor-preview > * {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+  }
+
+  /* Base typography */
   & .w-md-editor-preview .wmde-markdown,
   & .w-md-editor-preview .wmde-markdown-var {
     font-size: 15px !important;
-    line-height: 1.7 !important;
+    line-height: 1.75 !important;
+    color: #2d3748 !important;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif !important;
+    -webkit-font-smoothing: antialiased !important;
+    -moz-osx-font-smoothing: grayscale !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
   }
 
+  /* H1 - Main section headers */
   & .w-md-editor-preview .wmde-markdown h1 {
-    font-size: 28px !important;
+    font-size: 32px !important;
     font-weight: 700 !important;
-    margin-top: 24px !important;
-    margin-bottom: 16px !important;
-    line-height: 1.3 !important;
-    border-bottom: 2px solid #e5e7eb !important;
-    padding-bottom: 8px !important;
+    margin-top: 48px !important;
+    margin-bottom: 24px !important;
+    line-height: 1.2 !important;
+    letter-spacing: -0.02em !important;
+    color: #1a202c !important;
+    border-bottom: 2px solid #e2e8f0 !important;
+    padding-bottom: 12px !important;
   }
 
   & .w-md-editor-preview .wmde-markdown h1:first-child {
     margin-top: 0 !important;
   }
 
+  /* H2 - Subsection headers */
   & .w-md-editor-preview .wmde-markdown h2 {
-    font-size: 22px !important;
+    font-size: 24px !important;
+    font-weight: 700 !important;
+    margin-top: 40px !important;
+    margin-bottom: 16px !important;
+    line-height: 1.3 !important;
+    letter-spacing: -0.01em !important;
+    color: #1a202c !important;
+  }
+
+  /* H3 - Section headers */
+  & .w-md-editor-preview .wmde-markdown h3 {
+    font-size: 20px !important;
     font-weight: 600 !important;
     margin-top: 32px !important;
-    margin-bottom: 14px !important;
-    line-height: 1.4 !important;
-  }
-
-  & .w-md-editor-preview .wmde-markdown h3 {
-    font-size: 18px !important;
-    font-weight: 600 !important;
-    margin-top: 24px !important;
     margin-bottom: 12px !important;
     line-height: 1.4 !important;
+    color: #2d3748 !important;
   }
 
+  /* H4 - Minor headers */
   & .w-md-editor-preview .wmde-markdown h4 {
-    font-size: 16px !important;
+    font-size: 17px !important;
     font-weight: 600 !important;
-    margin-top: 20px !important;
+    margin-top: 24px !important;
     margin-bottom: 10px !important;
     line-height: 1.5 !important;
+    color: #2d3748 !important;
   }
 
+  /* Paragraphs */
   & .w-md-editor-preview .wmde-markdown p {
     margin-top: 0 !important;
-    margin-bottom: 16px !important;
-    line-height: 1.7 !important;
+    margin-bottom: 20px !important;
+    line-height: 1.75 !important;
+    color: #4a5568 !important;
   }
 
+  /* Lists - Enhanced spacing and styling */
   & .w-md-editor-preview .wmde-markdown ul,
   & .w-md-editor-preview .wmde-markdown ol {
     margin-top: 0 !important;
-    margin-bottom: 16px !important;
-    padding-left: 28px !important;
+    margin-bottom: 20px !important;
+    padding-left: 32px !important;
   }
 
   & .w-md-editor-preview .wmde-markdown ul {
-    list-style-type: disc !important;
+    list-style-type: none !important;
   }
 
+  /* Custom bullet points */
+  & .w-md-editor-preview .wmde-markdown ul > li {
+    position: relative !important;
+    padding-left: 8px !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown ul > li::before {
+    content: '•' !important;
+    position: absolute !important;
+    left: -20px !important;
+    color: #667eea !important;
+    font-weight: 700 !important;
+    font-size: 1.2em !important;
+  }
+
+  /* List items */
   & .w-md-editor-preview .wmde-markdown li {
-    margin-bottom: 8px !important;
-    line-height: 1.7 !important;
-    padding-left: 4px !important;
+    margin-bottom: 10px !important;
+    line-height: 1.75 !important;
+    color: #4a5568 !important;
   }
 
   & .w-md-editor-preview .wmde-markdown li > p {
-    margin-bottom: 8px !important;
+    margin-bottom: 10px !important;
   }
 
   & .w-md-editor-preview .wmde-markdown li:last-child {
     margin-bottom: 0 !important;
   }
 
+  /* Nested lists */
   & .w-md-editor-preview .wmde-markdown ul ul,
   & .w-md-editor-preview .wmde-markdown ol ul,
   & .w-md-editor-preview .wmde-markdown ul ol,
   & .w-md-editor-preview .wmde-markdown ol ol {
-    margin-top: 8px !important;
-    margin-bottom: 8px !important;
+    margin-top: 10px !important;
+    margin-bottom: 10px !important;
   }
 
+  /* Nested list bullets - smaller and different color */
+  & .w-md-editor-preview .wmde-markdown ul ul > li::before {
+    content: '◦' !important;
+    color: #a0aec0 !important;
+  }
+
+  /* Strong/Bold text */
   & .w-md-editor-preview .wmde-markdown strong {
-    font-weight: 600 !important;
+    font-weight: 700 !important;
+    color: #1a202c !important;
   }
 
+  /* Emphasis/Italic */
   & .w-md-editor-preview .wmde-markdown em {
     font-style: italic !important;
+    color: #2d3748 !important;
   }
 
+  /* Blockquotes - Elevated design */
   & .w-md-editor-preview .wmde-markdown blockquote {
-    margin: 16px 0 !important;
-    padding: 12px 20px !important;
+    margin: 24px 0 !important;
+    padding: 16px 24px !important;
     border-left: 4px solid #667eea !important;
-    background: #f8f9fa !important;
-    color: #555 !important;
+    background: linear-gradient(to right, #f7fafc, #ffffff) !important;
+    border-radius: 0 4px 4px 0 !important;
+    color: #4a5568 !important;
+    font-style: italic !important;
   }
 
   & .w-md-editor-preview .wmde-markdown blockquote p {
     margin-bottom: 0 !important;
   }
 
+  /* Inline code */
   & .w-md-editor-preview .wmde-markdown code {
-    background: #f5f5f7 !important;
-    padding: 2px 6px !important;
-    border-radius: 3px !important;
+    background: #edf2f7 !important;
+    color: #d63384 !important;
+    padding: 3px 8px !important;
+    border-radius: 4px !important;
     font-size: 0.9em !important;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', Consolas, monospace !important;
+    font-weight: 500 !important;
   }
 
+  /* Code blocks */
   & .w-md-editor-preview .wmde-markdown pre {
-    background: #f5f5f7 !important;
-    padding: 16px !important;
-    border-radius: 6px !important;
+    background: #f7fafc !important;
+    border: 1px solid #e2e8f0 !important;
+    padding: 20px !important;
+    border-radius: 8px !important;
     overflow-x: auto !important;
-    margin: 16px 0 !important;
+    margin: 24px 0 !important;
   }
 
   & .w-md-editor-preview .wmde-markdown pre code {
     background: none !important;
+    color: #2d3748 !important;
     padding: 0 !important;
+    font-weight: 400 !important;
   }
 
+  /* Horizontal rules */
   & .w-md-editor-preview .wmde-markdown hr {
     border: none !important;
-    border-top: 2px solid #e5e7eb !important;
-    margin: 24px 0 !important;
+    height: 1px !important;
+    background: linear-gradient(to right, transparent, #cbd5e0, transparent) !important;
+    margin: 40px 0 !important;
   }
 
+  /* Tables - Clean design */
   & .w-md-editor-preview .wmde-markdown table {
     border-collapse: collapse !important;
     width: 100% !important;
-    margin: 16px 0 !important;
+    margin: 24px 0 !important;
+    border-radius: 8px !important;
+    overflow: hidden !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
   }
 
   & .w-md-editor-preview .wmde-markdown table th,
   & .w-md-editor-preview .wmde-markdown table td {
-    border: 1px solid #e5e7eb !important;
-    padding: 10px 12px !important;
+    border: 1px solid #e2e8f0 !important;
+    padding: 12px 16px !important;
     text-align: left !important;
   }
 
   & .w-md-editor-preview .wmde-markdown table th {
-    background: #f8f9fa !important;
+    background: #f7fafc !important;
     font-weight: 600 !important;
+    color: #2d3748 !important;
+    border-bottom: 2px solid #cbd5e0 !important;
   }
 
+  & .w-md-editor-preview .wmde-markdown table tr:hover {
+    background: #f7fafc !important;
+  }
+
+  /* Links - Subtle and refined */
   & .w-md-editor-preview .wmde-markdown a {
     color: #667eea !important;
     text-decoration: none !important;
+    border-bottom: 1px solid transparent !important;
+    transition: all 0.2s ease !important;
   }
 
   & .w-md-editor-preview .wmde-markdown a:hover {
-    text-decoration: underline !important;
+    color: #5a67d8 !important;
+    border-bottom-color: #667eea !important;
   }
 `;
 
@@ -461,6 +563,64 @@ const EditorModeButton = styled.button<{ isActive?: boolean }>`
   &:hover {
     background: ${props => props.isActive ? '#0051D5' : '#f0f0f0'};
   }
+`;
+
+const RecordingBanner = styled.div`
+  background: linear-gradient(135deg, #ff3b30 0%, #ff6b6b 100%);
+  color: white;
+  padding: 16px 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  animation: pulse 2s ease-in-out infinite;
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.95; }
+  }
+`;
+
+const RecordingInfo = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  font-size: 14px;
+  font-weight: 500;
+`;
+
+const RecordingDot = styled.div`
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: white;
+  animation: blink 1.5s ease-in-out infinite;
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+`;
+
+const RecordingLabel = styled.span`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const RecordingStats = styled.div`
+  display: flex;
+  gap: 16px;
+  font-family: 'SF Mono', Monaco, monospace;
+`;
+
+const SaveStatus = styled.div`
+  font-size: 12px;
+  color: #666;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
 `;
 
 const TranscriptContainer = styled.div`
@@ -762,6 +922,7 @@ interface MeetingDetailFinalProps {
   onUpdateMeeting: (meeting: Meeting) => void;
   onDeleteMeeting?: (meetingId: string) => void;
   onRefresh?: () => void;
+  onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
 }
 
 type ViewMode = 'notes' | 'transcript' | 'insights' | 'actions' | 'coach';
@@ -769,7 +930,7 @@ type ViewMode = 'notes' | 'transcript' | 'insights' | 'actions' | 'coach';
 // Module-level transcript cache to persist across component re-renders
 const transcriptCache = new Map<string, any[]>();
 
-function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefresh }: MeetingDetailFinalProps) {
+function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefresh, onShowToast }: MeetingDetailFinalProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('notes');
   const [notes, setNotes] = useState(meeting.notes || '');
   const [editorPreviewMode, setEditorPreviewMode] = useState<'edit' | 'live' | 'preview'>('preview');
@@ -780,6 +941,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     transcriptCache.get(meeting.id) || []
   );
   const [isRecording, setIsRecording] = useState(meeting.status === 'recording');
+  const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
+  const [elapsedTime, setElapsedTime] = useState('00:00:00');
   const [showAttendees, setShowAttendees] = useState(false);
   const [isCorrecting, setIsCorrecting] = useState(false);
   const [correctionProgress, setCorrectionProgress] = useState<{ current: number; total: number; percentage: number } | null>(null);
@@ -939,6 +1102,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       if (data.meetingId === meeting.id) {
         console.log('[MeetingDetailFinal] Recording started for this meeting');
         setIsRecording(true);
+        setRecordingStartTime(new Date());
         // Don't clear segments - keep existing transcript and append new ones
         // This allows resuming recording on same meeting
       }
@@ -947,6 +1111,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     const handleRecordingStopped = () => {
       console.log('[MeetingDetailFinal] Recording stopped');
       setIsRecording(false);
+      setRecordingStartTime(null);
 
       // Auto-stop coaching when recording ends
       if (isCoaching) {
@@ -963,6 +1128,33 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       (window as any).electronAPI?.removeListener?.('recording-stopped', handleRecordingStopped);
     };
   }, [meeting.id, isCoaching]);
+
+  // Update elapsed time timer
+  useEffect(() => {
+    if (!isRecording || !recordingStartTime) {
+      setElapsedTime('00:00:00');
+      return;
+    }
+
+    const updateTimer = () => {
+      const now = new Date();
+      const elapsed = Math.floor((now.getTime() - recordingStartTime.getTime()) / 1000);
+      const hours = Math.floor(elapsed / 3600);
+      const minutes = Math.floor((elapsed % 3600) / 60);
+      const seconds = elapsed % 60;
+      setElapsedTime(
+        `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+      );
+    };
+
+    // Update immediately
+    updateTimer();
+
+    // Update every second
+    const interval = setInterval(updateTimer, 1000);
+
+    return () => clearInterval(interval);
+  }, [isRecording, recordingStartTime]);
 
   // Listen for correction progress updates
   useEffect(() => {
@@ -1196,13 +1388,14 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
         if (onRefresh) {
           await onRefresh();
         }
+        onShowToast?.('Insights generated successfully', 'success');
       } else {
         console.error('Failed to generate insights:', result.error);
-        alert('Failed to generate insights. Please check your Anthropic API key in settings.');
+        onShowToast?.('Failed to generate insights. Please check your Anthropic API key in settings.', 'error');
       }
     } catch (error) {
       console.error('Error generating insights:', error);
-      alert('An error occurred while generating insights.');
+      onShowToast?.('An error occurred while generating insights.', 'error');
     } finally {
       setIsGeneratingInsights(false);
     }
@@ -1226,13 +1419,14 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
         if (onRefresh) {
           await onRefresh();
         }
+        onShowToast?.('Team summary generated successfully', 'success');
       } else {
         console.error('Failed to generate team summary:', result.error);
-        alert('Failed to generate team summary. Please check your Anthropic API key in settings.');
+        onShowToast?.('Failed to generate team summary. Please check your Anthropic API key in settings.', 'error');
       }
     } catch (error) {
       console.error('Error generating team summary:', error);
-      alert('An error occurred while generating team summary.');
+      onShowToast?.('An error occurred while generating team summary.', 'error');
     } finally {
       setIsGeneratingTeamSummary(false);
     }
@@ -1293,7 +1487,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
       if (result.success) {
         setSlackShared(new Date());
-        alert('Successfully shared to Slack!');
+        onShowToast?.('Successfully shared to Slack!', 'success');
 
         // Refresh meeting data to get updated timestamp
         if (onRefresh) {
@@ -1301,11 +1495,11 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
         }
       } else {
         console.error('Failed to share to Slack:', result.error);
-        alert(result.error || 'Failed to share to Slack. Please check your webhook configuration in settings.');
+        onShowToast?.(result.error || 'Failed to share to Slack. Please check your webhook configuration in settings.', 'error');
       }
     } catch (error) {
       console.error('Error sharing to Slack:', error);
-      alert('An error occurred while sharing to Slack.');
+      onShowToast?.('An error occurred while sharing to Slack.', 'error');
     } finally {
       setIsSharing(false);
     }
@@ -1622,9 +1816,12 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                     try {
                       await (window as any).electronAPI.startRecording(meeting.id);
                       setIsRecording(true);
+                      setRecordingStartTime(new Date());
+                      onShowToast?.('Recording started successfully', 'success');
                       // Don't clear segments - append to existing transcript
                     } catch (error) {
                       console.error('Failed to start recording:', error);
+                      onShowToast?.('Failed to start recording. Check your recall.ai API key in settings.', 'error');
                     }
                   }}
                 >
@@ -1638,8 +1835,11 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                     try {
                       await (window as any).electronAPI.stopRecording(meeting.id);
                       setIsRecording(false);
+                      setRecordingStartTime(null);
+                      onShowToast?.('Recording stopped', 'info');
                     } catch (error) {
                       console.error('Failed to stop recording:', error);
+                      onShowToast?.('Failed to stop recording', 'error');
                     }
                   }}
                 >
@@ -1750,11 +1950,45 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
           </div>
         </Header>
 
+        {isRecording && (
+          <RecordingBanner>
+            <RecordingInfo>
+              <RecordingLabel>
+                <RecordingDot />
+                Recording
+              </RecordingLabel>
+              <RecordingStats>
+                <span>{elapsedTime}</span>
+                <span>•</span>
+                <span>{transcriptSegments.length} segments</span>
+              </RecordingStats>
+            </RecordingInfo>
+            <Button
+              variant="danger"
+              onClick={async () => {
+                try {
+                  await (window as any).electronAPI.stopRecording(meeting.id);
+                  setIsRecording(false);
+                  setRecordingStartTime(null);
+                } catch (error) {
+                  console.error('Failed to stop recording:', error);
+                }
+              }}
+              style={{ background: 'rgba(255, 255, 255, 0.2)', color: 'white', border: '1px solid white' }}
+            >
+              Stop Recording
+            </Button>
+          </RecordingBanner>
+        )}
+
         <Content>
           {/* Notes Panel - Always rendered but hidden when not active */}
           <TabPanel isActive={viewMode === 'notes'}>
             <EditorContainer>
               <EditorToolbar>
+                <SaveStatus>
+                  {isSaving ? '💾 Saving...' : hasChanges ? '⚠️ Unsaved changes' : '✓ Saved'}
+                </SaveStatus>
                 <EditorModeButton
                   isActive={editorPreviewMode === 'preview'}
                   onClick={() => setEditorPreviewMode('preview')}
@@ -1781,6 +2015,23 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                 height={400}
                 preview={editorPreviewMode}
                 hideToolbar={false}
+                previewOptions={{
+                  style: {
+                    padding: '20px',
+                    margin: 0,
+                    width: '100%',
+                    maxWidth: 'none',
+                    boxSizing: 'border-box'
+                  },
+                  wrapperElement: {
+                    style: {
+                      margin: 0,
+                      padding: 0,
+                      width: '100%',
+                      maxWidth: 'none'
+                    }
+                  }
+                }}
               />
             </EditorContainer>
           </TabPanel>
@@ -2061,6 +2312,23 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                       height={400}
                       preview={editorPreviewMode}
                       hideToolbar={false}
+                      previewOptions={{
+                        style: {
+                          padding: '20px',
+                          margin: 0,
+                          width: '100%',
+                          maxWidth: 'none',
+                          boxSizing: 'border-box'
+                        },
+                        wrapperElement: {
+                          style: {
+                            margin: 0,
+                            padding: 0,
+                            width: '100%',
+                            maxWidth: 'none'
+                          }
+                        }
+                      }}
                     />
                   </div>
                 </div>

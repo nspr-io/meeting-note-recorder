@@ -1081,15 +1081,11 @@ ${meeting.transcript || ''}`;
   }
 
   async getMeetingByCalendarId(calendarId: string): Promise<Meeting | undefined> {
-    // Extract base ID (for recurring events, Google adds _timestamp suffix)
-    const baseCalendarId = calendarId.split('_')[0];
-
     return Array.from(this.meetingsCache.values())
       .find(m => {
         if (!m.calendarEventId) return false;
-        // Exact match or base ID match (for recurring events)
-        const baseStoredId = m.calendarEventId.split('_')[0];
-        return m.calendarEventId === calendarId || baseStoredId === baseCalendarId;
+        // Exact match only - each recurring instance has unique ID
+        return m.calendarEventId === calendarId;
       });
   }
 

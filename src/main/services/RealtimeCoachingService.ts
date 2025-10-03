@@ -1,16 +1,11 @@
-import Anthropic from '@anthropic-ai/sdk';
-import { EventEmitter } from 'events';
 import { CoachingType, CoachingFeedback, TranscriptChunk } from '../../shared/types';
 import { PromptService } from './PromptService';
-import { createServiceLogger } from './ServiceLogger';
-
-const logger = createServiceLogger('RealtimeCoachingService');
+import { BaseAnthropicService } from './BaseAnthropicService';
 
 const ANALYSIS_INTERVAL_MS = 30000; // 30 seconds
 const TRANSCRIPT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
-export class RealtimeCoachingService extends EventEmitter {
-  private anthropic: Anthropic | null = null;
+export class RealtimeCoachingService extends BaseAnthropicService {
   private promptService: PromptService | null;
   private isActive: boolean = false;
   private coachingType: CoachingType | null = null;
@@ -20,25 +15,8 @@ export class RealtimeCoachingService extends EventEmitter {
   private feedbackHistory: CoachingFeedback[] = [];
 
   constructor(promptService: PromptService | null) {
-    super();
+    super('RealtimeCoachingService');
     this.promptService = promptService;
-  }
-
-  initialize(apiKey: string | undefined): void {
-    if (!apiKey) {
-      logger.warn('No Anthropic API key provided - real-time coaching disabled');
-      return;
-    }
-
-    try {
-      this.anthropic = new Anthropic({
-        apiKey: apiKey
-      });
-      logger.info('RealtimeCoachingService initialized successfully');
-    } catch (error) {
-      logger.error('Failed to initialize Anthropic client:', error);
-      this.anthropic = null;
-    }
   }
 
   /**
@@ -50,11 +28,11 @@ export class RealtimeCoachingService extends EventEmitter {
     }
 
     if (this.isActive) {
-      logger.warn('Coaching already active, stopping previous session');
+      this.logger.warn('Coaching already active, stopping previous session');
       this.stopCoaching();
     }
 
-    logger.info(`Starting real-time coaching for meeting ${meetingId} with type ${coachingType}`);
+    this.logger.info(`Starting real-time coaching for meeting ${meetingId} with type ${coachingType}`);
 
     this.isActive = true;
     this.coachingType = coachingType;
@@ -65,7 +43,7 @@ export class RealtimeCoachingService extends EventEmitter {
     // Start periodic analysis
     this.intervalId = setInterval(() => {
       this.analyzeFeedback().catch(error => {
-        logger.error('Error during coaching analysis:', error);
+        this.logger.error('Error during coaching analysis:', error);
         this.emit('coaching-error', { meetingId, error: error.message });
       });
     }, ANALYSIS_INTERVAL_MS);
@@ -73,7 +51,7 @@ export class RealtimeCoachingService extends EventEmitter {
     // Do first analysis immediately
     setTimeout(() => {
       this.analyzeFeedback().catch(error => {
-        logger.error('Error during initial coaching analysis:', error);
+        this.logger.error('Error during initial coaching analysis:', error);
         this.emit('coaching-error', { meetingId, error: error.message });
       });
     }, 5000); // Wait 5 seconds for some transcript to accumulate
@@ -88,7 +66,7 @@ export class RealtimeCoachingService extends EventEmitter {
       this.intervalId = null;
     }
 
-    logger.info(`Stopping real-time coaching for meeting ${this.meetingId}`);
+    this.logger.info(`Stopping real-time coaching for meeting ${this.meetingId}`);
 
     this.isActive = false;
     this.coachingType = null;
@@ -125,11 +103,11 @@ export class RealtimeCoachingService extends EventEmitter {
     const recentTranscript = this.getRecentTranscript();
 
     if (!recentTranscript || recentTranscript.trim().length < 50) {
-      logger.debug('Not enough transcript content for coaching analysis');
+      this.logger.debug('Not enough transcript content for coaching analysis');
       return;
     }
 
-    logger.info('Analyzing transcript for coaching feedback');
+    this.logger.info('Analyzing transcript for coaching feedback');
 
     // Store meetingId to avoid null reference if stopped during analysis
     const currentMeetingId = this.meetingId;
@@ -159,7 +137,7 @@ export class RealtimeCoachingService extends EventEmitter {
 
       // Check if still active after async operation
       if (!this.isActive) {
-        logger.debug('Coaching stopped during analysis, discarding results');
+        this.logger.debug('Coaching stopped during analysis, discarding results');
         return;
       }
 
@@ -171,8 +149,8 @@ export class RealtimeCoachingService extends EventEmitter {
         try {
           parsed = JSON.parse(feedbackJson);
         } catch (parseError) {
-          logger.error('Failed to parse coaching feedback JSON:', parseError);
-          logger.error('Raw response:', feedbackJson);
+          this.logger.error('Failed to parse coaching feedback JSON:', parseError);
+          this.logger.error('Raw response:', feedbackJson);
           this.emit('coaching-error', {
             meetingId: currentMeetingId,
             error: 'Invalid feedback format from AI'
@@ -199,10 +177,10 @@ export class RealtimeCoachingService extends EventEmitter {
           feedback
         });
 
-        logger.info('Coaching feedback generated and emitted');
+        this.logger.info('Coaching feedback generated and emitted');
       }
     } catch (error) {
-      logger.error('Failed to generate coaching feedback:', error);
+      this.logger.error('Failed to generate coaching feedback:', error);
       this.emit('coaching-error', {
         meetingId: currentMeetingId,
         error: error instanceof Error ? error.message : 'Unknown error'

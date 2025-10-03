@@ -1,6 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { getLogger } from './LoggingService';
 import { detectPlatform } from '../../shared/utils/PlatformDetector';
+import { BaseAnthropicService } from './BaseAnthropicService';
 
 const logger = getLogger();
 
@@ -10,24 +10,9 @@ interface ProcessedDescription {
   notes: string;
 }
 
-export class DescriptionProcessingService {
-  private anthropic: Anthropic | null = null;
-
-  initialize(apiKey: string | undefined): void {
-    if (!apiKey) {
-      logger.warn('No Anthropic API key provided - description processing disabled');
-      return;
-    }
-
-    try {
-      this.anthropic = new Anthropic({
-        apiKey: apiKey
-      });
-      logger.info('DescriptionProcessingService initialized');
-    } catch (error) {
-      logger.error('Failed to initialize Anthropic client for descriptions:', error);
-      this.anthropic = null;
-    }
+export class DescriptionProcessingService extends BaseAnthropicService {
+  constructor() {
+    super('DescriptionProcessingService');
   }
 
   /**

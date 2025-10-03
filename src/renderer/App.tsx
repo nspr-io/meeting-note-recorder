@@ -295,12 +295,57 @@ const FloatingActionButton = styled.button`
   }
 `;
 
-const Toast = styled.div<{ show: boolean }>`
+const ConnectionErrorBanner = styled.div`
+  background: linear-gradient(135deg, #ff9500 0%, #ffab00 100%);
+  color: white;
+  padding: 12px 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  font-size: 13px;
+  font-weight: 500;
+`;
+
+const ConnectionErrorMessage = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  &::before {
+    content: '⚠️';
+    font-size: 16px;
+  }
+`;
+
+const ConnectionErrorButton = styled.button`
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  border: 1px solid white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
+`;
+
+const Toast = styled.div<{ show: boolean; type?: 'success' | 'error' | 'info' }>`
   position: fixed;
   bottom: 40px;
   left: 50%;
   transform: translateX(-50%) translateY(${props => props.show ? '0' : '100px'});
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: ${props => {
+    switch(props.type) {
+      case 'error': return 'linear-gradient(135deg, #ff3b30 0%, #ff6b6b 100%)';
+      case 'info': return 'linear-gradient(135deg, #007AFF 0%, #5856D6 100%)';
+      default: return 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+    }
+  }};
   color: white;
   padding: 16px 24px;
   border-radius: 12px;
@@ -316,7 +361,13 @@ const Toast = styled.div<{ show: boolean }>`
   max-width: 400px;
 
   &::before {
-    content: '✓';
+    content: ${props => {
+      switch(props.type) {
+        case 'error': return "'✕'";
+        case 'info': return "'ℹ'";
+        default: return "'✓'";
+      }
+    }};
     display: inline-block;
     width: 20px;
     height: 20px;
@@ -343,8 +394,10 @@ function App() {
   const [readyToRecordMeetings, setReadyToRecordMeetings] = useState<Set<string>>(new Set());
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+  const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('success');
   const [searchCollapsed, setSearchCollapsed] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
 
   useEffect(() => {
     // Check if electronAPI is available
@@ -364,6 +417,7 @@ function App() {
 
   const loadMeetings = async () => {
     try {
+      setIsLoadingMeetings(true);
       console.log('[JOURNEY-UI-LOAD-1] Loading meetings from backend');
       const loadedMeetings = await window.electronAPI.getMeetings();
       console.log('[JOURNEY-UI-LOAD-2] Meetings loaded', {
@@ -385,6 +439,8 @@ function App() {
       }
     } catch (error) {
       console.error('[JOURNEY-UI-LOAD-ERROR] Failed to load meetings:', error);
+    } finally {
+      setIsLoadingMeetings(false);
     }
   };
 
@@ -395,6 +451,13 @@ function App() {
     } catch (error) {
       console.error('Failed to load settings:', error);
     }
+  };
+
+  const showToastHelper = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToastMessage(message);
+    setToastType(type);
+    setShowToast(true);
+    setTimeout(() => setShowToast(false), 5000);
   };
 
   const setupEventListeners = () => {
@@ -555,9 +618,11 @@ function App() {
     try {
       const result = await window.electronAPI.syncCalendar();
       await loadMeetings();
+      showToastHelper('Calendar synced successfully', 'success');
       return result;
     } catch (error) {
       console.error('Failed to sync calendar:', error);
+      showToastHelper('Failed to sync calendar. Check your connection and try again.', 'error');
       throw error;
     }
   };
@@ -641,6 +706,17 @@ function App() {
         </SearchContainer>
       </SearchWrapper>
 
+      {connectionStatus === 'disconnected' && (
+        <ConnectionErrorBanner>
+          <ConnectionErrorMessage>
+            Not connected to recall.ai. Recordings won't work.
+          </ConnectionErrorMessage>
+          <ConnectionErrorButton onClick={() => setViewMode('settings')}>
+            Check Settings
+          </ConnectionErrorButton>
+        </ConnectionErrorBanner>
+      )}
+
       <MainContent>
         <Split
           className="split"
@@ -686,6 +762,7 @@ function App() {
                     onSelectMeeting={setSelectedMeeting}
                     onSyncCalendar={handleSyncCalendar}
                     readyToRecordMeetings={readyToRecordMeetings}
+                    isLoading={isLoadingMeetings}
                   />
                 </>
               )}
@@ -773,6 +850,7 @@ function App() {
                     setSelectedMeeting(updatedMeeting);
                   }
                 }}
+                onShowToast={showToastHelper}
               />
             ) : (
               <div style={{ padding: 50, textAlign: 'center', color: '#86868b' }}>
@@ -813,7 +891,7 @@ function App() {
         </FloatingActionButton>
       )}
 
-      <Toast show={showToast}>
+      <Toast show={showToast} type={toastType}>
         {toastMessage}
       </Toast>
     </AppContainer>

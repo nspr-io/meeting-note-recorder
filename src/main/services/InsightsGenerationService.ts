@@ -1,8 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { getLogger } from './LoggingService';
-import { EventEmitter } from 'events';
 import { Meeting, UserProfile } from '../../shared/types';
 import { PromptService } from './PromptService';
+import { BaseAnthropicService } from './BaseAnthropicService';
 
 const logger = getLogger();
 
@@ -18,33 +17,15 @@ interface MeetingInsights {
   notesHighlights: string[];
 }
 
-export class InsightsGenerationService extends EventEmitter {
-  private anthropic: Anthropic | null = null;
+export class InsightsGenerationService extends BaseAnthropicService {
   private promptService: PromptService | null;
 
   constructor(promptService: PromptService | null) {
-    super();
+    super('InsightsGenerationService');
     logger.info('[INSIGHTS-GENERATION-CONSTRUCTOR] Creating InsightsGenerationService', {
       hasPromptService: promptService !== null
     });
     this.promptService = promptService;
-  }
-
-  initialize(apiKey: string | undefined): void {
-    if (!apiKey) {
-      logger.warn('No Anthropic API key provided - insights generation disabled');
-      return;
-    }
-
-    try {
-      this.anthropic = new Anthropic({
-        apiKey: apiKey
-      });
-      logger.info('InsightsGenerationService initialized successfully');
-    } catch (error) {
-      logger.error('Failed to initialize Anthropic client:', error);
-      this.anthropic = null;
-    }
   }
 
   /**
@@ -269,12 +250,5 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
       }
       return 'You are an experienced Executive Assistant. Analyze the meeting content and produce structured insights in JSON format with summary, actionItems, keyDecisions, followUps, and notesHighlights.';
     }
-  }
-
-  /**
-   * Check if insights service is available
-   */
-  isAvailable(): boolean {
-    return this.anthropic !== null;
   }
 }

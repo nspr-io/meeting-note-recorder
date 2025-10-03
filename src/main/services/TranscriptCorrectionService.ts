@@ -1,7 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { getLogger } from './LoggingService';
-import { EventEmitter } from 'events';
 import { PromptService } from './PromptService';
+import { BaseAnthropicService } from './BaseAnthropicService';
 
 const logger = getLogger();
 
@@ -17,36 +16,16 @@ interface TranscriptBlock {
   endIndex: number;
 }
 
-export class TranscriptCorrectionService extends EventEmitter {
-  private anthropic: Anthropic | null = null;
+export class TranscriptCorrectionService extends BaseAnthropicService {
   private readonly BLOCK_SIZE = 100; // Process 100 lines at a time
   private promptService: PromptService | null;
 
   constructor(promptService: PromptService | null) {
-    super();
+    super('TranscriptCorrectionService');
     logger.info('[TRANSCRIPT-CORRECTION-CONSTRUCTOR] Creating TranscriptCorrectionService', {
       hasPromptService: promptService !== null
     });
     this.promptService = promptService;
-  }
-
-  initialize(apiKey: string | undefined): void {
-    if (!apiKey) {
-      logger.warn('No Anthropic API key provided - transcript correction disabled');
-      return;
-    }
-
-    logger.info(`Initializing TranscriptCorrectionService with API key: ${apiKey.substring(0, 10)}...`);
-
-    try {
-      this.anthropic = new Anthropic({
-        apiKey: apiKey
-      });
-      logger.info('TranscriptCorrectionService initialized successfully');
-    } catch (error) {
-      logger.error('Failed to initialize Anthropic client:', error);
-      this.anthropic = null;
-    }
   }
 
   /**
@@ -484,13 +463,6 @@ export class TranscriptCorrectionService extends EventEmitter {
     }
 
     return segments;
-  }
-
-  /**
-   * Check if correction service is available
-   */
-  isAvailable(): boolean {
-    return this.anthropic !== null;
   }
 
   /**

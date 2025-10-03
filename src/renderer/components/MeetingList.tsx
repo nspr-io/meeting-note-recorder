@@ -13,24 +13,49 @@ const ListContainer = styled.div`
 const MeetingItem = styled.div<{ selected: boolean }>`
   padding: 14px;
   margin: 0 8px 8px 8px;
-  background: ${props => props.selected ?
-    'linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%)' :
-    '#ffffff'};
+  background: #ffffff;
   border-radius: 12px;
   cursor: pointer;
   transition: all 0.3s;
-  border: 2px solid ${props => props.selected ? 'rgba(102, 126, 234, 0.5)' : 'transparent'};
+  border-left: 4px solid ${props => props.selected ? '#667eea' : 'transparent'};
   box-shadow: ${props => props.selected ?
-    '0 4px 12px rgba(102, 126, 234, 0.15)' :
+    '0 2px 8px rgba(0, 0, 0, 0.08)' :
     '0 2px 4px rgba(0, 0, 0, 0.05)'};
 
   &:hover {
-    background: ${props => props.selected ?
-      'linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%)' :
-      '#f9fafb'};
+    background: #f9fafb;
     transform: translateX(2px);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   }
+`;
+
+const SkeletonItem = styled.div`
+  padding: 14px;
+  margin: 0 8px 8px 8px;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  animation: pulse 1.5s ease-in-out infinite;
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+`;
+
+const SkeletonTitle = styled.div`
+  height: 14px;
+  background: #e5e5e7;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  width: 70%;
+`;
+
+const SkeletonMeta = styled.div`
+  height: 12px;
+  background: #e5e5e7;
+  border-radius: 4px;
+  width: 50%;
 `;
 
 const MeetingTitle = styled.div`
@@ -57,16 +82,16 @@ const StatusBadge = styled.span<{ status: Meeting['status'] }>`
   font-weight: 600;
   background: ${props => {
     switch(props.status) {
-      case 'recording': return 'linear-gradient(135deg, #ff3b30 0%, #ff6b6b 100%)';
-      case 'completed': return 'linear-gradient(135deg, #34c759 0%, #51cf66 100%)';
-      case 'scheduled': return 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-      case 'partial': return 'linear-gradient(135deg, #ff9500 0%, #ffab00 100%)';
-      case 'error': return 'linear-gradient(135deg, #ff3b30 0%, #ff6b6b 100%)';
-      default: return 'linear-gradient(135deg, #86868b 0%, #94a3b8 100%)';
+      case 'recording': return '#ff3b30';
+      case 'completed': return '#34c759';
+      case 'scheduled': return '#667eea';
+      case 'partial': return '#ff9500';
+      case 'error': return '#ff3b30';
+      default: return '#86868b';
     }
   }};
   color: white;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
 `;
 
 const Icons = styled.div`
@@ -92,7 +117,8 @@ const ReadyBadge = styled.div`
 `;
 
 const Icon = styled.span`
-  font-size: 16px;
+  font-size: 12px;
+  opacity: 0.4;
 `;
 
 const SyncStatus = styled.div`
@@ -150,9 +176,10 @@ interface MeetingListProps {
   onSelectMeeting: (meeting: Meeting) => void;
   onSyncCalendar: () => Promise<any>;
   readyToRecordMeetings?: Set<string>;
+  isLoading?: boolean;
 }
 
-function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalendar, readyToRecordMeetings }: MeetingListProps) {
+function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalendar, readyToRecordMeetings, isLoading }: MeetingListProps) {
   const [lastSyncTime, setLastSyncTime] = useState<Date>(new Date());
 
   useEffect(() => {
@@ -212,8 +239,18 @@ function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalenda
       <SyncStatus>
         Auto-syncing • Last sync {formatDistanceToNow(lastSyncTime, { addSuffix: true })}
       </SyncStatus>
-      
-      {meetings.map(meeting => (
+
+      {isLoading ? (
+        <>
+          {[1, 2, 3, 4, 5].map(i => (
+            <SkeletonItem key={i}>
+              <SkeletonTitle />
+              <SkeletonMeta />
+            </SkeletonItem>
+          ))}
+        </>
+      ) : (
+        meetings.map(meeting => (
         <MeetingItem
           key={meeting.id}
           selected={selectedMeeting?.id === meeting.id}
@@ -236,7 +273,8 @@ function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalenda
             {getStatusLabel(meeting.status)}
           </StatusBadge>
         </MeetingItem>
-      ))}
+        ))
+      )}
     </ListContainer>
   );
 }
