@@ -18,8 +18,6 @@ import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType } from '
 
 const logger = getLogger();
 
-let isQuitting = false;
-
 // Add process-level error handlers to catch all uncaught exceptions
 process.on('uncaughtException', (error) => {
   logger.error('[PROCESS-ERROR] Uncaught Exception:', {
@@ -40,23 +38,12 @@ process.on('uncaughtException', (error) => {
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  // Better error logging
-  const errorMessage = reason instanceof Error ? reason.message : String(reason);
-  const errorStack = reason instanceof Error ? reason.stack : undefined;
-  const errorName = reason instanceof Error ? reason.name : undefined;
-
   logger.error('[PROCESS-ERROR] Unhandled Rejection at:', {
-    errorMessage,
-    errorStack,
-    errorName,
-    reasonType: typeof reason,
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
     timestamp: new Date().toISOString()
   });
-  console.error('[PROCESS-ERROR] Unhandled Rejection:', {
-    message: errorMessage,
-    stack: errorStack,
-    name: errorName
-  });
+  console.error('[PROCESS-ERROR] Unhandled Rejection at:', promise, 'reason:', reason);
 
   // Try to save any pending data
   if (storageService) {
@@ -65,16 +52,6 @@ process.on('unhandledRejection', (reason, promise) => {
       logger.error('[PROCESS-ERROR] Emergency save failed:', err);
     });
   }
-});
-
-process.on('SIGTERM', () => {
-  if (isQuitting) {
-    logger.info('[PROCESS-SIGTERM] SIGTERM received during intentional shutdown');
-    return;
-  }
-
-  logger.error('[PROCESS-SIGTERM] Unexpected SIGTERM received - attempting SDK recovery');
-  scheduleSdkRecovery('process-sigterm');
 });
 
 let mainWindow: BrowserWindow | null = null;
@@ -88,50 +65,10 @@ let searchService: SearchService;
 let promptService: PromptService | null = null;
 let coachingService: RealtimeCoachingService | null = null;
 let currentRecordingMeetingId: string | null = null;
-let sdkRecoveryTimer: NodeJS.Timeout | null = null;
-let sdkRecoveryInProgress = false;
-let forceQuitRequested = false;
-
-// Helper to ensure data is IPC-safe (no circular refs, Maps, Sets, etc)
-function sanitizeForIPC(obj: any): any {
-  try {
-    // Try to serialize and deserialize to catch non-serializable data
-    return JSON.parse(JSON.stringify(obj));
-  } catch (error) {
-    logger.error('[IPC-SANITIZE] Failed to sanitize object for IPC:', {
-      error: error instanceof Error ? error.message : String(error),
-      objectType: typeof obj,
-      objectConstructor: obj?.constructor?.name
-    });
-    return undefined;
-  }
-}
 
 // UI Notification Helper Functions
 function notifyUI(channel: IpcChannels, data?: any) {
-  try {
-    if (data !== undefined) {
-      const sanitized = sanitizeForIPC(data);
-      logger.info('[IPC-SEND] Sending to renderer', {
-        channel,
-        hasData: true,
-        dataSize: JSON.stringify(sanitized).length
-      });
-      mainWindow?.webContents.send(channel, sanitized);
-    } else {
-      logger.info('[IPC-SEND] Sending to renderer', {
-        channel,
-        hasData: false
-      });
-      mainWindow?.webContents.send(channel);
-    }
-  } catch (error) {
-    logger.error('[IPC-SEND-ERROR] Failed to send IPC message:', {
-      channel,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined
-    });
-  }
+  mainWindow?.webContents.send(channel, data);
 }
 
 function notifyMeetingsUpdated() {
@@ -163,99 +100,11 @@ function scheduleNotificationCleanup(notificationId: string, delayMs: number = 3
   }, delayMs);
 }
 
-function normalizeSdkPayload(payload: any) {
-  if (!payload) {
-    return {};
-  }
-  if (typeof payload === 'string') {
-    try {
-      return JSON.parse(payload);
-    } catch {
-      return { raw: payload };
-    }
-  }
-  return payload;
-}
-
-function scheduleSdkRecovery(reason: string, details?: any) {
-  if (isQuitting) {
-    logger.warn('[SDK-RECOVERY] Skipping recovery due to app shutdown', { reason });
-    return;
-  }
-
-  if (sdkRecoveryInProgress) {
-    logger.warn('[SDK-RECOVERY] Recovery already in progress, ignoring duplicate request', { reason });
-    return;
-  }
-
-  if (!recordingService) {
-    logger.warn('[SDK-RECOVERY] RecordingService not initialized yet, cannot restart SDK', { reason });
-    return;
-  }
-
-  sdkRecoveryInProgress = true;
-
-  if (sdkRecoveryTimer) {
-    clearTimeout(sdkRecoveryTimer);
-    sdkRecoveryTimer = null;
-  }
-
-  const recoveryDetails = details ? normalizeSdkPayload(details) : undefined;
-  logger.warn('[SDK-RECOVERY] Scheduling Recall SDK restart', {
-    reason,
-    details: recoveryDetails
-  });
-
-  sdkRecoveryTimer = setTimeout(async () => {
-    try {
-      if (isQuitting) {
-        logger.info('[SDK-RECOVERY] Aborting recovery because app is quitting');
-        return;
-      }
-
-      logger.warn('[SDK-RECOVERY] Attempting Recall SDK restart', { reason });
-
-      try {
-        meetingDetectionService?.stopMonitoring();
-      } catch (stopError) {
-        logger.warn('[SDK-RECOVERY] Failed to stop meeting detection before restart', {
-          error: stopError instanceof Error ? stopError.message : String(stopError)
-        });
-      }
-
-      if (recordingService?.isRecording()) {
-        try {
-          await recordingService.stopRecording();
-        } catch (stopRecordingError) {
-          logger.warn('[SDK-RECOVERY] Failed to stop active recording during recovery', {
-            error: stopRecordingError instanceof Error ? stopRecordingError.message : String(stopRecordingError)
-          });
-        }
-      }
-
-      await initializeSDKInBackground();
-      logger.info('[SDK-RECOVERY] Recall SDK restart completed');
-    } catch (error) {
-      logger.error('[SDK-RECOVERY] Failed to restart Recall SDK', {
-        reason,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    } finally {
-      sdkRecoveryInProgress = false;
-      if (sdkRecoveryTimer) {
-        clearTimeout(sdkRecoveryTimer);
-        sdkRecoveryTimer = null;
-      }
-    }
-  }, 1000);
-}
-
 function createApplicationMenu() {
   const isMac = process.platform === 'darwin';
 
   const requestAppQuit = () => {
     logger.info('[APP] Quit requested via menu');
-    forceQuitRequested = true;
     app.quit();
   };
 
@@ -1662,19 +1511,6 @@ function setupMeetingDetectionHandlers() {
   });
 }
 
-function setupSdkRecoveryHandlers() {
-  recordingService.on('sdk-shutdown', (event) => {
-    const payload = normalizeSdkPayload(event);
-    logger.warn('[SDK-RECOVERY] Recall SDK shutdown detected', payload || {});
-    scheduleSdkRecovery('sdk-shutdown', payload);
-  });
-
-  recordingService.on('sdk-process-error', (error) => {
-    const payload = normalizeSdkPayload(error);
-    logger.error('[SDK-RECOVERY] Recall SDK process error detected', payload || {});
-    scheduleSdkRecovery('sdk-process-error', payload);
-  });
-}
 
 // Consolidated helper function for starting recording with optional browser launch
 async function startRecording(meeting: Meeting, options: { logPrefix: string; openBrowser?: boolean }): Promise<void> {
@@ -1880,7 +1716,6 @@ app.whenReady().then(async () => {
   
   // Setup meeting detection handlers
   setupMeetingDetectionHandlers();
-  setupSdkRecoveryHandlers();
 
   // Start calendar meeting reminders if calendar is connected
   if (settingsService.getSettings()?.googleCalendarConnected) {
@@ -1973,46 +1808,13 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  logger.error('[APP] window-all-closed event fired!', {
-    platform: process.platform,
-    willQuit: process.platform !== 'darwin',
-    timestamp: new Date().toISOString(),
-    stack: new Error().stack
-  });
-  console.error('[APP] WINDOW-ALL-CLOSED event - all windows closed!');
   if (process.platform !== 'darwin') {
-    forceQuitRequested = true;
     app.quit();
   }
 });
 
-app.on('will-quit', () => {
-  isQuitting = true;
-  logger.error('[APP] will-quit event fired!', {
-    timestamp: new Date().toISOString(),
-    stack: new Error().stack
-  });
-  console.error('[APP] WILL-QUIT event - app is about to quit!');
-});
-
-app.on('before-quit', async (event) => {
-  if (!forceQuitRequested) {
-    logger.error('[APP] before-quit event intercepted (no quit request flag)', {
-      timestamp: new Date().toISOString(),
-      stack: new Error().stack
-    });
-
-    event.preventDefault();
-    scheduleSdkRecovery('before-quit');
-    return;
-  }
-
-  isQuitting = true;
-  logger.error('[APP] before-quit event fired (intentional shutdown)', {
-    timestamp: new Date().toISOString(),
-    stack: new Error().stack
-  });
-  console.error('[APP] BEFORE-QUIT event - cleaning up services...');
+app.on('before-quit', async () => {
+  logger.info('[APP] Application quitting, cleaning up services...');
 
   // Clean up services
   if (meetingDetectionService) {

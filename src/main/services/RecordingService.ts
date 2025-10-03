@@ -6,6 +6,7 @@ import { SDKDebugger } from './SDKDebugger';
 import { TranscriptCorrectionService } from './TranscriptCorrectionService';
 import { InsightsGenerationService } from './InsightsGenerationService';
 import { PromptService } from './PromptService';
+import { PermissionService } from './PermissionService';
 import { createServiceLogger } from './ServiceLogger';
 
 const logger = createServiceLogger('RecordingService');
@@ -121,6 +122,64 @@ export class RecordingService extends EventEmitter {
               logger.info('Successfully intercepted Notification API to block SDK notifications');
             }
 
+            // ============================================================================
+            // CRITICAL: Event listeners MUST be set up BEFORE SDK init
+            // ============================================================================
+            // The Recall.ai SDK starts firing events immediately during init().
+            // If addEventListener is called AFTER init, early events (especially realtime-event)
+            // will be dropped/lost because there's no event buffering in the SDK.
+            //
+            // This was confirmed by comparing:
+            // - Oct 2, 2025: Listeners BEFORE init → realtime events worked ✅
+            // - Oct 3, 2025: Listeners AFTER init → realtime events lost ❌
+            //
+            // CODE VERSION MARKER: v2025-10-03-listeners-before-init-with-permissions
+            // ============================================================================
+            logger.info('🔧 [CODE-VERSION] v2025-10-03-all-permissions-in-sdk-init');
+            logger.info('🎯 [CRITICAL-FIX] Setting up SDK event listeners BEFORE init to catch all events');
+            this.setupSDKEventListeners();
+            logger.info('✅ [LISTENERS-READY] All SDK event listeners configured BEFORE init');
+
+            // ============================================================================
+            // PERMISSION MANAGEMENT
+            // ============================================================================
+            // Check which permissions are already granted BEFORE SDK init
+            // Only request permissions that are already granted to avoid repeated prompts
+            // SDK needs these permissions to set up its audio capture pipeline
+            // ============================================================================
+            logger.info('🔐 [PERMISSIONS] Checking current permission status before SDK init');
+            const permissionService = new PermissionService();
+            const permissionStatus = await permissionService.checkAllPermissions();
+
+            logger.info('🔐 [PERMISSIONS] Current permission status:', permissionStatus);
+
+            // Build dynamic acquirePermissionsOnStartup array
+            // Only include permissions that are already granted
+            const permissionsToAcquire: Array<'accessibility' | 'screen-capture' | 'microphone'> = [];
+
+            if (permissionStatus.accessibility) {
+              permissionsToAcquire.push('accessibility');
+              logger.info('✅ [PERMISSIONS] Will acquire: accessibility (already granted)');
+            } else {
+              logger.warn('⚠️ [PERMISSIONS] Skipping: accessibility (not granted)');
+            }
+
+            if (permissionStatus['screen-capture']) {
+              permissionsToAcquire.push('screen-capture');
+              logger.info('✅ [PERMISSIONS] Will acquire: screen-capture (already granted)');
+            } else {
+              logger.warn('⚠️ [PERMISSIONS] Skipping: screen-capture (not granted)');
+            }
+
+            if (permissionStatus.microphone) {
+              permissionsToAcquire.push('microphone');
+              logger.info('✅ [PERMISSIONS] Will acquire: microphone (already granted)');
+            } else {
+              logger.warn('⚠️ [PERMISSIONS] Skipping: microphone (not granted)');
+            }
+
+            logger.info('🔐 [PERMISSIONS] Final permissions to acquire:', permissionsToAcquire);
+
             logger.info('Starting SDK init with config:', {
               apiUrl: baseApiUrl,
               api_url: baseApiUrl, // SDK accepts both keys
@@ -142,8 +201,6 @@ export class RecordingService extends EventEmitter {
                   showNotifications: false, // Disable SDK automatic notifications
                   silentMode: true, // Additional option to suppress notifications
                   notificationsEnabled: false // Alternative naming for notification control
-                  // NOTE: acquirePermissionsOnStartup removed - it was causing repeated permission prompts
-                  // Permissions are managed by PermissionService instead
                 });
                 resolve(true);
               } catch (initError) {
@@ -159,12 +216,7 @@ export class RecordingService extends EventEmitter {
 
             await Promise.race([initPromise, timeoutPromise]);
 
-            logger.info('RecallAI SDK initialized successfully - now setting up event listeners');
-
-            // IMPORTANT: Set up event listeners AFTER init to avoid race conditions
-            // when a meeting is already running
-            this.setupSDKEventListeners();
-            logger.info('SDK event listeners set up successfully');
+            logger.info('RecallAI SDK initialized successfully');
 
             // Permissions are managed by PermissionService, not SDK
             logger.info('Permissions will be checked by PermissionService before recording starts');
@@ -728,13 +780,31 @@ export class RecordingService extends EventEmitter {
       // Permissions are checked by PermissionService in index.ts before startRecording is called
       // No need to request them again here
 
+      // CRITICAL: Prepare desktop audio recording BEFORE starting
+      // This sets up the audio pipeline and requests system-audio permission
+      // Without this, audio is captured locally but not sent to Recall.ai for transcription
+      logger.info('[AUDIO-SETUP] Preparing desktop audio recording');
+      const RecallAiSdk = require('@recallai/desktop-sdk').default;
+      try {
+        const audioDevice = await RecallAiSdk.prepareDesktopAudioRecording();
+        logger.info('[AUDIO-SETUP] Desktop audio prepared successfully', {
+          audioDevice,
+          timestamp: new Date().toISOString()
+        });
+      } catch (audioError: any) {
+        logger.error('[AUDIO-SETUP] Failed to prepare desktop audio', {
+          error: audioError.message,
+          note: 'Recording will continue but may not have audio transcription'
+        });
+        // Don't throw - allow recording to continue even if audio prep fails
+      }
+
       // Start recording with the SDK using the upload token
       logger.info('[RECORDING-START] Calling SDK startRecording', {
         windowId,
         hasUploadToken: !!uploadData.upload_token
       });
       const sdkStart = Date.now();
-      const RecallAiSdk = require('@recallai/desktop-sdk').default;
       await RecallAiSdk.startRecording({
         windowId: windowId,
         uploadToken: uploadData.upload_token

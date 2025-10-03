@@ -919,8 +919,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   useEffect(() => {
     console.log('[MeetingDetailFinal] Setting up transcript listener for meeting:', meeting.id);
 
-    // Use the IPC channel directly without the wrapper issue
-    const channel = 'transcript-update';
+    // Use the IPC channel constant to ensure we're listening to the correct channel
+    const channel = IpcChannels.TRANSCRIPT_UPDATE;
 
     // Register the listener
     (window as any).electronAPI?.on?.(channel, handleTranscriptUpdate);

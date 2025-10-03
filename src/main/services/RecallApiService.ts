@@ -112,7 +112,7 @@ export class RecallApiService {
           transcript: {
             provider: {
               deepgram_streaming: {
-                model: "nova-3-meeting",  // Upgraded from nova-2 for better accuracy (54% WER improvement)
+                model: "nova-2",  // Revert to proven working model from Oct 2
                 language: "en-US",
                 smart_format: true,
                 punctuate: true,
