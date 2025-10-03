@@ -276,6 +276,169 @@ const EditorContainer = styled.div`
   .w-md-editor-content {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
+
+  /* Enhanced preview styling for better readability */
+  .w-md-editor-preview {
+    font-size: 15px !important;
+    line-height: 1.7 !important;
+  }
+
+  /* Target the markdown preview container with higher specificity */
+  & .w-md-editor-preview .wmde-markdown,
+  & .w-md-editor-preview .wmde-markdown-var {
+    font-size: 15px !important;
+    line-height: 1.7 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown h1 {
+    font-size: 28px !important;
+    font-weight: 700 !important;
+    margin-top: 24px !important;
+    margin-bottom: 16px !important;
+    line-height: 1.3 !important;
+    border-bottom: 2px solid #e5e7eb !important;
+    padding-bottom: 8px !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown h1:first-child {
+    margin-top: 0 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown h2 {
+    font-size: 22px !important;
+    font-weight: 600 !important;
+    margin-top: 32px !important;
+    margin-bottom: 14px !important;
+    line-height: 1.4 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown h3 {
+    font-size: 18px !important;
+    font-weight: 600 !important;
+    margin-top: 24px !important;
+    margin-bottom: 12px !important;
+    line-height: 1.4 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown h4 {
+    font-size: 16px !important;
+    font-weight: 600 !important;
+    margin-top: 20px !important;
+    margin-bottom: 10px !important;
+    line-height: 1.5 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown p {
+    margin-top: 0 !important;
+    margin-bottom: 16px !important;
+    line-height: 1.7 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown ul,
+  & .w-md-editor-preview .wmde-markdown ol {
+    margin-top: 0 !important;
+    margin-bottom: 16px !important;
+    padding-left: 28px !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown ul {
+    list-style-type: disc !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown li {
+    margin-bottom: 8px !important;
+    line-height: 1.7 !important;
+    padding-left: 4px !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown li > p {
+    margin-bottom: 8px !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown li:last-child {
+    margin-bottom: 0 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown ul ul,
+  & .w-md-editor-preview .wmde-markdown ol ul,
+  & .w-md-editor-preview .wmde-markdown ul ol,
+  & .w-md-editor-preview .wmde-markdown ol ol {
+    margin-top: 8px !important;
+    margin-bottom: 8px !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown strong {
+    font-weight: 600 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown em {
+    font-style: italic !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown blockquote {
+    margin: 16px 0 !important;
+    padding: 12px 20px !important;
+    border-left: 4px solid #667eea !important;
+    background: #f8f9fa !important;
+    color: #555 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown blockquote p {
+    margin-bottom: 0 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown code {
+    background: #f5f5f7 !important;
+    padding: 2px 6px !important;
+    border-radius: 3px !important;
+    font-size: 0.9em !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown pre {
+    background: #f5f5f7 !important;
+    padding: 16px !important;
+    border-radius: 6px !important;
+    overflow-x: auto !important;
+    margin: 16px 0 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown pre code {
+    background: none !important;
+    padding: 0 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown hr {
+    border: none !important;
+    border-top: 2px solid #e5e7eb !important;
+    margin: 24px 0 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+    margin: 16px 0 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown table th,
+  & .w-md-editor-preview .wmde-markdown table td {
+    border: 1px solid #e5e7eb !important;
+    padding: 10px 12px !important;
+    text-align: left !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown table th {
+    background: #f8f9fa !important;
+    font-weight: 600 !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown a {
+    color: #667eea !important;
+    text-decoration: none !important;
+  }
+
+  & .w-md-editor-preview .wmde-markdown a:hover {
+    text-decoration: underline !important;
+  }
 `;
 
 const EditorToolbar = styled.div`
