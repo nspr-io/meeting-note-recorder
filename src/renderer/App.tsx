@@ -631,9 +631,12 @@ function App() {
     const now = new Date();
     let filtered: Meeting[];
 
+    // Filter out [DELETED] meetings from all tabs (these are orphaned from old recurring event bug)
+    const nonDeletedMeetings = meetings.filter(m => !m.title.startsWith('[DELETED]'));
+
     if (tabMode === 'upcoming') {
       // Show meetings that haven't ended yet (or are actively recording)
-      filtered = meetings.filter(m => {
+      filtered = nonDeletedMeetings.filter(m => {
         // Calculate end time: use endTime if available, otherwise use duration, fallback to 1 hour
         const startTime = new Date(m.date).getTime();
         const durationMs = m.duration ? m.duration * 60 * 1000 : 60 * 60 * 1000; // duration is in minutes
@@ -644,7 +647,7 @@ function App() {
       });
     } else {
       // Show past meetings - only those that have ended and have content
-      filtered = meetings.filter(m => {
+      filtered = nonDeletedMeetings.filter(m => {
         // Calculate end time: use endTime if available, otherwise use duration, fallback to 1 hour
         const startTime = new Date(m.date).getTime();
         const durationMs = m.duration ? m.duration * 60 * 1000 : 60 * 60 * 1000; // duration is in minutes
