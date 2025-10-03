@@ -141,6 +141,12 @@ export enum IpcChannels {
 
   // Prep note linking
   CHECK_PREP_NOTE = 'check-prep-note',
+
+  // Real-time coaching
+  START_COACHING = 'start-coaching',
+  STOP_COACHING = 'stop-coaching',
+  COACHING_FEEDBACK = 'coaching-feedback',
+  COACHING_ERROR = 'coaching-error',
 }
 
 export interface SearchOptions {
@@ -165,4 +171,13 @@ export interface SearchMatch {
   field: string;
   value: string;
   indices: [number, number][];
+}
+
+export type CoachingType = 'coach-sales' | 'coach-interview' | 'coach-facilitator';
+
+export interface CoachingFeedback {
+  timestamp: Date;
+  alerts: string[];
+  observations: string[];
+  suggestions: string[];
 }

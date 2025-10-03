@@ -20,13 +20,34 @@ export class PromptService {
   constructor() {
     // Default prompts in the app bundle - in development, go up from dist/main to find prompts
     // In production, prompts should be bundled or accessible relative to the app
+    logger.info('[PROMPT-SERVICE-CONSTRUCTOR] Starting PromptService construction', {
+      nodeEnv: process.env.NODE_ENV,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      userDataPath: app.getPath('userData')
+    });
+
     if (process.env.NODE_ENV === 'development') {
-      this.promptsDir = path.join(__dirname, '../../prompts');
+      // Use app.getAppPath() which points to the project root in dev mode
+      this.promptsDir = path.join(app.getAppPath(), 'prompts');
+      logger.info('[PROMPT-SERVICE-CONSTRUCTOR] Using development mode path', {
+        appGetAppPath: app.getAppPath(),
+        calculatedPromptsDir: this.promptsDir
+      });
     } else {
       this.promptsDir = path.join(process.resourcesPath, 'prompts');
+      logger.info('[PROMPT-SERVICE-CONSTRUCTOR] Using production mode path', {
+        resourcesPath: process.resourcesPath,
+        calculatedPromptsDir: this.promptsDir
+      });
     }
     // User-customized prompts in app data
     this.userPromptsDir = path.join(app.getPath('userData'), 'prompts');
+
+    logger.info('[PROMPT-SERVICE-CONSTRUCTOR] PromptService constructed', {
+      promptsDir: this.promptsDir,
+      userPromptsDir: this.userPromptsDir
+    });
   }
 
   async initialize(): Promise<void> {

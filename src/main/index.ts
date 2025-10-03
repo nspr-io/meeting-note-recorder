@@ -13,9 +13,12 @@ import { PermissionService } from './services/PermissionService';
 import { getLogger } from './services/LoggingService';
 import { SearchService } from './services/SearchService';
 import { PromptService } from './services/PromptService';
-import { IpcChannels, Meeting, UserProfile, SearchOptions } from '../shared/types';
+import { RealtimeCoachingService } from './services/RealtimeCoachingService';
+import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType } from '../shared/types';
 
 const logger = getLogger();
+
+let isQuitting = false;
 
 // Add process-level error handlers to catch all uncaught exceptions
 process.on('uncaughtException', (error) => {
@@ -37,12 +40,23 @@ process.on('uncaughtException', (error) => {
 });
 
 process.on('unhandledRejection', (reason, promise) => {
+  // Better error logging
+  const errorMessage = reason instanceof Error ? reason.message : String(reason);
+  const errorStack = reason instanceof Error ? reason.stack : undefined;
+  const errorName = reason instanceof Error ? reason.name : undefined;
+
   logger.error('[PROCESS-ERROR] Unhandled Rejection at:', {
-    promise: promise,
-    reason: reason,
+    errorMessage,
+    errorStack,
+    errorName,
+    reasonType: typeof reason,
     timestamp: new Date().toISOString()
   });
-  console.error('[PROCESS-ERROR] Unhandled Rejection at:', promise, 'reason:', reason);
+  console.error('[PROCESS-ERROR] Unhandled Rejection:', {
+    message: errorMessage,
+    stack: errorStack,
+    name: errorName
+  });
 
   // Try to save any pending data
   if (storageService) {
@@ -51,6 +65,16 @@ process.on('unhandledRejection', (reason, promise) => {
       logger.error('[PROCESS-ERROR] Emergency save failed:', err);
     });
   }
+});
+
+process.on('SIGTERM', () => {
+  if (isQuitting) {
+    logger.info('[PROCESS-SIGTERM] SIGTERM received during intentional shutdown');
+    return;
+  }
+
+  logger.error('[PROCESS-SIGTERM] Unexpected SIGTERM received - attempting SDK recovery');
+  scheduleSdkRecovery('process-sigterm');
 });
 
 let mainWindow: BrowserWindow | null = null;
@@ -62,11 +86,52 @@ let settingsService: SettingsService;
 let permissionService: PermissionService;
 let searchService: SearchService;
 let promptService: PromptService | null = null;
+let coachingService: RealtimeCoachingService | null = null;
 let currentRecordingMeetingId: string | null = null;
+let sdkRecoveryTimer: NodeJS.Timeout | null = null;
+let sdkRecoveryInProgress = false;
+let forceQuitRequested = false;
+
+// Helper to ensure data is IPC-safe (no circular refs, Maps, Sets, etc)
+function sanitizeForIPC(obj: any): any {
+  try {
+    // Try to serialize and deserialize to catch non-serializable data
+    return JSON.parse(JSON.stringify(obj));
+  } catch (error) {
+    logger.error('[IPC-SANITIZE] Failed to sanitize object for IPC:', {
+      error: error instanceof Error ? error.message : String(error),
+      objectType: typeof obj,
+      objectConstructor: obj?.constructor?.name
+    });
+    return undefined;
+  }
+}
 
 // UI Notification Helper Functions
 function notifyUI(channel: IpcChannels, data?: any) {
-  mainWindow?.webContents.send(channel, data);
+  try {
+    if (data !== undefined) {
+      const sanitized = sanitizeForIPC(data);
+      logger.info('[IPC-SEND] Sending to renderer', {
+        channel,
+        hasData: true,
+        dataSize: JSON.stringify(sanitized).length
+      });
+      mainWindow?.webContents.send(channel, sanitized);
+    } else {
+      logger.info('[IPC-SEND] Sending to renderer', {
+        channel,
+        hasData: false
+      });
+      mainWindow?.webContents.send(channel);
+    }
+  } catch (error) {
+    logger.error('[IPC-SEND-ERROR] Failed to send IPC message:', {
+      channel,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
+  }
 }
 
 function notifyMeetingsUpdated() {
@@ -98,8 +163,101 @@ function scheduleNotificationCleanup(notificationId: string, delayMs: number = 3
   }, delayMs);
 }
 
+function normalizeSdkPayload(payload: any) {
+  if (!payload) {
+    return {};
+  }
+  if (typeof payload === 'string') {
+    try {
+      return JSON.parse(payload);
+    } catch {
+      return { raw: payload };
+    }
+  }
+  return payload;
+}
+
+function scheduleSdkRecovery(reason: string, details?: any) {
+  if (isQuitting) {
+    logger.warn('[SDK-RECOVERY] Skipping recovery due to app shutdown', { reason });
+    return;
+  }
+
+  if (sdkRecoveryInProgress) {
+    logger.warn('[SDK-RECOVERY] Recovery already in progress, ignoring duplicate request', { reason });
+    return;
+  }
+
+  if (!recordingService) {
+    logger.warn('[SDK-RECOVERY] RecordingService not initialized yet, cannot restart SDK', { reason });
+    return;
+  }
+
+  sdkRecoveryInProgress = true;
+
+  if (sdkRecoveryTimer) {
+    clearTimeout(sdkRecoveryTimer);
+    sdkRecoveryTimer = null;
+  }
+
+  const recoveryDetails = details ? normalizeSdkPayload(details) : undefined;
+  logger.warn('[SDK-RECOVERY] Scheduling Recall SDK restart', {
+    reason,
+    details: recoveryDetails
+  });
+
+  sdkRecoveryTimer = setTimeout(async () => {
+    try {
+      if (isQuitting) {
+        logger.info('[SDK-RECOVERY] Aborting recovery because app is quitting');
+        return;
+      }
+
+      logger.warn('[SDK-RECOVERY] Attempting Recall SDK restart', { reason });
+
+      try {
+        meetingDetectionService?.stopMonitoring();
+      } catch (stopError) {
+        logger.warn('[SDK-RECOVERY] Failed to stop meeting detection before restart', {
+          error: stopError instanceof Error ? stopError.message : String(stopError)
+        });
+      }
+
+      if (recordingService?.isRecording()) {
+        try {
+          await recordingService.stopRecording();
+        } catch (stopRecordingError) {
+          logger.warn('[SDK-RECOVERY] Failed to stop active recording during recovery', {
+            error: stopRecordingError instanceof Error ? stopRecordingError.message : String(stopRecordingError)
+          });
+        }
+      }
+
+      await initializeSDKInBackground();
+      logger.info('[SDK-RECOVERY] Recall SDK restart completed');
+    } catch (error) {
+      logger.error('[SDK-RECOVERY] Failed to restart Recall SDK', {
+        reason,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      sdkRecoveryInProgress = false;
+      if (sdkRecoveryTimer) {
+        clearTimeout(sdkRecoveryTimer);
+        sdkRecoveryTimer = null;
+      }
+    }
+  }, 1000);
+}
+
 function createApplicationMenu() {
   const isMac = process.platform === 'darwin';
+
+  const requestAppQuit = () => {
+    logger.info('[APP] Quit requested via menu');
+    forceQuitRequested = true;
+    app.quit();
+  };
 
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [{
@@ -113,13 +271,23 @@ function createApplicationMenu() {
         { role: 'hideOthers' as const },
         { role: 'unhide' as const },
         { type: 'separator' as const },
-        { role: 'quit' as const }
+        {
+          label: 'Quit Meeting Note Recorder',
+          accelerator: 'Command+Q',
+          click: requestAppQuit
+        }
       ]
     }] : []),
     {
       label: 'File',
       submenu: [
-        isMac ? { role: 'close' as const } : { role: 'quit' as const }
+        isMac
+          ? { role: 'close' as const }
+          : {
+              label: 'Quit Meeting Note Recorder',
+              accelerator: 'Ctrl+Q',
+              click: requestAppQuit
+            }
       ]
     },
     {
@@ -210,8 +378,35 @@ function createWindow() {
     console.log('DOM is ready');
   });
 
+  mainWindow.on('close', (e) => {
+    logger.error('[MAIN-WINDOW] Main window "close" event fired!', {
+      timestamp: new Date().toISOString(),
+      stack: new Error().stack
+    });
+    console.error('[MAIN-WINDOW] Main window CLOSE event - this should not happen during normal operation!');
+  });
+
   mainWindow.on('closed', () => {
+    logger.error('[MAIN-WINDOW] Main window "closed" event fired!', {
+      timestamp: new Date().toISOString()
+    });
+    console.error('[MAIN-WINDOW] Main window CLOSED event');
     mainWindow = null;
+  });
+
+  mainWindow.on('hide', () => {
+    logger.warn('[MAIN-WINDOW] Main window "hide" event fired!', {
+      timestamp: new Date().toISOString(),
+      stack: new Error().stack
+    });
+    console.warn('[MAIN-WINDOW] Main window HIDE event');
+  });
+
+  mainWindow.on('minimize', () => {
+    logger.info('[MAIN-WINDOW] Main window "minimize" event fired!', {
+      timestamp: new Date().toISOString()
+    });
+    console.log('[MAIN-WINDOW] Main window MINIMIZE event');
   });
 }
 
@@ -719,7 +914,7 @@ function setupIpcHandlers() {
   
   // Permission status
   ipcMain.handle('get-permission-status', async () => {
-    return permissionService.getPermissionStatus();
+    return await permissionService.getPermissionStatus();
   });
 
   ipcMain.handle('check-permissions', async () => {
@@ -744,6 +939,35 @@ function setupIpcHandlers() {
   ipcMain.handle(IpcChannels.CLEAR_SEARCH_HISTORY, async () => {
     searchService.clearHistory();
     return { success: true };
+  });
+
+  // Real-time coaching handlers
+  ipcMain.handle(IpcChannels.START_COACHING, async (_, meetingId: string, coachingType: CoachingType) => {
+    try {
+      if (!coachingService) {
+        return { success: false, error: 'Coaching service not initialized' };
+      }
+
+      await coachingService.startCoaching(meetingId, coachingType);
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Failed to start coaching:', error);
+      return { success: false, error: error.message || 'Failed to start coaching' };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.STOP_COACHING, async () => {
+    try {
+      if (!coachingService) {
+        return { success: false, error: 'Coaching service not initialized' };
+      }
+
+      coachingService.stopCoaching();
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Failed to stop coaching:', error);
+      return { success: false, error: error.message || 'Failed to stop coaching' };
+    }
   });
 }
 
@@ -822,6 +1046,13 @@ function createCustomNotification(config: {
 }): BrowserWindow {
   const { title, body, subtitle, autoCloseMs = 5000, onClick, onClose } = config;
 
+  logger.info('[NOTIFICATION-CREATE] Starting notification window creation', {
+    title,
+    bodyLength: body.length,
+    autoCloseMs,
+    timestamp: new Date().toISOString()
+  });
+
   const notificationWindow = new BrowserWindow({
     width: 400,
     height: 120,
@@ -836,15 +1067,27 @@ function createCustomNotification(config: {
     }
   });
 
+  logger.info('[NOTIFICATION-CREATE] BrowserWindow created successfully', {
+    windowId: notificationWindow.id,
+    timestamp: new Date().toISOString()
+  });
+
   // Position in top-right corner
   const { screen } = require('electron');
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width: screenWidth } = primaryDisplay.workAreaSize;
   notificationWindow.setPosition(screenWidth - 420, 20);
 
-  // Make it stay on top of everything, including fullscreen
-  notificationWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // Make it stay on top of everything
+  // NOTE: DO NOT call setVisibleOnAllWorkspaces() as it can cause the app to disappear from dock
+  // See: https://github.com/electron/electron/issues/26350
   notificationWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+
+  // CRITICAL FIX: Force dock to stay visible after creating notification window
+  // This prevents macOS from transforming the app to a UI Element Application
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.show();
+  }
 
   // Load notification HTML
   const notificationHTML = `
@@ -899,6 +1142,17 @@ function createCustomNotification(config: {
           background: rgba(255, 255, 255, 0.2);
         }
       </style>
+      <script>
+        // Define electronAPI inline to avoid IPC serialization issues
+        window.electronAPI = {
+          notificationClicked: () => {
+            window.location.href = 'notification://clicked';
+          },
+          notificationClosed: () => {
+            window.location.href = 'notification://closed';
+          }
+        };
+      </script>
     </head>
     <body onclick="window.electronAPI?.notificationClicked()">
       <button class="close-btn" onclick="event.stopPropagation(); window.electronAPI?.notificationClosed()">×</button>
@@ -909,7 +1163,28 @@ function createCustomNotification(config: {
     </html>
   `;
 
-  notificationWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(notificationHTML)}`);
+  // Load notification HTML - catch any errors to prevent unhandled rejections
+  logger.info('[NOTIFICATION-CREATE] Starting loadURL', {
+    windowId: notificationWindow.id,
+    timestamp: new Date().toISOString()
+  });
+
+  notificationWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(notificationHTML)}`)
+    .then(() => {
+      logger.info('[NOTIFICATION-CREATE] loadURL completed successfully', {
+        windowId: notificationWindow.id,
+        timestamp: new Date().toISOString()
+      });
+    })
+    .catch(error => {
+      logger.error('[NOTIFICATION] Failed to load notification HTML:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        windowId: notificationWindow.id,
+        title,
+        bodyLength: body.length
+      });
+    });
 
   // Auto-close timer
   const autoCloseTimer = setTimeout(() => {
@@ -918,40 +1193,65 @@ function createCustomNotification(config: {
     }
   }, autoCloseMs);
 
-  // Handle clicks via will-navigate
-  notificationWindow.webContents.on('did-finish-load', () => {
-    notificationWindow.webContents.executeJavaScript(`
-      window.electronAPI = {
-        notificationClicked: () => {
-          window.location.href = 'notification://clicked';
-        },
-        notificationClosed: () => {
-          window.location.href = 'notification://closed';
-        }
-      };
-    `);
-  });
+  // No need to inject JavaScript - it's now embedded in the HTML
 
   notificationWindow.webContents.on('will-navigate', async (e, url) => {
     e.preventDefault();
+    logger.info('[NOTIFICATION] will-navigate event fired', {
+      url,
+      timestamp: new Date().toISOString()
+    });
+    console.log('[NOTIFICATION] will-navigate:', url);
 
     if (url === 'notification://clicked') {
+      logger.info('[NOTIFICATION] Notification clicked - executing onClick handler', {
+        hasOnClick: !!onClick,
+        timestamp: new Date().toISOString()
+      });
       clearTimeout(autoCloseTimer);
       if (!notificationWindow.isDestroyed()) {
         notificationWindow.close();
       }
       if (onClick) {
-        await onClick();
+        try {
+          logger.info('[NOTIFICATION] About to call onClick handler', {
+            timestamp: new Date().toISOString()
+          });
+          await onClick();
+          logger.info('[NOTIFICATION] onClick handler completed successfully', {
+            timestamp: new Date().toISOString()
+          });
+        } catch (error) {
+          logger.error('[NOTIFICATION] Error in onClick handler:', {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
+          });
+        }
       }
     } else if (url === 'notification://closed') {
+      logger.info('[NOTIFICATION] Notification closed button clicked', {
+        timestamp: new Date().toISOString()
+      });
       clearTimeout(autoCloseTimer);
       if (!notificationWindow.isDestroyed()) {
         notificationWindow.close();
       }
       if (onClose) {
-        onClose();
+        try {
+          onClose();
+        } catch (error) {
+          logger.error('[NOTIFICATION] Error in onClose handler:', {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
+          });
+        }
       }
     }
+  });
+
+  logger.info('[NOTIFICATION-CREATE] Notification window fully configured, returning', {
+    windowId: notificationWindow.id,
+    timestamp: new Date().toISOString()
   });
 
   return notificationWindow;
@@ -959,59 +1259,93 @@ function createCustomNotification(config: {
 
 function setupMeetingDetectionHandlers() {
   meetingDetectionService.on('meeting-detected', async (data) => {
-    logger.info('[JOURNEY-8] Meeting detected event received in main process', {
-      windowId: data.windowId,
-      platform: data.platform,
-      title: data.meetingTitle,
-      hasSuggested: !!data.suggestedMeeting,
-      currentlyRecording: !!currentRecordingMeetingId,
-      timestamp: new Date().toISOString()
+    logger.info('[MEETING-DETECTED-START] Handler started', {
+      timestamp: new Date().toISOString(),
+      windowId: data.windowId
     });
+    console.log('[MEETING-DETECTED-START] Meeting detection handler starting...');
 
-    // Skip notification if we're already recording something
-    if (currentRecordingMeetingId) {
-      logger.info('[JOURNEY-8-SKIP] Skipping notification - already recording', {
-        currentRecordingMeetingId,
-        detectedMeeting: data.meetingTitle
+    try {
+      logger.info('[JOURNEY-8] Meeting detected event received in main process', {
+        windowId: data.windowId,
+        platform: data.platform,
+        title: data.meetingTitle,
+        hasSuggested: !!data.suggestedMeeting,
+        currentlyRecording: !!currentRecordingMeetingId,
+        timestamp: new Date().toISOString()
       });
-      return;
-    }
+      console.log('[JOURNEY-8] Meeting detected:', data.meetingTitle);
 
-    // Try to find a matching scheduled meeting
-    let matchedMeeting = data.suggestedMeeting;
-    if (!matchedMeeting) {
-      matchedMeeting = await findMatchingScheduledMeeting(data.meetingTitle);
-      logger.info('[JOURNEY-8a] Searched for matching scheduled meeting', {
-        detectedTitle: data.meetingTitle,
-        foundMatch: !!matchedMeeting,
-        matchedTitle: matchedMeeting?.title
+      // Skip notification if we're already recording something
+      if (currentRecordingMeetingId) {
+        logger.info('[JOURNEY-8-SKIP] Skipping notification - already recording', {
+          currentRecordingMeetingId,
+          detectedMeeting: data.meetingTitle
+        });
+        return;
+      }
+
+      // Try to find a matching scheduled meeting
+      let matchedMeeting = data.suggestedMeeting;
+      if (!matchedMeeting) {
+        matchedMeeting = await findMatchingScheduledMeeting(data.meetingTitle);
+        logger.info('[JOURNEY-8a] Searched for matching scheduled meeting', {
+          detectedTitle: data.meetingTitle,
+          foundMatch: !!matchedMeeting,
+          matchedTitle: matchedMeeting?.title
+        });
+      }
+
+      // Store meeting data for fallback
+      const meetingContext = {
+        matchedMeeting,
+        windowId: data.windowId,
+        platform: data.platform,
+        meetingTitle: data.meetingTitle
+      };
+
+      // Determine notification content based on whether we found a match
+      const notificationTitle = matchedMeeting
+        ? `Meeting: ${matchedMeeting.title}`
+        : `Meeting Detected: ${data.meetingTitle || 'Unknown'}`;
+
+      const notificationBody = 'Click to start recording';
+
+      try {
+        logger.info('[NOTIFICATION] Creating custom notification', {
+          title: notificationTitle,
+          body: notificationBody,
+          timestamp: new Date().toISOString()
+        });
+      } catch (logError) {
+        console.error('[NOTIFICATION] Logger failed:', logError);
+      }
+
+      console.log('[NOTIFICATION-CONSOLE] About to create notification ID');
+
+      // Create custom notification window
+      const notificationId = `${data.windowId}-${Date.now()}`;
+
+      console.log('[NOTIFICATION-CONSOLE] Notification ID created:', notificationId);
+
+      try {
+        logger.info('[NOTIFICATION-DEBUG] About to call createCustomNotification', {
+        notificationId,
+        windowId: data.windowId,
+        timestamp: new Date().toISOString()
       });
-    }
+      } catch (logError) {
+        console.error('[NOTIFICATION-DEBUG] Logger failed:', logError);
+      }
 
-    // Store meeting data for fallback
-    const meetingContext = {
-      matchedMeeting,
-      windowId: data.windowId,
-      platform: data.platform,
-      meetingTitle: data.meetingTitle
-    };
+      console.log('[NOTIFICATION-CONSOLE] About to call createCustomNotification');
 
-    // Determine notification content based on whether we found a match
-    const notificationTitle = matchedMeeting
-      ? `Meeting: ${matchedMeeting.title}`
-      : `Meeting Detected: ${data.meetingTitle || 'Unknown'}`;
+      logger.info('[BEFORE-CREATE-NOTIFICATION] About to create notification window', {
+        timestamp: new Date().toISOString()
+      });
+      console.log('[BEFORE-CREATE-NOTIFICATION] Creating notification window...');
 
-    const notificationBody = 'Click to start recording';
-
-    logger.info('[NOTIFICATION] Creating custom notification', {
-      title: notificationTitle,
-      body: notificationBody,
-      timestamp: new Date().toISOString()
-    });
-
-    // Create custom notification window
-    const notificationId = `${data.windowId}-${Date.now()}`;
-    const notificationWindow = createCustomNotification({
+      const notificationWindow = createCustomNotification({
       title: notificationTitle,
       body: notificationBody,
       autoCloseMs: 60000, // 60 seconds for meeting detection
@@ -1176,11 +1510,38 @@ function setupMeetingDetectionHandlers() {
       }
     });
 
-    // Store notification window to prevent garbage collection
-    activeNotifications.set(notificationId, notificationWindow);
+      // Store notification window to prevent garbage collection
+      activeNotifications.set(notificationId, notificationWindow);
 
-    // Clean up notification references after 30 seconds
-    scheduleNotificationCleanup(notificationId);
+      logger.info('[NOTIFICATION-DEBUG] Notification window created and stored', {
+        notificationId,
+        activeNotificationsCount: activeNotifications.size,
+        timestamp: new Date().toISOString()
+      });
+
+      // Clean up notification references after 30 seconds
+      scheduleNotificationCleanup(notificationId);
+    } catch (error) {
+      logger.error('[MEETING-DETECTED-ERROR] Error in meeting-detected event handler', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        name: error instanceof Error ? error.name : undefined,
+        windowId: data.windowId,
+        meetingTitle: data.meetingTitle,
+        timestamp: new Date().toISOString()
+      });
+
+      // Try to show error notification
+      try {
+        createCustomNotification({
+          title: 'Meeting Detection Error',
+          body: 'Could not process meeting detection. Please try manually.',
+          autoCloseMs: 5000
+        });
+      } catch (notifError) {
+        logger.error('[MEETING-DETECTED-ERROR] Could not show error notification', notifError);
+      }
+    }
   });
 
   recordingService.on('transcript-chunk', async (chunk) => {
@@ -1199,6 +1560,11 @@ function setupMeetingDetectionHandlers() {
         meetingId,
         ...chunk
       });
+    }
+
+    // Forward transcript chunk to coaching service if active
+    if (coachingService) {
+      coachingService.addTranscriptChunk(chunk);
     }
   });
 
@@ -1293,6 +1659,20 @@ function setupMeetingDetectionHandlers() {
 
     // Store notification window to prevent garbage collection
     activeNotifications.set(reminderNotificationId, notificationWindow);
+  });
+}
+
+function setupSdkRecoveryHandlers() {
+  recordingService.on('sdk-shutdown', (event) => {
+    const payload = normalizeSdkPayload(event);
+    logger.warn('[SDK-RECOVERY] Recall SDK shutdown detected', payload || {});
+    scheduleSdkRecovery('sdk-shutdown', payload);
+  });
+
+  recordingService.on('sdk-process-error', (error) => {
+    const payload = normalizeSdkPayload(error);
+    logger.error('[SDK-RECOVERY] Recall SDK process error detected', payload || {});
+    scheduleSdkRecovery('sdk-process-error', payload);
   });
 }
 
@@ -1427,23 +1807,31 @@ app.whenReady().then(async () => {
 
     // Initialize permission service first
     permissionService = new PermissionService();
-    await permissionService.checkAllPermissions();
+    // Skip permission check on startup to avoid repeated dialogs on unsigned apps
+    // Permissions will still be checked when user tries to record
 
     settingsService = new SettingsService();
     await settingsService.initialize();
 
   try {
-    logger.info('Creating PromptService instance...');
+    logger.info('[MAIN-INIT] Creating PromptService instance...');
     promptService = new PromptService();
-    logger.info('PromptService instance created, initializing...');
+    logger.info('[MAIN-INIT] PromptService instance created, initializing...');
     await promptService.initialize();
-    logger.info('Prompt service initialized successfully');
+    logger.info('[MAIN-INIT] PromptService initialized successfully');
   } catch (error) {
-    logger.error('FATAL: Failed to initialize PromptService:', error);
+    logger.error('[MAIN-INIT] FATAL: Failed to initialize PromptService:', error);
+    logger.error('[MAIN-INIT] Error details:', {
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
     // Continue without PromptService for now to avoid breaking the app
+    logger.warn('[MAIN-INIT] Continuing without PromptService - some features will be disabled');
     promptService = null;
   }
-  
+
+  logger.info('[MAIN-INIT] PromptService status:', { isNull: promptService === null });
+
   storageService = new StorageService(settingsService);
   await storageService.initialize();
 
@@ -1452,8 +1840,33 @@ app.whenReady().then(async () => {
   searchService.updateIndex(meetings);
 
   calendarService = new CalendarService();
+
+  logger.info('[MAIN-INIT] Creating RecordingService with PromptService:', { hasPromptService: promptService !== null });
   recordingService = new RecordingService(storageService, promptService);
-  
+
+  // Initialize coaching service
+  logger.info('[MAIN-INIT] Creating RealtimeCoachingService with PromptService:', { hasPromptService: promptService !== null });
+  coachingService = new RealtimeCoachingService(promptService);
+  const settings = settingsService.getSettings();
+  if (settings.anthropicApiKey) {
+    coachingService.initialize(settings.anthropicApiKey);
+  }
+
+  // Setup coaching service event handlers
+  if (coachingService) {
+    coachingService.on('coaching-feedback', (feedback) => {
+      if (mainWindow) {
+        mainWindow.webContents.send(IpcChannels.COACHING_FEEDBACK, feedback);
+      }
+    });
+
+    coachingService.on('coaching-error', (error) => {
+      if (mainWindow) {
+        mainWindow.webContents.send(IpcChannels.COACHING_ERROR, error);
+      }
+    });
+  }
+
   // Create meeting detection service with basic setup (no SDK yet)
   meetingDetectionService = new MeetingDetectionService(
     settingsService,
@@ -1467,6 +1880,7 @@ app.whenReady().then(async () => {
   
   // Setup meeting detection handlers
   setupMeetingDetectionHandlers();
+  setupSdkRecoveryHandlers();
 
   // Start calendar meeting reminders if calendar is connected
   if (settingsService.getSettings()?.googleCalendarConnected) {
@@ -1559,12 +1973,47 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  logger.error('[APP] window-all-closed event fired!', {
+    platform: process.platform,
+    willQuit: process.platform !== 'darwin',
+    timestamp: new Date().toISOString(),
+    stack: new Error().stack
+  });
+  console.error('[APP] WINDOW-ALL-CLOSED event - all windows closed!');
   if (process.platform !== 'darwin') {
+    forceQuitRequested = true;
     app.quit();
   }
 });
 
-app.on('before-quit', async () => {
+app.on('will-quit', () => {
+  isQuitting = true;
+  logger.error('[APP] will-quit event fired!', {
+    timestamp: new Date().toISOString(),
+    stack: new Error().stack
+  });
+  console.error('[APP] WILL-QUIT event - app is about to quit!');
+});
+
+app.on('before-quit', async (event) => {
+  if (!forceQuitRequested) {
+    logger.error('[APP] before-quit event intercepted (no quit request flag)', {
+      timestamp: new Date().toISOString(),
+      stack: new Error().stack
+    });
+
+    event.preventDefault();
+    scheduleSdkRecovery('before-quit');
+    return;
+  }
+
+  isQuitting = true;
+  logger.error('[APP] before-quit event fired (intentional shutdown)', {
+    timestamp: new Date().toISOString(),
+    stack: new Error().stack
+  });
+  console.error('[APP] BEFORE-QUIT event - cleaning up services...');
+
   // Clean up services
   if (meetingDetectionService) {
     await meetingDetectionService.stopMonitoring();

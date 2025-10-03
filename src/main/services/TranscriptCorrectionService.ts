@@ -24,6 +24,9 @@ export class TranscriptCorrectionService extends EventEmitter {
 
   constructor(promptService: PromptService | null) {
     super();
+    logger.info('[TRANSCRIPT-CORRECTION-CONSTRUCTOR] Creating TranscriptCorrectionService', {
+      hasPromptService: promptService !== null
+    });
     this.promptService = promptService;
   }
 

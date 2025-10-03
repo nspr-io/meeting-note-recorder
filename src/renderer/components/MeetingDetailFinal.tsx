@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import styled from '@emotion/styled';
-import { Meeting, Attendee, IpcChannels } from '../../shared/types';
+import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback } from '../../shared/types';
 import { format, formatDistanceToNow } from 'date-fns';
 import MDEditor from '@uiw/react-md-editor';
 
@@ -424,6 +424,176 @@ const ModalButtons = styled.div`
   gap: 10px;
 `;
 
+const CoachContainer = styled.div`
+  padding: 24px;
+  background: white;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+`;
+
+const CoachControls = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  background: #fafafa;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+`;
+
+const CoachTypeSelector = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+`;
+
+const CoachTypeLabel = styled.label`
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+`;
+
+const CoachTypeSelect = styled.select`
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 14px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &:hover {
+    border-color: #667eea;
+  }
+
+  &:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  }
+`;
+
+const CoachButtonGroup = styled.div`
+  display: flex;
+  gap: 12px;
+`;
+
+const CoachStatusBadge = styled.div<{ isActive: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  background: ${props => props.isActive ? '#d4f4dd' : '#f5f5f7'};
+  color: ${props => props.isActive ? '#00875a' : '#666'};
+`;
+
+const FeedbackList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 600px;
+  overflow-y: auto;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #ddd;
+    border-radius: 4px;
+
+    &:hover {
+      background: #ccc;
+    }
+  }
+`;
+
+const FeedbackCard = styled.div`
+  padding: 16px;
+  background: #fafafa;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  animation: slideIn 0.3s ease;
+
+  @keyframes slideIn {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+`;
+
+const FeedbackTimestamp = styled.div`
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 12px;
+  font-family: 'SF Mono', Monaco, monospace;
+`;
+
+const FeedbackSection = styled.div<{ type: 'alert' | 'observation' | 'suggestion' }>`
+  margin-bottom: 12px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+
+  h4 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: ${props => {
+      switch(props.type) {
+        case 'alert': return '#ff3b30';
+        case 'observation': return '#007AFF';
+        case 'suggestion': return '#34c759';
+      }
+    }};
+  }
+
+  ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  li {
+    padding: 8px 12px;
+    margin-bottom: 6px;
+    background: white;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #333;
+    border-left: 3px solid ${props => {
+      switch(props.type) {
+        case 'alert': return '#ff3b30';
+        case 'observation': return '#007AFF';
+        case 'suggestion': return '#34c759';
+      }
+    }};
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+`;
+
 interface MeetingDetailFinalProps {
   meeting: Meeting;
   onUpdateMeeting: (meeting: Meeting) => void;
@@ -431,7 +601,7 @@ interface MeetingDetailFinalProps {
   onRefresh?: () => void;
 }
 
-type ViewMode = 'notes' | 'transcript' | 'insights' | 'actions';
+type ViewMode = 'notes' | 'transcript' | 'insights' | 'actions' | 'coach';
 
 // Module-level transcript cache to persist across component re-renders
 const transcriptCache = new Map<string, any[]>();
@@ -462,6 +632,11 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [isSharing, setIsSharing] = useState(false);
   const isFirstRender = useRef(true);
 
+  // Coaching state
+  const [isCoaching, setIsCoaching] = useState(false);
+  const [selectedCoachingType, setSelectedCoachingType] = useState<CoachingType>('coach-sales');
+  const [coachingFeedbackHistory, setCoachingFeedbackHistory] = useState<CoachingFeedback[]>([]);
+
   // Update cache when segments change
   useEffect(() => {
     console.log('[CACHE-UPDATE] Setting cache', {
@@ -490,6 +665,14 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     setIsRecording(meeting.status === 'recording');
     setEditorKey(Date.now()); // Force complete editor remount when meeting changes
     isFirstRender.current = true; // Reset first render flag for new meeting
+
+    // Clear coaching state when switching meetings
+    if (isCoaching) {
+      console.log('[COACHING] Auto-stopping coaching due to meeting change');
+      handleStopCoaching();
+    }
+    setCoachingFeedbackHistory([]);
+    setSelectedCoachingType('coach-sales');
 
     // Load existing insights if available
     if (meeting.insights) {
@@ -601,6 +784,12 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     const handleRecordingStopped = () => {
       console.log('[MeetingDetailFinal] Recording stopped');
       setIsRecording(false);
+
+      // Auto-stop coaching when recording ends
+      if (isCoaching) {
+        console.log('[COACHING] Auto-stopping coaching due to recording end');
+        handleStopCoaching();
+      }
     };
 
     (window as any).electronAPI?.on?.('recording-started', handleRecordingStarted);
@@ -610,7 +799,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       (window as any).electronAPI?.removeListener?.('recording-started', handleRecordingStarted);
       (window as any).electronAPI?.removeListener?.('recording-stopped', handleRecordingStopped);
     };
-  }, [meeting.id]);
+  }, [meeting.id, isCoaching]);
 
   // Listen for correction progress updates
   useEffect(() => {
@@ -643,6 +832,33 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       (window as any).electronAPI?.removeListener?.('correction-completed', handleCorrectionCompleted);
     };
   }, [meeting.id, onRefresh]);
+
+  // Listen for coaching feedback
+  // Listen for real-time coaching feedback
+  // Use useCallback to create stable handler references that prevent duplicate listeners
+  const handleCoachingFeedback = useCallback((data: any) => {
+    if (data.meetingId === meeting.id) {
+      console.log('[COACHING] Received feedback:', data.feedback);
+      setCoachingFeedbackHistory(prev => [...prev, data.feedback]);
+    }
+  }, [meeting.id]);
+
+  const handleCoachingError = useCallback((data: any) => {
+    if (data.meetingId === meeting.id) {
+      console.error('[COACHING] Error:', data.error);
+      alert(`Coaching error: ${data.error}`);
+    }
+  }, [meeting.id]);
+
+  useEffect(() => {
+    (window as any).electronAPI?.on?.(IpcChannels.COACHING_FEEDBACK, handleCoachingFeedback);
+    (window as any).electronAPI?.on?.(IpcChannels.COACHING_ERROR, handleCoachingError);
+
+    return () => {
+      (window as any).electronAPI?.removeListener?.(IpcChannels.COACHING_FEEDBACK, handleCoachingFeedback);
+      (window as any).electronAPI?.removeListener?.(IpcChannels.COACHING_ERROR, handleCoachingError);
+    };
+  }, [handleCoachingFeedback, handleCoachingError]);
 
   // Listen for real-time transcript updates
   // IMPORTANT: We use useCallback with meeting.id dependency to create a stable handler
@@ -929,6 +1145,62 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       alert('An error occurred while sharing to Slack.');
     } finally {
       setIsSharing(false);
+    }
+  };
+
+  const handleStartCoaching = async () => {
+    if (isCoaching) return;
+
+    if (!(window as any).electronAPI?.startCoaching) {
+      console.error('[COACHING] API not available');
+      alert('Coaching API not available. Please restart the application.');
+      return;
+    }
+
+    try {
+      console.log('[COACHING] Starting coaching with type:', selectedCoachingType);
+      const result = await (window as any).electronAPI.startCoaching(meeting.id, selectedCoachingType);
+
+      if (result.success) {
+        setIsCoaching(true);
+        setCoachingFeedbackHistory([]);
+        console.log('[COACHING] Coaching started successfully');
+      } else {
+        console.error('[COACHING] Failed to start coaching:', result.error);
+        alert('Failed to start coaching. Please check your Anthropic API key in settings.');
+      }
+    } catch (error) {
+      console.error('[COACHING] Error starting coaching:', error);
+      alert('An error occurred while starting coaching.');
+    }
+  };
+
+  const handleStopCoaching = async () => {
+    if (!isCoaching) return;
+
+    if (!(window as any).electronAPI?.stopCoaching) {
+      console.error('[COACHING] API not available');
+      setIsCoaching(false);
+      return;
+    }
+
+    try {
+      console.log('[COACHING] Stopping coaching');
+      const result = await (window as any).electronAPI.stopCoaching();
+
+      if (result.success) {
+        setIsCoaching(false);
+        console.log('[COACHING] Coaching stopped successfully');
+      } else {
+        console.error('[COACHING] Failed to stop coaching:', result.error);
+        alert('Failed to stop coaching.');
+        // Still set to false locally even if backend fails
+        setIsCoaching(false);
+      }
+    } catch (error) {
+      console.error('[COACHING] Error stopping coaching:', error);
+      // Still set to false locally even if backend fails
+      setIsCoaching(false);
     }
   };
 
@@ -1300,6 +1572,12 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
               >
                 Actions
               </Tab>
+              <Tab
+                active={viewMode === 'coach'}
+                onClick={() => setViewMode('coach')}
+              >
+                Coach
+              </Tab>
             </TabContainer>
             {meeting.filePath && (
               <ShowInFinderButton onClick={handleShowInFinder}>
@@ -1650,6 +1928,142 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                 </EmptyState>
               )}
             </TranscriptContainer>
+          </TabPanel>
+
+          {/* Coach Panel - Always rendered but hidden when not active */}
+          <TabPanel isActive={viewMode === 'coach'}>
+            <CoachContainer>
+              <CoachControls>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <h3 style={{ fontSize: '18px', fontWeight: '600', margin: 0 }}>Real-time Coaching</h3>
+                  <CoachStatusBadge isActive={isCoaching}>
+                    {isCoaching ? (
+                      <>
+                        <span style={{ fontSize: '10px' }}>🔴</span> Active
+                      </>
+                    ) : (
+                      <>
+                        <span style={{ fontSize: '10px' }}>⚫</span> Inactive
+                      </>
+                    )}
+                  </CoachStatusBadge>
+                </div>
+
+                <CoachTypeSelector>
+                  <CoachTypeLabel>Coaching Type</CoachTypeLabel>
+                  <CoachTypeSelect
+                    value={selectedCoachingType}
+                    onChange={(e) => setSelectedCoachingType(e.target.value as CoachingType)}
+                    disabled={isCoaching}
+                  >
+                    <option value="coach-sales">Sales Coach</option>
+                    <option value="coach-interview">Interview Coach</option>
+                    <option value="coach-facilitator">Meeting Facilitator Coach</option>
+                  </CoachTypeSelect>
+                </CoachTypeSelector>
+
+                <CoachButtonGroup>
+                  {!isCoaching ? (
+                    <Button
+                      onClick={handleStartCoaching}
+                      disabled={!isRecording}
+                      style={{
+                        background: '#34c759',
+                        borderColor: '#34c759',
+                        color: 'white',
+                        flex: 1
+                      }}
+                    >
+                      {!isRecording ? '⏸ Start Recording First' : '▶️ Start Coaching'}
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={handleStopCoaching}
+                      variant="danger"
+                      style={{ flex: 1 }}
+                    >
+                      ⏹ Stop Coaching
+                    </Button>
+                  )}
+                </CoachButtonGroup>
+
+                {!isRecording && (
+                  <p style={{
+                    fontSize: '13px',
+                    color: '#666',
+                    margin: 0,
+                    fontStyle: 'italic'
+                  }}>
+                    💡 Tip: Start recording first to enable real-time coaching
+                  </p>
+                )}
+              </CoachControls>
+
+              {coachingFeedbackHistory.length > 0 ? (
+                <FeedbackList>
+                  {[...coachingFeedbackHistory].reverse().map((feedback, index) => {
+                    // Skip feedback cards with no content
+                    const hasContent = feedback.alerts.length > 0 ||
+                                      feedback.observations.length > 0 ||
+                                      feedback.suggestions.length > 0;
+
+                    if (!hasContent) return null;
+
+                    return (
+                      <FeedbackCard key={index}>
+                        <FeedbackTimestamp>
+                          {format(new Date(feedback.timestamp), 'HH:mm:ss')}
+                        </FeedbackTimestamp>
+
+                        {feedback.alerts.length > 0 && (
+                          <FeedbackSection type="alert">
+                            <h4>⚠️ Alerts</h4>
+                            <ul>
+                              {feedback.alerts.map((alert, i) => (
+                                <li key={i}>{alert}</li>
+                              ))}
+                            </ul>
+                          </FeedbackSection>
+                        )}
+
+                        {feedback.observations.length > 0 && (
+                          <FeedbackSection type="observation">
+                            <h4>📊 Observations</h4>
+                            <ul>
+                              {feedback.observations.map((obs, i) => (
+                                <li key={i}>{obs}</li>
+                              ))}
+                            </ul>
+                          </FeedbackSection>
+                        )}
+
+                        {feedback.suggestions.length > 0 && (
+                          <FeedbackSection type="suggestion">
+                            <h4>💡 Suggestions</h4>
+                            <ul>
+                              {feedback.suggestions.map((sugg, i) => (
+                                <li key={i}>{sugg}</li>
+                              ))}
+                            </ul>
+                          </FeedbackSection>
+                        )}
+                      </FeedbackCard>
+                    );
+                  })}
+                </FeedbackList>
+              ) : (
+                <EmptyState>
+                  <span className="icon">🎓</span>
+                  <h3>No coaching feedback yet</h3>
+                  <p>
+                    {isCoaching
+                      ? 'Coaching is active. Feedback will appear here every 30 seconds.'
+                      : 'Start recording and enable coaching to get real-time feedback during your call.'
+                    }
+                  </p>
+                </EmptyState>
+              )}
+            </CoachContainer>
           </TabPanel>
         </Content>
       </Container>

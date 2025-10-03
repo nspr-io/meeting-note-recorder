@@ -174,9 +174,11 @@ export class PermissionService {
    */
   private async requestAccessibilityPermission(): Promise<void> {
     if (process.platform === 'darwin') {
-      const isTrusted = systemPreferences.isTrustedAccessibilityClient(true); // true will prompt
-      
+      // Check first WITHOUT prompting (false parameter)
+      const isTrusted = systemPreferences.isTrustedAccessibilityClient(false);
+
       if (!isTrusted) {
+        // Only NOW prompt the user
         const result = await dialog.showMessageBox({
           type: 'warning',
           title: 'Accessibility Permission Required',
@@ -185,7 +187,7 @@ export class PermissionService {
           buttons: ['Open System Settings', 'Later'],
           defaultId: 0,
         });
-        
+
         if (result.response === 0) {
           // Open System Preferences to Accessibility
           shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
@@ -199,11 +201,11 @@ export class PermissionService {
    */
   async showPermissionDialog(): Promise<void> {
     const status = await this.checkAllPermissions();
-    
+
     const permissionLines = [
-      `✅ Screen Recording: ${status['screen-capture'] ? 'Granted' : '❌ Not Granted'}`,
-      `✅ Microphone: ${status.microphone ? 'Granted' : '❌ Not Granted'}`,
-      `✅ Accessibility: ${status.accessibility ? 'Granted' : '❌ Not Granted'}`,
+      `${status['screen-capture'] ? '✅' : '❌'} Screen Recording: ${status['screen-capture'] ? 'Granted' : 'Not Granted'}`,
+      `${status.microphone ? '✅' : '❌'} Microphone: ${status.microphone ? 'Granted' : 'Not Granted'}`,
+      `${status.accessibility ? '✅' : '❌'} Accessibility: ${status.accessibility ? 'Granted' : 'Not Granted'}`,
     ];
     
     const allGranted = status['screen-capture'] && status.microphone && status.accessibility;
@@ -219,6 +221,21 @@ export class PermissionService {
     
     if (!allGranted && result.response === 0) {
       await this.requestAllPermissions();
+
+      // Prompt to restart after permissions are configured
+      const restartResult = await dialog.showMessageBox({
+        type: 'info',
+        title: 'Restart Required',
+        message: 'Permissions have been configured. Please restart the app for changes to take effect.',
+        buttons: ['Restart Now', 'Later'],
+        defaultId: 0,
+      });
+
+      if (restartResult.response === 0) {
+        const { app } = require('electron');
+        app.relaunch();
+        app.exit(0);
+      }
     }
   }
 
@@ -231,9 +248,10 @@ export class PermissionService {
   }
 
   /**
-   * Get current permission status
+   * Get current permission status (always checks live)
    */
-  getPermissionStatus(): PermissionStatus {
+  async getPermissionStatus(): Promise<PermissionStatus> {
+    await this.checkAllPermissions();
     return { ...this.permissionStatus };
   }
 }

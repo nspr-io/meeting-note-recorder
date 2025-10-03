@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IpcChannels, Meeting, AppSettings, UserProfile, SearchOptions } from '../shared/types';
+import { IpcChannels, Meeting, AppSettings, UserProfile, SearchOptions, CoachingType } from '../shared/types';
 
 const api = {
   // Settings
@@ -76,6 +76,12 @@ const api = {
   checkPrepNote: (meetingId: string) =>
     ipcRenderer.invoke(IpcChannels.CHECK_PREP_NOTE, meetingId),
 
+  // Real-time coaching
+  startCoaching: (meetingId: string, coachingType: CoachingType) =>
+    ipcRenderer.invoke(IpcChannels.START_COACHING, meetingId, coachingType),
+  stopCoaching: () =>
+    ipcRenderer.invoke(IpcChannels.STOP_COACHING),
+
   // Permissions
   getPermissionStatus: () =>
     ipcRenderer.invoke('get-permission-status'),
@@ -96,6 +102,8 @@ const api = {
       IpcChannels.MEETINGS_UPDATED,
       IpcChannels.ERROR_OCCURRED,
       IpcChannels.SEARCH_RESULTS,
+      IpcChannels.COACHING_FEEDBACK,
+      IpcChannels.COACHING_ERROR,
       'correction-progress',
       'correction-completed',
     ];

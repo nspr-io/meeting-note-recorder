@@ -24,6 +24,9 @@ export class InsightsGenerationService extends EventEmitter {
 
   constructor(promptService: PromptService | null) {
     super();
+    logger.info('[INSIGHTS-GENERATION-CONSTRUCTOR] Creating InsightsGenerationService', {
+      hasPromptService: promptService !== null
+    });
     this.promptService = promptService;
   }
 

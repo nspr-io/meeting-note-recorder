@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { StorageService } from './StorageService';
-import { RecallApiService } from './RecallApiService';
+import { RecallApiService, TranscriptResponse } from './RecallApiService';
 import { TranscriptChunk, RecordingState } from '../../shared/types';
 import { SDKDebugger } from './SDKDebugger';
 import { TranscriptCorrectionService } from './TranscriptCorrectionService';
@@ -31,9 +31,20 @@ export class RecordingService extends EventEmitter {
 
   constructor(storageService: StorageService, promptService: PromptService | null) {
     super();
+    logger.info('[RECORDING-SERVICE-CONSTRUCTOR] Creating RecordingService', {
+      hasPromptService: promptService !== null
+    });
     this.storageService = storageService;
     this.sdkDebugger = new SDKDebugger();
+
+    logger.info('[RECORDING-SERVICE-CONSTRUCTOR] Creating TranscriptCorrectionService', {
+      hasPromptService: promptService !== null
+    });
     this.transcriptCorrectionService = new TranscriptCorrectionService(promptService);
+
+    logger.info('[RECORDING-SERVICE-CONSTRUCTOR] Creating InsightsGenerationService', {
+      hasPromptService: promptService !== null
+    });
     this.insightsGenerationService = new InsightsGenerationService(promptService);
 
     // Forward correction events
@@ -110,30 +121,35 @@ export class RecordingService extends EventEmitter {
               logger.info('Successfully intercepted Notification API to block SDK notifications');
             }
 
-            // First set up event listeners BEFORE init
-            logger.info('Setting up SDK event listeners BEFORE init');
-            this.setupSDKEventListeners();
-
             logger.info('Starting SDK init with config:', {
               apiUrl: baseApiUrl,
               api_url: baseApiUrl, // SDK accepts both keys
-              acquirePermissionsOnStartup: ['accessibility', 'screen-capture', 'microphone'],
-              restartOnError: true,
+              restartOnError: false, // CHANGED: Don't restart on error to avoid crash loops
               showNotifications: false, // Disable SDK notifications
               silentMode: true,
               notificationsEnabled: false
             });
             logger.info('[REGION-CHECK] SDK will use:', { sdk_api_url: baseApiUrl });
 
-            const initPromise = RecallAiSdk.init({
-              apiUrl: baseApiUrl,
-              api_url: baseApiUrl, // ensure both formats work
-              acquirePermissionsOnStartup: ['accessibility', 'screen-capture', 'microphone'],
-              restartOnError: true,
-              dev: process.env.NODE_ENV === 'development', // Enable dev mode for better logging
-              showNotifications: false, // Disable SDK automatic notifications
-              silentMode: true, // Additional option to suppress notifications
-              notificationsEnabled: false // Alternative naming for notification control
+            // Wrap SDK init in error handling to prevent crash
+            const initPromise = new Promise(async (resolve, reject) => {
+              try {
+                await RecallAiSdk.init({
+                  apiUrl: baseApiUrl,
+                  api_url: baseApiUrl, // ensure both formats work
+                  restartOnError: false, // Prevent automatic restart on error
+                  dev: process.env.NODE_ENV === 'development', // Enable dev mode for better logging
+                  showNotifications: false, // Disable SDK automatic notifications
+                  silentMode: true, // Additional option to suppress notifications
+                  notificationsEnabled: false // Alternative naming for notification control
+                  // NOTE: acquirePermissionsOnStartup removed - it was causing repeated permission prompts
+                  // Permissions are managed by PermissionService instead
+                });
+                resolve(true);
+              } catch (initError) {
+                logger.error('SDK init threw error:', initError);
+                reject(initError);
+              }
             });
 
             // Add timeout to SDK init
@@ -143,16 +159,15 @@ export class RecordingService extends EventEmitter {
 
             await Promise.race([initPromise, timeoutPromise]);
 
-            logger.info('RecallAI SDK initialized successfully');
+            logger.info('RecallAI SDK initialized successfully - now setting up event listeners');
 
-            // Request accessibility permission explicitly
-            logger.info('Requesting accessibility permission from SDK');
-            try {
-              await RecallAiSdk.requestPermission('accessibility');
-              logger.info('Accessibility permission requested');
-            } catch (permErr) {
-              logger.warn('Failed to request accessibility permission:', permErr);
-            }
+            // IMPORTANT: Set up event listeners AFTER init to avoid race conditions
+            // when a meeting is already running
+            this.setupSDKEventListeners();
+            logger.info('SDK event listeners set up successfully');
+
+            // Permissions are managed by PermissionService, not SDK
+            logger.info('Permissions will be checked by PermissionService before recording starts');
 
             // Start debugging after init
             this.sdkDebugger.startDebugging();
@@ -346,6 +361,13 @@ export class RecordingService extends EventEmitter {
         }
       });
 
+      RecallAiSdk.addEventListener('shutdown', (event: any) => {
+        logger.warn('Recall SDK shutdown event received', {
+          event: typeof event === 'string' ? event : JSON.stringify(event)
+        });
+        this.emit('sdk-shutdown', event);
+      });
+
       // Listen for upload progress
       RecallAiSdk.addEventListener('upload-progress', (event: any) => {
         logger.info('Upload progress', { progress: event.progress });
@@ -356,6 +378,9 @@ export class RecordingService extends EventEmitter {
       RecallAiSdk.addEventListener('error', (error: any) => {
         logger.error('SDK error', { error });
         this.emit('error', error);
+        if (error?.type === 'process') {
+          this.emit('sdk-process-error', error);
+        }
       });
 
       // Handle SDK state changes
@@ -561,13 +586,11 @@ export class RecordingService extends EventEmitter {
       const healthCheckStart = Date.now();
       try {
         const RecallAiSdk = require('@recallai/desktop-sdk').default;
-        // Quick SDK responsiveness check
-        await Promise.race([
-          RecallAiSdk.requestPermission('accessibility'),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('SDK not responding')), 3000)
-          )
-        ]);
+        // Quick SDK responsiveness check - just verify SDK is initialized
+        // Permissions are handled by SDK config, no need to request again
+        if (!RecallAiSdk) {
+          throw new Error('SDK not initialized');
+        }
         logger.info('[RECORDING-START] SDK health check passed', {
           durationMs: Date.now() - healthCheckStart
         });
@@ -702,17 +725,8 @@ export class RecordingService extends EventEmitter {
       const windowId = this.currentWindowId;
       logger.info('Using window ID for recording', { windowId, currentWindowId: this.currentWindowId });
 
-      // Request permissions from SDK when actually needed for recording
-      // This ensures the SDK has the permissions it needs
-      try {
-        const RecallAiSdk = require('@recallai/desktop-sdk').default;
-        await RecallAiSdk.requestPermission('screen-capture');
-        await RecallAiSdk.requestPermission('microphone');
-        await RecallAiSdk.requestPermission('accessibility');
-      } catch (permError) {
-        logger.warn('Permission request error (may already be granted):', permError);
-        // Continue anyway - permissions might already be granted
-      }
+      // Permissions are checked by PermissionService in index.ts before startRecording is called
+      // No need to request them again here
 
       // Start recording with the SDK using the upload token
       logger.info('[RECORDING-START] Calling SDK startRecording', {
@@ -909,6 +923,16 @@ export class RecordingService extends EventEmitter {
             : undefined,
         });
 
+        // Fetch final transcript from Recall AI in background (non-blocking)
+        // This will attempt to replace the real-time transcript with a more accurate version
+        if (meeting && meeting.recallRecordingId && this.recallApiService) {
+          logger.info('[RECORDING-STOP] Starting background final transcript fetch', {
+            meetingId,
+            recordingId: meeting.recallRecordingId
+          });
+          this.fetchFinalTranscriptInBackground(meetingId, meeting.recallRecordingId);
+        }
+
         // Clear the upload from API service
         if (this.recallApiService) {
           this.recallApiService.clearUpload(meetingId);
@@ -997,5 +1021,90 @@ export class RecordingService extends EventEmitter {
       // The chunks are already being persisted in real-time via appendTranscript
       // This is just a log for monitoring
     }
+  }
+
+  /**
+   * Fetch final transcript from Recall AI in the background after recording ends.
+   * This runs asynchronously without blocking the stop recording flow.
+   * If successful, replaces the real-time transcript with a more accurate version.
+   * If it fails, silently keeps the real-time transcript.
+   */
+  private fetchFinalTranscriptInBackground(meetingId: string, recordingId: string): void {
+    // Fire and forget - runs in background, no blocking
+    setTimeout(async () => {
+      try {
+        logger.info('[FINAL-TRANSCRIPT] Starting background fetch', { meetingId, recordingId });
+
+        // Poll every 10 seconds, max 10 attempts (100 seconds total)
+        for (let attempt = 1; attempt <= 10; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+
+          logger.info('[FINAL-TRANSCRIPT] Polling attempt', { attempt, meetingId });
+
+          try {
+            const transcript = await this.recallApiService!.getTranscript(recordingId);
+
+            if (transcript && transcript.length > 0) {
+              // Format to same structure as real-time transcript
+              const formatted = this.formatRecallTranscript(transcript);
+
+              logger.info('[FINAL-TRANSCRIPT] Retrieved final transcript', {
+                meetingId,
+                wordCount: transcript.length,
+                formattedLength: formatted.length
+              });
+
+              // Replace real-time transcript with final version
+              await this.storageService.updateTranscript(meetingId, formatted);
+
+              logger.info('[FINAL-TRANSCRIPT] Successfully replaced with final transcript', { meetingId });
+              return; // Success - exit polling
+            }
+          } catch (pollError) {
+            logger.debug('[FINAL-TRANSCRIPT] Poll attempt failed', {
+              attempt,
+              error: pollError instanceof Error ? pollError.message : String(pollError)
+            });
+            // Continue polling
+          }
+        }
+
+        // All attempts exhausted
+        logger.info('[FINAL-TRANSCRIPT] Final transcript not available after 10 attempts, keeping real-time version', {
+          meetingId
+        });
+
+      } catch (error) {
+        // Silently fail - real-time transcript is already saved
+        logger.debug('[FINAL-TRANSCRIPT] Background fetch failed, keeping real-time transcript', {
+          meetingId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }, 30000); // Wait 30 seconds after recording stops before first attempt
+  }
+
+  /**
+   * Format Recall AI transcript response to match our real-time transcript format
+   */
+  private formatRecallTranscript(words: TranscriptResponse[]): string {
+    // Group words by speaker and create timestamped lines
+    const lines: string[] = [];
+
+    for (const word of words) {
+      const timestamp = new Date(word.timestamp * 1000);
+      const time = timestamp.toLocaleTimeString('en-US', {
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+
+      const speaker = word.speaker || 'Unknown';
+      const line = `[${time}] ${speaker}: ${word.text}`;
+      lines.push(line);
+    }
+
+    return lines.join('\n');
   }
 }

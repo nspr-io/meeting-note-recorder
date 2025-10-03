@@ -30,5 +30,20 @@
       "notes",
       "transcript"
     ]
+  },
+  "coach-sales": {
+    "name": "Sales Coach",
+    "description": "Real-time coaching for sales calls",
+    "variables": ["previousFeedback", "recentTranscript"]
+  },
+  "coach-interview": {
+    "name": "Interview Coach",
+    "description": "Real-time coaching for job interviews",
+    "variables": ["previousFeedback", "recentTranscript"]
+  },
+  "coach-facilitator": {
+    "name": "Meeting Facilitator Coach",
+    "description": "Real-time coaching for meeting facilitation",
+    "variables": ["previousFeedback", "recentTranscript"]
   }
 }
