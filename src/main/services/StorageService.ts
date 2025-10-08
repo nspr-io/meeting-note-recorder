@@ -43,8 +43,7 @@ export class StorageService {
     // This now runs AFTER loading files, so it can detect and fix stuck recordings
     await this.cleanupStuckRecordings();
 
-    // Scan for and adopt any prep notes
-    await this.scanAndAdoptPrepNotes();
+    // Adoption logic removed - MCP handles prep notes now
 
     // Save the cleaned-up cache to disk
     await this.saveCacheToDisk();
@@ -100,361 +99,6 @@ export class StorageService {
       logger.info(`[MIGRATION] Complete: ${migratedCount} migrated, ${errorCount} errors`);
     } catch (error) {
       logger.error('[MIGRATION] Migration failed:', error);
-    }
-  }
-
-  private async scanAndAdoptPrepNotes(): Promise<void> {
-    const storagePath = this.settingsService.getSettings().storagePath;
-
-    try {
-      // Ensure storage path exists
-      await fs.mkdir(storagePath, { recursive: true });
-
-      // Only scan current and next month for prep notes
-      const now = new Date();
-      const currentYear = format(now, 'yyyy');
-      const currentMonth = format(now, 'MM');
-
-      const nextMonth = new Date(now);
-      nextMonth.setMonth(nextMonth.getMonth() + 1);
-      const nextYear = format(nextMonth, 'yyyy');
-      const nextMonthStr = format(nextMonth, 'MM');
-
-      const dirsToScan = [
-        storagePath, // Root for legacy files
-        path.join(storagePath, currentYear, currentMonth),
-        path.join(storagePath, nextYear, nextMonthStr)
-      ];
-
-      for (const dir of dirsToScan) {
-        try {
-          const files = await fs.readdir(dir);
-          const mdFiles = files.filter(f => f.endsWith('.md'));
-
-          logger.info(`[PREP-NOTES] Scanning ${mdFiles.length} files in ${dir}`);
-
-          for (const file of mdFiles) {
-            const filePath = path.join(dir, file);
-            try {
-              await this.attemptPrepNoteAdoption(filePath);
-            } catch (error) {
-              logger.error(`[PREP-NOTES] Failed to process ${file}:`, error);
-            }
-          }
-        } catch (error) {
-          // Directory might not exist yet, that's OK
-          logger.debug(`[PREP-NOTES] Directory ${dir} not accessible:`, error);
-        }
-      }
-    } catch (error) {
-      logger.error('[PREP-NOTES] Failed to scan for prep notes:', error);
-    }
-  }
-
-  private async attemptPrepNoteAdoption(filePath: string): Promise<void> {
-    try {
-      const content = await fs.readFile(filePath, 'utf-8');
-      const { data: frontmatter } = matter(content);
-
-      // Skip if already adopted by checking for app-specific fields
-      // Prep notes may have 'id' but won't have 'created_at' in ISO format with app structure
-      if (frontmatter.id && frontmatter.created_at && this.meetingsCache.has(frontmatter.id)) {
-        // This is already an adopted meeting file
-        return;
-      }
-
-      logger.info(`[PREP-NOTES] Found orphan prep note: ${path.basename(filePath)}`);
-
-      // Parse filename for matching info
-      const filename = path.basename(filePath, '.md');
-      const filenameParts = this.parseFilename(filename);
-
-      if (!filenameParts) {
-        logger.info(`[PREP-NOTES] Could not parse filename: ${filename}`);
-        return;
-      }
-
-      // Try to match with a calendar event
-      const matchedMeeting = await this.matchPrepNoteToMeeting(filenameParts, content);
-
-      if (matchedMeeting) {
-        logger.info(`[PREP-NOTES] Matched to meeting: ${matchedMeeting.title}`);
-        await this.adoptPrepNote(filePath, matchedMeeting, content);
-      } else {
-        logger.info(`[PREP-NOTES] No match found, will be adopted when meeting is created`);
-      }
-    } catch (error) {
-      logger.error(`[PREP-NOTES] Failed to process ${filePath}:`, error);
-    }
-  }
-
-  private parseFilename(filename: string): {
-    date: Date;
-    calendarEventId?: string;
-    titleKeywords: string[];
-  } | null {
-    // Expected format: YYYY-MM-DD-HH-mm-[eventId]-title-slug
-    const match = filename.match(/^(\d{4}-\d{2}-\d{2}-\d{2}-\d{2})(?:-\[([^\]]+)\])?-?(.*)$/);
-
-    if (!match) {
-      return null;
-    }
-
-    const [_, dateStr, eventId, titleSlug] = match;
-
-    // Parse date
-    const dateParts = dateStr.split('-');
-    const date = new Date(
-      parseInt(dateParts[0]), // year
-      parseInt(dateParts[1]) - 1, // month (0-indexed)
-      parseInt(dateParts[2]), // day
-      parseInt(dateParts[3]), // hour
-      parseInt(dateParts[4]) // minute
-    );
-
-    // Extract title keywords
-    const titleKeywords = titleSlug
-      ? titleSlug.split('-').filter(k => k.length > 0)
-      : [];
-
-    return {
-      date,
-      calendarEventId: eventId || undefined,
-      titleKeywords
-    };
-  }
-
-  private async matchPrepNoteToMeeting(
-    filenameParts: { date: Date; calendarEventId?: string; titleKeywords: string[] },
-    content: string
-  ): Promise<Meeting | null> {
-    // First try exact calendar ID match
-    if (filenameParts.calendarEventId) {
-      for (const [_, meeting] of this.meetingsCache) {
-        if (meeting.calendarEventId === filenameParts.calendarEventId) {
-          return meeting;
-        }
-      }
-    }
-
-    // Then try fuzzy matching by date and title
-    const dateWindow = 30 * 60 * 1000; // 30 minutes
-    const targetTime = filenameParts.date.getTime();
-
-    let bestMatch: Meeting | null = null;
-    let bestScore = 0;
-
-    for (const [_, meeting] of this.meetingsCache) {
-      const meetingTime = new Date(meeting.date).getTime();
-
-      // Check if within time window
-      if (Math.abs(meetingTime - targetTime) > dateWindow) {
-        continue;
-      }
-
-      // Calculate title match score
-      const meetingTitleLower = meeting.title.toLowerCase();
-      let score = 0;
-
-      for (const keyword of filenameParts.titleKeywords) {
-        if (meetingTitleLower.includes(keyword.toLowerCase())) {
-          score++;
-        }
-      }
-
-      // Weight by time proximity
-      const timeDiff = Math.abs(meetingTime - targetTime);
-      const timeScore = 1 - (timeDiff / dateWindow);
-      score += timeScore;
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = meeting;
-      }
-    }
-
-    // Require minimum score for match
-    return bestScore > 0.5 ? bestMatch : null;
-  }
-
-  private async checkForPrepNote(event: CalendarEvent): Promise<string | null> {
-    const storagePath = this.settingsService.getSettings().storagePath;
-
-    try {
-      // Scan root (legacy), current month, and next month for prep notes
-      const now = new Date();
-      const currentYear = format(now, 'yyyy');
-      const currentMonth = format(now, 'MM');
-
-      const nextMonth = new Date(now);
-      nextMonth.setMonth(nextMonth.getMonth() + 1);
-      const nextYear = format(nextMonth, 'yyyy');
-      const nextMonthStr = format(nextMonth, 'MM');
-
-      const dirsToScan = [
-        storagePath, // Root for legacy prep notes
-        path.join(storagePath, currentYear, currentMonth),
-        path.join(storagePath, nextYear, nextMonthStr)
-      ];
-
-      // Track best match in case no perfect match is found
-      let bestMatch: { score: number; content: string; filePath: string } | null = null;
-
-      for (const dir of dirsToScan) {
-        try {
-          const files = await fs.readdir(dir);
-          const mdFiles = files.filter(f => f.endsWith('.md'));
-
-          for (const file of mdFiles) {
-            const filePath = path.join(dir, file);
-
-            try {
-              const content = await fs.readFile(filePath, 'utf-8');
-              const { data: frontmatter, content: bodyContent } = matter(content);
-
-              // Skip if already has an ID (already adopted) or marked as pending
-              if (frontmatter.id || frontmatter.calendar_event_id_pending === event.id) {
-                continue;
-              }
-
-              // Parse filename for matching
-              const filename = path.basename(filePath, '.md');
-              const filenameParts = this.parseFilename(filename);
-
-              if (!filenameParts) {
-                continue;
-              }
-
-              let matchScore = 0;
-
-              // 1. Try exact calendar ID match (highest priority)
-              if (filenameParts.calendarEventId && filenameParts.calendarEventId === event.id) {
-                matchScore = 10; // Perfect match
-              } else {
-                // 2. Try date/time match with title keywords
-                const eventTime = new Date(event.start).getTime();
-                const fileTime = filenameParts.date.getTime();
-                const timeDiff = Math.abs(eventTime - fileTime);
-
-                // Within 30 minutes
-                if (timeDiff < 30 * 60 * 1000) {
-                  // Base score for time match
-                  matchScore = 1 - (timeDiff / (30 * 60 * 1000));
-
-                  // Check title keywords match
-                  const eventTitleLower = event.title.toLowerCase();
-                  let keywordMatches = 0;
-                  for (const keyword of filenameParts.titleKeywords) {
-                    if (eventTitleLower.includes(keyword.toLowerCase())) {
-                      keywordMatches++;
-                    }
-                  }
-
-                  // Add score for keyword matches
-                  if (filenameParts.titleKeywords.length > 0) {
-                    matchScore += (keywordMatches / filenameParts.titleKeywords.length) * 2;
-                  }
-                }
-              }
-
-              if (matchScore > 0 && (!bestMatch || matchScore > bestMatch.score)) {
-                bestMatch = { score: matchScore, content: bodyContent.trim(), filePath };
-              }
-            } catch (fileError) {
-              logger.error(`[PREP-NOTES] Error reading ${file}:`, fileError);
-              // Continue with other files
-            }
-          }
-        } catch (dirError) {
-          // Directory might not exist yet, that's OK
-          logger.debug(`[PREP-NOTES] Directory not accessible: ${dir}`);
-        }
-      }
-
-      // Use best match if score is high enough
-      if (bestMatch && bestMatch.score > 0.5) {
-        logger.info(`[PREP-NOTES] Found prep note for event: ${event.title} (score: ${bestMatch.score.toFixed(2)})`);
-
-        try {
-          // Mark the file for later adoption by updating it with the calendar ID
-          const content = await fs.readFile(bestMatch.filePath, 'utf-8');
-          const { data: frontmatter, content: bodyContent } = matter(content);
-          const updatedContent = matter.stringify(bodyContent, {
-            ...frontmatter,
-            calendar_event_id_pending: event.id
-          });
-          await fs.writeFile(bestMatch.filePath, updatedContent, 'utf-8');
-        } catch (markError) {
-          logger.error('[PREP-NOTES] Failed to mark prep note:', markError);
-        }
-
-        return bestMatch.content;
-      }
-    } catch (error) {
-      logger.error('[PREP-NOTES] Error checking for prep notes:', error);
-    }
-
-    return null;
-  }
-
-  private async adoptPrepNote(filePath: string, meeting: Meeting, content: string): Promise<void> {
-    try {
-      // Read the existing content
-      const { content: bodyContent } = matter(content);
-
-      // Use the prep note content as the meeting notes
-      meeting.notes = bodyContent.trim() || meeting.notes;
-
-      // Generate the standard filename
-      const newFileName = this.generateFileName(meeting);
-      const storagePath = this.settingsService.getSettings().storagePath;
-      const newFilePath = path.join(storagePath, newFileName);
-
-      // If the file paths are different, we need to rename
-      if (filePath !== newFilePath) {
-        // Write to new location first (atomic operation)
-        const markdown = this.formatMeetingToMarkdown(meeting);
-        const tempPath = `${newFilePath}.tmp`;
-
-        try {
-          // Write to temp file first
-          await fs.writeFile(tempPath, markdown, 'utf-8');
-
-          // Rename temp file to final name (atomic on most filesystems)
-          await fs.rename(tempPath, newFilePath);
-
-          // Only delete old file after successful write
-          try {
-            await fs.unlink(filePath);
-            logger.info(`[PREP-NOTES] Renamed ${path.basename(filePath)} to ${newFileName}`);
-          } catch (unlinkError) {
-            logger.error(`[PREP-NOTES] Failed to remove old file ${filePath}:`, unlinkError);
-            // Non-critical error - continue
-          }
-        } catch (writeError) {
-          // Clean up temp file if it exists
-          try {
-            await fs.unlink(tempPath);
-          } catch {}
-          throw writeError;
-        }
-      } else {
-        // Same file path - just update content
-        const markdown = this.formatMeetingToMarkdown(meeting);
-        await fs.writeFile(newFilePath, markdown, 'utf-8');
-      }
-
-      // Update the meeting file path
-      meeting.filePath = newFilePath;
-
-      // Update the cache
-      this.meetingsCache.set(meeting.id, meeting);
-      await this.saveCacheToDisk();
-
-      logger.info(`[PREP-NOTES] Successfully adopted prep note for meeting: ${meeting.title}`);
-    } catch (error) {
-      logger.error(`[PREP-NOTES] Failed to adopt prep note for meeting ${meeting.title}:`, error);
-      throw error;
     }
   }
 
@@ -699,9 +343,9 @@ ${meeting.transcript || ''}`;
     const month = format(date, 'MM');
     const dateStr = format(date, 'yyyy-MM-dd-HH-mm');
 
-    // Include calendar event ID if available (sanitized for filesystem)
+    // Include calendar event ID if available (sanitized and truncated for filesystem)
     const eventIdPart = meeting.calendarEventId
-      ? `[${meeting.calendarEventId.replace(/[^a-zA-Z0-9-_]/g, '')}]-`
+      ? `[${meeting.calendarEventId.replace(/[^a-zA-Z0-9-_]/g, '').substring(0, 50)}]-`
       : '';
 
     const titleSlug = meeting.title
@@ -831,7 +475,7 @@ ${meeting.transcript || ''}`;
     // 1. File doesn't exist and we now have content
     // 2. File exists and needs updating
     const shouldCreateFile = !fileExists && (hasSignificantNotes || hasSignificantTranscript);
-    const shouldUpdateFile = fileExists && (notesChanged || transcriptChanged || updates.title || updates.date);
+    const shouldUpdateFile = fileExists && (notesChanged || transcriptChanged || updates.title || updates.date || updates.status || updates.duration);
 
     if (shouldCreateFile || shouldUpdateFile) {
       // If file exists, re-read it to get latest notes before updating
@@ -842,24 +486,45 @@ ${meeting.transcript || ''}`;
           const matter = require('gray-matter');
           const { content: bodyContent } = matter(fileContent);
 
-          // Extract notes and transcript from file content
-          const notesMatch = bodyContent.match(/# Meeting Notes\s+([\s\S]*?)(?=\n---\n|# Transcript|$)/);
-          const transcriptMatch = bodyContent.match(/# Transcript\s+([\s\S]*?)$/);
+          // Use the same proven parsing logic as loadMeetingFromFile
+          // This prevents capturing duplicate sections that may exist in corrupted files
+          const sections = bodyContent.split('---\n');
+          const notesSection = sections.find((s: string) => s.includes('# Meeting Notes')) || '';
+          const transcriptSection = sections.find((s: string) => s.includes('# Transcript')) || '';
 
-          if (notesMatch && notesMatch[1].trim()) {
+          const fileNotes = notesSection.replace('# Meeting Notes', '').trim();
+          const fileTranscript = transcriptSection.replace('# Transcript', '').trim();
+
+          if (fileNotes) {
+            const cacheNotes = updatedMeeting.notes || '';
+
+            // Log if notes content changed significantly
+            if (fileNotes !== cacheNotes && Math.abs(fileNotes.length - cacheNotes.length) > 10) {
+              logger.warn('[NOTES-CONTENT-CHANGED]', {
+                meetingId: id,
+                title: meeting.title,
+                oldLength: cacheNotes.length,
+                newLength: fileNotes.length,
+                lengthDiff: fileNotes.length - cacheNotes.length,
+                source: 'file-read',
+                oldPreview: cacheNotes.substring(0, 100),
+                newPreview: fileNotes.substring(0, 100)
+              });
+            }
+
             // Only update if cache is stale (file has content that cache doesn't)
-            if (!updatedMeeting.notes || updatedMeeting.notes.trim().length < notesMatch[1].trim().length) {
-              updatedMeeting.notes = notesMatch[1].trim();
+            if (!updatedMeeting.notes || updatedMeeting.notes.trim().length < fileNotes.length) {
+              updatedMeeting.notes = fileNotes;
               logger.info('[FILE-SYNC] Preserved notes from file (longer than cache)', {
-                fileLength: notesMatch[1].trim().length,
-                cacheLength: (updatedMeeting.notes || '').trim().length
+                fileLength: fileNotes.length,
+                cacheLength: cacheNotes.trim().length
               });
             }
           }
 
-          if (transcriptMatch && transcriptMatch[1].trim()) {
-            if (!updatedMeeting.transcript || updatedMeeting.transcript.trim().length < transcriptMatch[1].trim().length) {
-              updatedMeeting.transcript = transcriptMatch[1].trim();
+          if (fileTranscript) {
+            if (!updatedMeeting.transcript || updatedMeeting.transcript.trim().length < fileTranscript.length) {
+              updatedMeeting.transcript = fileTranscript;
             }
           }
         } catch (error) {
@@ -943,132 +608,32 @@ ${meeting.transcript || ''}`;
   }
 
   /**
-   * Check if a prep note exists for a specific meeting and adopt it if found
-   * This is called on-demand when viewing a meeting without a file
+   * Refresh a meeting by re-reading from disk
+   * Used when viewing a meeting to ensure latest content (e.g., external prep notes)
    */
-  async checkPrepNoteForMeeting(meetingId: string): Promise<Meeting | null> {
-    const meeting = await this.getMeeting(meetingId);
-
-    if (!meeting) {
-      logger.warn(`[PREP-NOTE-CHECK] Meeting not found: ${meetingId}`);
-      return null;
-    }
-
-    // If meeting already has a file, nothing to do
-    if (meeting.filePath) {
-      logger.debug(`[PREP-NOTE-CHECK] Meeting already has file: ${meeting.title}`);
+  async refreshMeetingFromDisk(id: string): Promise<Meeting | undefined> {
+    const meeting = this.meetingsCache.get(id);
+    if (!meeting?.filePath) {
+      logger.debug('[REFRESH-MEETING] No file path, returning cached meeting', { id });
       return meeting;
     }
 
-    logger.info(`[PREP-NOTE-CHECK] Searching for prep note for meeting: ${meeting.title}`);
-
-    const storagePath = this.settingsService.getSettings().storagePath;
-    const meetingDate = new Date(meeting.date);
-    const year = format(meetingDate, 'yyyy');
-    const month = format(meetingDate, 'MM');
-
-    // Check current month, previous month, and next month
-    const prevMonth = new Date(meetingDate);
-    prevMonth.setMonth(prevMonth.getMonth() - 1);
-    const nextMonth = new Date(meetingDate);
-    nextMonth.setMonth(nextMonth.getMonth() + 1);
-
-    const dirsToScan = [
-      storagePath, // Root for legacy
-      path.join(storagePath, year, month),
-      path.join(storagePath, format(prevMonth, 'yyyy'), format(prevMonth, 'MM')),
-      path.join(storagePath, format(nextMonth, 'yyyy'), format(nextMonth, 'MM'))
-    ];
-
-    for (const dir of dirsToScan) {
-      try {
-        const files = await fs.readdir(dir);
-        const mdFiles = files.filter(f => f.endsWith('.md'));
-
-        for (const file of mdFiles) {
-          const filePath = path.join(dir, file);
-
-          try {
-            const content = await fs.readFile(filePath, 'utf-8');
-            const { data: frontmatter } = matter(content);
-
-            // Skip if already adopted by checking for app-specific fields
-            // Prep notes may have 'id' but won't have meetingsCache entry
-            if (frontmatter.id && frontmatter.created_at && this.meetingsCache.has(frontmatter.id)) {
-              continue;
-            }
-
-            // Parse filename for matching
-            const filename = path.basename(filePath, '.md');
-            const filenameParts = this.parseFilename(filename);
-
-            if (!filenameParts) {
-              continue;
-            }
-
-            // Try to match this prep note with our meeting
-            const isMatch = this.doesPrepNoteMatchMeeting(filenameParts, meeting);
-
-            if (isMatch) {
-              logger.info(`[PREP-NOTE-CHECK] Found matching prep note: ${file}`);
-              await this.adoptPrepNote(filePath, meeting, content);
-              // Return the updated meeting from cache
-              const updatedMeeting = await this.getMeeting(meetingId);
-              return updatedMeeting || null;
-            }
-          } catch (error) {
-            logger.debug(`[PREP-NOTE-CHECK] Error checking file ${file}:`, error);
-          }
-        }
-      } catch (error) {
-        // Directory might not exist, that's OK
-        logger.debug(`[PREP-NOTE-CHECK] Directory not accessible: ${dir}`);
+    try {
+      const refreshed = await this.loadMeetingFromFile(meeting.filePath);
+      if (refreshed) {
+        this.meetingsCache.set(id, refreshed);
+        logger.info('[REFRESH-MEETING] Refreshed meeting from disk', {
+          id,
+          title: refreshed.title,
+          notesLength: refreshed.notes?.length || 0
+        });
+        return refreshed;
       }
+    } catch (error) {
+      logger.error('[REFRESH-MEETING] Failed to refresh from disk, using cache', { id, error });
     }
 
-    logger.info(`[PREP-NOTE-CHECK] No prep note found for: ${meeting.title}`);
     return meeting;
-  }
-
-  /**
-   * Helper to check if a prep note matches a specific meeting
-   */
-  private doesPrepNoteMatchMeeting(
-    filenameParts: { date: Date; calendarEventId?: string; titleKeywords: string[] },
-    meeting: Meeting
-  ): boolean {
-    // 1. Try exact calendar ID match (highest priority)
-    if (filenameParts.calendarEventId && meeting.calendarEventId) {
-      if (filenameParts.calendarEventId === meeting.calendarEventId) {
-        return true;
-      }
-    }
-
-    // 2. Check time window (±30 minutes)
-    const dateWindow = 30 * 60 * 1000;
-    const targetTime = filenameParts.date.getTime();
-    const meetingTime = new Date(meeting.date).getTime();
-
-    if (Math.abs(meetingTime - targetTime) > dateWindow) {
-      return false;
-    }
-
-    // 3. Calculate title match score
-    const meetingTitleLower = meeting.title.toLowerCase();
-    let matchCount = 0;
-
-    for (const keyword of filenameParts.titleKeywords) {
-      if (meetingTitleLower.includes(keyword.toLowerCase())) {
-        matchCount++;
-      }
-    }
-
-    // Require at least 50% keyword match
-    const matchRatio = filenameParts.titleKeywords.length > 0
-      ? matchCount / filenameParts.titleKeywords.length
-      : 0;
-
-    return matchRatio >= 0.5;
   }
 
   async getAllMeetings(): Promise<Meeting[]> {
@@ -1111,9 +676,7 @@ ${meeting.transcript || ''}`;
     const result = { added: 0, updated: 0, deleted: 0, errors: [] as string[] };
 
     try {
-      // Scan for prep notes before syncing - picks up any notes created since startup
-      await this.scanAndAdoptPrepNotes();
-
+      // Adoption logic removed - MCP handles prep notes now
       logger.info(`Smart sync: Processing ${calendarEvents.length} calendar events`);
 
       // Get existing meetings with calendar IDs
@@ -1133,7 +696,27 @@ ${meeting.transcript || ''}`;
             const isTouched = this.isMeetingTouched(existingMeeting);
 
             if (isTouched) {
-              // Touched meeting: only update calendar metadata, preserve notes/transcript/status
+              // Touched meeting: only update calendar metadata if it actually changed
+              const existingDate = existingMeeting.date instanceof Date ? existingMeeting.date : new Date(existingMeeting.date);
+              const existingStartTime = existingMeeting.startTime instanceof Date ? existingMeeting.startTime : (existingMeeting.startTime ? new Date(existingMeeting.startTime) : null);
+              const existingEndTime = existingMeeting.endTime instanceof Date ? existingMeeting.endTime : (existingMeeting.endTime ? new Date(existingMeeting.endTime) : null);
+
+              const calendarDataChanged = (
+                existingMeeting.title !== event.title ||
+                existingDate.getTime() !== event.start.getTime() ||
+                existingStartTime?.getTime() !== event.start.getTime() ||
+                existingEndTime?.getTime() !== event.end.getTime() ||
+                JSON.stringify(existingMeeting.attendees) !== JSON.stringify(event.attendees) ||
+                existingMeeting.meetingUrl !== event.meetingUrl ||
+                existingMeeting.calendarInviteUrl !== event.htmlLink
+              );
+
+              if (!calendarDataChanged) {
+                logger.debug(`[SMART-SYNC] Skipping update - no calendar changes for: ${existingMeeting.title}`);
+                continue; // Skip this meeting entirely
+              }
+
+              // Calendar data changed, update touched meeting while preserving notes/transcript/status
               logger.info(`Updating touched meeting (preserving user data): ${existingMeeting.title}`);
               await this.updateMeeting(existingMeeting.id, {
                 title: event.title,
@@ -1162,11 +745,11 @@ ${meeting.transcript || ''}`;
             }
             result.updated++;
           } else {
-            // New meeting - check for prep notes first
+            // New meeting
             logger.info(`Adding new meeting: ${event.title}`);
 
-            // Check for existing prep note
-            const prepNoteContent = await this.checkForPrepNote(event);
+            // MCP handles prep notes now - no need to search for orphaned files
+            const prepNoteContent = null;
 
             // Process description to extract clean notes (meeting URL now comes from calendar)
             let processedNotes = prepNoteContent || '';
@@ -1201,7 +784,7 @@ ${meeting.transcript || ''}`;
               meetingUrl: event.meetingUrl,
               calendarInviteUrl: event.htmlLink,
               status: 'scheduled',
-              notes: processedNotes,
+              notes: processedNotes ? `<!-- CALENDAR_INFO -->\n${processedNotes}\n<!-- /CALENDAR_INFO -->` : '',
               transcript: '',
               platform
             };
@@ -1412,14 +995,11 @@ ${meeting.transcript || ''}`;
     this.meetingsCache.set(meeting.id, meeting);
     await this.saveCacheToDisk(); // Save cache after saving meeting
 
-    // Generate filename
-    const date = format(meeting.date || new Date(), 'yyyy-MM-dd');
-    const sanitizedTitle = meeting.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
-    const filename = `${date}_${sanitizedTitle}.md`;
-    const filePath = path.join(this.storagePath, filename);
+    // Use existing filePath if available, otherwise generate proper year/month structure
+    const filePath = meeting.filePath || path.join(
+      this.storagePath,
+      this.generateFileName(meeting)
+    );
 
     // Save to file
     meeting.filePath = filePath;

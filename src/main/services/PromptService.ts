@@ -28,10 +28,11 @@ export class PromptService {
     });
 
     if (process.env.NODE_ENV === 'development') {
-      // Use app.getAppPath() which points to the project root in dev mode
-      this.promptsDir = path.join(app.getAppPath(), 'prompts');
+      // In development, webpack bundles to dist/main, so we need to go up two levels to project root
+      // __dirname in bundled code points to dist/main, so ../../prompts gets us to project root/prompts
+      this.promptsDir = path.join(__dirname, '..', '..', 'prompts');
       logger.info('[PROMPT-SERVICE-CONSTRUCTOR] Using development mode path', {
-        appGetAppPath: app.getAppPath(),
+        dirname: __dirname,
         calculatedPromptsDir: this.promptsDir
       });
     } else {

@@ -14,6 +14,7 @@ const api = {
 
   // Meetings
   getMeetings: () => ipcRenderer.invoke(IpcChannels.GET_MEETINGS),
+  refreshMeeting: (meetingId: string) => ipcRenderer.invoke(IpcChannels.REFRESH_MEETING, meetingId),
   getRecordingState: () => ipcRenderer.invoke(IpcChannels.GET_RECORDING_STATE),
   createMeeting: (meeting: Partial<Meeting>) =>
     ipcRenderer.invoke(IpcChannels.CREATE_MEETING, meeting),
@@ -53,6 +54,8 @@ const api = {
     ipcRenderer.invoke(IpcChannels.SHOW_IN_FINDER, filePath),
   openExternal: (url: string) =>
     ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL, url),
+  joinMeetingWithIntent: (url: string) =>
+    ipcRenderer.invoke('join-meeting-with-intent', url),
 
   // Search
   searchMeetings: (options: SearchOptions) =>
@@ -72,15 +75,13 @@ const api = {
   resetPrompt: (promptId: string) =>
     ipcRenderer.invoke(IpcChannels.RESET_PROMPT, promptId),
 
-  // Prep note linking
-  checkPrepNote: (meetingId: string) =>
-    ipcRenderer.invoke(IpcChannels.CHECK_PREP_NOTE, meetingId),
-
   // Real-time coaching
   startCoaching: (meetingId: string, coachingType: CoachingType) =>
     ipcRenderer.invoke(IpcChannels.START_COACHING, meetingId, coachingType),
   stopCoaching: () =>
     ipcRenderer.invoke(IpcChannels.STOP_COACHING),
+  updateCoachingNotes: (meetingId: string, notes: string) =>
+    ipcRenderer.invoke(IpcChannels.UPDATE_COACHING_NOTES, meetingId, notes),
 
   // Permissions
   getPermissionStatus: () =>

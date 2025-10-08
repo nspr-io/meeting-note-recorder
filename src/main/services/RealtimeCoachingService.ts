@@ -2,8 +2,8 @@ import { CoachingType, CoachingFeedback, TranscriptChunk } from '../../shared/ty
 import { PromptService } from './PromptService';
 import { BaseAnthropicService } from './BaseAnthropicService';
 
-const ANALYSIS_INTERVAL_MS = 30000; // 30 seconds
-const TRANSCRIPT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const ANALYSIS_INTERVAL_MS = 60000; // 60 seconds (1 minute)
+const TRANSCRIPT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 
 export class RealtimeCoachingService extends BaseAnthropicService {
   private promptService: PromptService | null;
@@ -13,6 +13,7 @@ export class RealtimeCoachingService extends BaseAnthropicService {
   private intervalId: NodeJS.Timeout | null = null;
   private transcriptHistory: TranscriptChunk[] = [];
   private feedbackHistory: CoachingFeedback[] = [];
+  private currentMeetingNotes: string = '';
 
   constructor(promptService: PromptService | null) {
     super('RealtimeCoachingService');
@@ -73,6 +74,7 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     this.meetingId = null;
     this.transcriptHistory = [];
     this.feedbackHistory = [];
+    this.currentMeetingNotes = '';
   }
 
   /**
@@ -88,6 +90,18 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     this.transcriptHistory = this.transcriptHistory.filter(
       c => new Date(c.timestamp) > cutoffTime
     );
+  }
+
+  /**
+   * Update current meeting notes for coaching context
+   */
+  updateMeetingNotes(notes: string): void {
+    if (!this.isActive) return;
+
+    this.currentMeetingNotes = notes;
+    this.logger.debug('Updated meeting notes for coaching', {
+      notesLength: notes.length
+    });
   }
 
   /**
@@ -122,7 +136,8 @@ export class RealtimeCoachingService extends BaseAnthropicService {
       // Interpolate variables
       const prompt = promptTemplate
         .replace('{{previousFeedback}}', previousFeedback)
-        .replace('{{recentTranscript}}', recentTranscript);
+        .replace('{{recentTranscript}}', recentTranscript)
+        .replace('{{meetingNotes}}', this.currentMeetingNotes || 'No notes yet');
 
       // Call Claude
       const response = await this.anthropic.messages.create({

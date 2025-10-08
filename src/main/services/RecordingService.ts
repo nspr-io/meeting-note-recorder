@@ -180,6 +180,33 @@ export class RecordingService extends EventEmitter {
 
             logger.info('🔐 [PERMISSIONS] Final permissions to acquire:', permissionsToAcquire);
 
+            // ============================================================================
+            // CUSTOM BROWSER SUPPORT FOR GOOGLE MEET
+            // ============================================================================
+            // The Recall.ai SDK officially only supports Google Meet in Chrome.
+            // However, it can detect meetings in Chromium-based browsers (Arc, Brave, Edge, Comet)
+            // by overriding the GOOGLE_MEET_BUNDLE_ID environment variable.
+            //
+            // Set this BEFORE SDK init so it's passed to the native SDK process.
+            // ============================================================================
+
+            // Support for Comet browser (Chromium-based by Perplexity)
+            if (!process.env.GOOGLE_MEET_BUNDLE_ID) {
+              // Allow multiple bundle IDs separated by comma for broader Chromium browser support
+              // This enables Google Meet detection in: Chrome, Comet, Arc, Brave, Edge, etc.
+              process.env.GOOGLE_MEET_BUNDLE_ID = [
+                'com.google.Chrome',        // Official Chrome
+                'ai.perplexity.comet',      // Comet browser
+                'company.thebrowser.Browser', // Arc browser
+                'com.brave.Browser',        // Brave browser
+                'com.microsoft.edgemac'     // Microsoft Edge
+              ].join(',');
+
+              logger.info('[BROWSER-SUPPORT] Extended Google Meet support to Chromium browsers:', {
+                bundleIds: process.env.GOOGLE_MEET_BUNDLE_ID
+              });
+            }
+
             logger.info('Starting SDK init with config:', {
               apiUrl: baseApiUrl,
               api_url: baseApiUrl, // SDK accepts both keys
@@ -834,13 +861,14 @@ export class RecordingService extends EventEmitter {
         this.flushTranscriptBuffer(meetingId);
       }, 10000); // Every 10 seconds
 
-      // Update meeting status
+      // Update meeting status and store recording start time
       await this.storageService.updateMeeting(meetingId, {
         status: 'recording',
-        recallRecordingId: uploadData.id
+        recallRecordingId: uploadData.id,
+        startTime: this.recordingState.startTime
       });
 
-      this.emit('recording-started', { meetingId });
+      this.emit('recording-started', { meetingId, startTime: this.recordingState.startTime });
       logger.info('Recording started successfully', { 
         meetingId, 
         uploadId: uploadData.id,

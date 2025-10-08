@@ -15,6 +15,7 @@ import { SearchService } from './services/SearchService';
 import { PromptService } from './services/PromptService';
 import { RealtimeCoachingService } from './services/RealtimeCoachingService';
 import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType } from '../shared/types';
+import { generateNotificationHTML, NotificationType } from './utils/notificationTemplate';
 
 const logger = getLogger();
 
@@ -65,6 +66,7 @@ let searchService: SearchService;
 let promptService: PromptService | null = null;
 let coachingService: RealtimeCoachingService | null = null;
 let currentRecordingMeetingId: string | null = null;
+let autoRecordNextMeeting = false;
 
 // UI Notification Helper Functions
 function notifyUI(channel: IpcChannels, data?: any) {
@@ -307,23 +309,6 @@ function setupIpcHandlers() {
     return { success: true };
   });
 
-  ipcMain.handle(IpcChannels.CHECK_PREP_NOTE, async (_, meetingId) => {
-    try {
-      logger.info(`[IPC] Checking prep note for meeting: ${meetingId}`);
-      const updatedMeeting = await storageService.checkPrepNoteForMeeting(meetingId);
-
-      if (updatedMeeting && mainWindow) {
-        // Notify UI that meetings were updated
-        mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
-      }
-
-      return updatedMeeting;
-    } catch (error) {
-      logger.error('[IPC] Failed to check prep note:', error);
-      throw error;
-    }
-  });
-
   ipcMain.handle(IpcChannels.RESET_PROMPT, async (_, promptId) => {
     if (!promptService) {
       logger.error('PromptService not available - cannot reset prompt:', promptId);
@@ -351,6 +336,11 @@ function setupIpcHandlers() {
       sampleTitles: recentMeetings.slice(0, 5).map(m => ({ id: m.id, title: m.title }))
     });
     return recentMeetings;
+  });
+
+  ipcMain.handle(IpcChannels.REFRESH_MEETING, async (_, meetingId) => {
+    logger.info('[IPC-REFRESH_MEETING] Refreshing meeting from disk', { meetingId });
+    return await storageService.refreshMeetingFromDisk(meetingId);
   });
 
   ipcMain.handle(IpcChannels.GET_RECORDING_STATE, async () => {
@@ -756,6 +746,32 @@ function setupIpcHandlers() {
     }
   });
 
+  // Join meeting with auto-record intent
+  ipcMain.handle('join-meeting-with-intent', async (_, url: string) => {
+    try {
+      logger.info('[JOIN-INTENT] User clicked Join Meeting, setting auto-record flag', { url });
+
+      // Set flag to auto-record the next detected meeting
+      autoRecordNextMeeting = true;
+
+      // Clear flag after 90 seconds if no meeting detected
+      setTimeout(() => {
+        if (autoRecordNextMeeting) {
+          logger.info('[JOIN-INTENT] Auto-record flag expired (90s timeout)');
+          autoRecordNextMeeting = false;
+        }
+      }, 90000);
+
+      // Open the meeting URL in browser
+      await shell.openExternal(url);
+      return { success: true };
+    } catch (error) {
+      logger.error('[JOIN-INTENT] Failed to open meeting URL', error);
+      autoRecordNextMeeting = false; // Clear flag on error
+      return { success: false, error: 'Failed to open URL' };
+    }
+  });
+
   // Get log file path (for debugging)
   ipcMain.handle('get-log-path', async () => {
     return logger.getLatestLogPath();
@@ -816,6 +832,20 @@ function setupIpcHandlers() {
     } catch (error: any) {
       logger.error('Failed to stop coaching:', error);
       return { success: false, error: error.message || 'Failed to stop coaching' };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.UPDATE_COACHING_NOTES, async (_, meetingId: string, notes: string) => {
+    try {
+      if (!coachingService) {
+        return { success: false, error: 'Coaching service not initialized' };
+      }
+
+      coachingService.updateMeetingNotes(notes);
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Failed to update coaching notes:', error);
+      return { success: false, error: error.message || 'Failed to update coaching notes' };
     }
   });
 }
@@ -889,11 +919,13 @@ function createCustomNotification(config: {
   title: string;
   body: string;
   subtitle?: string;
+  type?: NotificationType;
+  icon?: string;
   autoCloseMs?: number;
   onClick?: () => void | Promise<void>;
   onClose?: () => void;
 }): BrowserWindow {
-  const { title, body, subtitle, autoCloseMs = 5000, onClick, onClose } = config;
+  const { title, body, subtitle, type = 'info', icon, autoCloseMs = 5000, onClick, onClose } = config;
 
   logger.info('[NOTIFICATION-CREATE] Starting notification window creation', {
     title,
@@ -903,8 +935,8 @@ function createCustomNotification(config: {
   });
 
   const notificationWindow = new BrowserWindow({
-    width: 400,
-    height: 120,
+    width: 420,
+    height: 140,
     frame: false,
     resizable: false,
     alwaysOnTop: true,
@@ -938,79 +970,15 @@ function createCustomNotification(config: {
     app.dock.show();
   }
 
-  // Load notification HTML
-  const notificationHTML = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-          background: rgba(30, 30, 30, 0.95);
-          border-radius: 12px;
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          padding: 16px;
-          color: white;
-          cursor: pointer;
-          backdrop-filter: blur(20px);
-          -webkit-backdrop-filter: blur(20px);
-        }
-        .title {
-          font-size: 14px;
-          font-weight: 600;
-          margin-bottom: 6px;
-          color: #fff;
-        }
-        .body {
-          font-size: 12px;
-          color: rgba(255, 255, 255, 0.8);
-          margin-bottom: ${subtitle ? '8px' : '0'};
-        }
-        .subtitle {
-          font-size: 11px;
-          color: rgba(255, 255, 255, 0.5);
-        }
-        .close-btn {
-          position: absolute;
-          top: 8px;
-          right: 8px;
-          width: 20px;
-          height: 20px;
-          border-radius: 50%;
-          background: rgba(255, 255, 255, 0.1);
-          border: none;
-          color: rgba(255, 255, 255, 0.6);
-          cursor: pointer;
-          font-size: 14px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-        .close-btn:hover {
-          background: rgba(255, 255, 255, 0.2);
-        }
-      </style>
-      <script>
-        // Define electronAPI inline to avoid IPC serialization issues
-        window.electronAPI = {
-          notificationClicked: () => {
-            window.location.href = 'notification://clicked';
-          },
-          notificationClosed: () => {
-            window.location.href = 'notification://closed';
-          }
-        };
-      </script>
-    </head>
-    <body onclick="window.electronAPI?.notificationClicked()">
-      <button class="close-btn" onclick="event.stopPropagation(); window.electronAPI?.notificationClosed()">×</button>
-      <div class="title">${title}</div>
-      <div class="body">${body}</div>
-      ${subtitle ? `<div class="subtitle">${subtitle}</div>` : ''}
-    </body>
-    </html>
-  `;
+  // Generate notification HTML using new template
+  const notificationHTML = generateNotificationHTML({
+    title,
+    body,
+    subtitle,
+    type,
+    icon,
+    autoCloseMs
+  });
 
   // Load notification HTML - catch any errors to prevent unhandled rejections
   logger.info('[NOTIFICATION-CREATE] Starting loadURL', {
@@ -1145,6 +1113,122 @@ function setupMeetingDetectionHandlers() {
         });
       }
 
+      // Check if we should auto-record (user clicked "Join Meeting")
+      if (autoRecordNextMeeting) {
+        logger.info('[AUTO-RECORD] Auto-record flag detected, starting recording automatically', {
+          detectedMeeting: data.meetingTitle,
+          hasMatchedMeeting: !!matchedMeeting
+        });
+
+        // Clear the flag immediately
+        autoRecordNextMeeting = false;
+
+        try {
+          let meetingToRecord = matchedMeeting;
+
+          if (matchedMeeting) {
+            // Use the matched scheduled meeting
+            logger.info('[AUTO-RECORD] Using matched scheduled meeting', {
+              meetingId: matchedMeeting.id,
+              title: matchedMeeting.title
+            });
+
+            // Search for existing meeting by calendar event ID
+            const allMeetings = await storageService.getAllMeetings();
+            const calendarEventId = matchedMeeting.calendarEventId || matchedMeeting.id;
+            const existingMeeting = allMeetings.find(m => m.calendarEventId === calendarEventId);
+
+            if (existingMeeting) {
+              // Update the existing meeting status to recording
+              logger.info('[AUTO-RECORD] Found existing meeting in storage, updating', {
+                existingMeetingId: existingMeeting.id,
+                calendarEventId: calendarEventId
+              });
+
+              await storageService.updateMeeting(existingMeeting.id, {
+                status: 'recording',
+                startTime: new Date(),
+                platform: data.platform as Meeting['platform']
+              });
+              meetingToRecord = await storageService.getMeeting(existingMeeting.id);
+            } else {
+              // Meeting doesn't exist in storage, create it
+              logger.info('[AUTO-RECORD] Meeting not in storage, creating new', {
+                calendarEventId: calendarEventId,
+                title: matchedMeeting.title
+              });
+
+              meetingToRecord = await storageService.createMeeting({
+                title: matchedMeeting.title || data.meetingTitle || 'Untitled Meeting',
+                date: matchedMeeting.date || new Date(),
+                status: 'recording',
+                startTime: new Date(),
+                platform: data.platform as Meeting['platform'],
+                calendarEventId: calendarEventId,
+                meetingUrl: matchedMeeting.meetingUrl,
+                calendarInviteUrl: matchedMeeting.calendarInviteUrl,
+                attendees: matchedMeeting.attendees || [],
+                notes: matchedMeeting.notes || '',
+                transcript: ''
+              });
+            }
+          } else {
+            // Create new meeting for recording
+            logger.info('[AUTO-RECORD] Creating new meeting for recording', {
+              title: data.meetingTitle || 'Untitled Meeting'
+            });
+
+            meetingToRecord = await storageService.createMeeting({
+              title: data.meetingTitle || 'Untitled Meeting',
+              date: new Date(),
+              status: 'recording',
+              startTime: new Date(),
+              platform: data.platform as Meeting['platform'],
+              notes: '',
+              transcript: ''
+            });
+
+            // Force save immediately after creation
+            await storageService.forceSave();
+          }
+
+          // Start recording with proper meeting ID
+          logger.info('[AUTO-RECORD] Starting recording', {
+            meetingId: meetingToRecord.id,
+            meetingTitle: meetingToRecord.title
+          });
+
+          await startRecording(meetingToRecord, { logPrefix: '[AUTO-RECORD]', openBrowser: false });
+
+          // Show success notification
+          createCustomNotification({
+            title: 'Recording Started',
+            body: `Recording: ${meetingToRecord.title}`,
+            type: 'recording-started',
+            autoCloseMs: 3000
+          });
+
+          logger.info('[AUTO-RECORD] Successfully auto-started recording');
+          return; // Skip the manual notification
+
+        } catch (error) {
+          logger.error('[AUTO-RECORD-ERROR] Failed to auto-start recording', {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
+          });
+
+          // Show error notification
+          createCustomNotification({
+            title: 'Auto-Record Failed',
+            body: 'Could not start recording automatically. Please try manually.',
+            type: 'error',
+            autoCloseMs: 5000
+          });
+
+          // Fall through to show manual notification
+        }
+      }
+
       // Store meeting data for fallback
       const meetingContext = {
         matchedMeeting,
@@ -1197,6 +1281,7 @@ function setupMeetingDetectionHandlers() {
       const notificationWindow = createCustomNotification({
       title: notificationTitle,
       body: notificationBody,
+      type: 'meeting',
       autoCloseMs: 60000, // 60 seconds for meeting detection
       onClick: async () => {
         logger.info('[JOURNEY-9] Notification clicked - Start Recording', {
@@ -1346,6 +1431,7 @@ function setupMeetingDetectionHandlers() {
         createCustomNotification({
           title: 'Recording Failed',
           body: 'Could not start recording. Please check the app.',
+          type: 'error',
           autoCloseMs: 5000
         });
       }
@@ -1385,6 +1471,7 @@ function setupMeetingDetectionHandlers() {
         createCustomNotification({
           title: 'Meeting Detection Error',
           body: 'Could not process meeting detection. Please try manually.',
+          type: 'error',
           autoCloseMs: 5000
         });
       } catch (notifError) {
@@ -1444,6 +1531,7 @@ function setupMeetingDetectionHandlers() {
       title: `Meeting starting soon: ${event.title}`,
       body: 'Click to start recording',
       subtitle: `Starting in ${minutesBeforeStart} minute(s)`,
+      type: 'reminder',
       autoCloseMs: 90000, // 90 seconds
       onClick: async () => {
         activeNotifications.delete(reminderNotificationId);
@@ -1496,6 +1584,7 @@ function setupMeetingDetectionHandlers() {
           createCustomNotification({
             title: 'Recording Failed',
             body: 'Could not start recording for the upcoming meeting',
+            type: 'error',
             autoCloseMs: 5000
           });
         }

@@ -110,6 +110,7 @@ export enum IpcChannels {
   UPDATE_MEETING = 'update-meeting',
   DELETE_MEETING = 'delete-meeting',
   GET_MEETINGS = 'get-meetings',
+  REFRESH_MEETING = 'refresh-meeting',
   GET_RECORDING_STATE = 'get-recording-state',
   GET_SETTINGS = 'get-settings',
   UPDATE_SETTINGS = 'update-settings',
@@ -139,12 +140,10 @@ export enum IpcChannels {
   UPDATE_PROMPT = 'update-prompt',
   RESET_PROMPT = 'reset-prompt',
 
-  // Prep note linking
-  CHECK_PREP_NOTE = 'check-prep-note',
-
   // Real-time coaching
   START_COACHING = 'start-coaching',
   STOP_COACHING = 'stop-coaching',
+  UPDATE_COACHING_NOTES = 'update-coaching-notes',
   COACHING_FEEDBACK = 'coaching-feedback',
   COACHING_ERROR = 'coaching-error',
 }

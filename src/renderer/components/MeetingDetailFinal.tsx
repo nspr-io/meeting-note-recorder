@@ -975,6 +975,18 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     transcriptCache.set(meeting.id, transcriptSegments);
   }, [meeting.id, transcriptSegments]);
 
+  // Refresh meeting from disk when viewing to get latest content (e.g., external prep notes)
+  useEffect(() => {
+    const refreshFromDisk = async () => {
+      try {
+        await window.electronAPI.refreshMeeting(meeting.id);
+      } catch (error) {
+        console.error('[REFRESH-MEETING] Failed to refresh from disk:', error);
+      }
+    };
+    refreshFromDisk();
+  }, [meeting.id]);
+
   useEffect(() => {
     console.log('[MEETING-CHANGE] Effect triggered', {
       meetingId: meeting.id,
@@ -989,6 +1001,11 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     setEditedTitle(meeting.title); // Update title when meeting prop changes
     setHasChanges(false);
     setIsRecording(meeting.status === 'recording');
+    // Initialize recording start time if meeting is already recording
+    if (meeting.status === 'recording' && !recordingStartTime) {
+      // Use meeting's stored start time if available (persists across navigation)
+      setRecordingStartTime(meeting.startTime ? new Date(meeting.startTime) : new Date());
+    }
     setEditorKey(Date.now()); // Force complete editor remount when meeting changes
     isFirstRender.current = true; // Reset first render flag for new meeting
 
@@ -1062,47 +1079,13 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     }
   }, [meeting.id, meeting.status, meeting.transcript, meeting.title]);
 
-  // Check for prep note on-demand when viewing a meeting without a file
-  useEffect(() => {
-    const checkForPrepNote = async () => {
-      // Only check if meeting has no file yet
-      if (!meeting.filePath) {
-        // Check if we already attempted to find prep note for this meeting in this session
-        const attemptedKey = `prep-check-${meeting.id}`;
-        const lastAttempt = sessionStorage.getItem(attemptedKey);
-
-        // Only search if we haven't checked in this session (hybrid approach)
-        if (!lastAttempt) {
-          console.log(`[PREP-NOTE-CHECK] Checking for prep note: ${meeting.title}`);
-          try {
-            const updatedMeeting = await window.electronAPI.checkPrepNote(meeting.id);
-
-            if (updatedMeeting?.filePath) {
-              console.log(`[PREP-NOTE-CHECK] Prep note found and adopted: ${updatedMeeting.filePath}`);
-              // Meeting will be updated via MEETINGS_UPDATED event from backend
-            } else {
-              console.log(`[PREP-NOTE-CHECK] No prep note found for: ${meeting.title}`);
-            }
-
-            // Mark as checked in this session
-            sessionStorage.setItem(attemptedKey, Date.now().toString());
-          } catch (error) {
-            console.error('[PREP-NOTE-CHECK] Failed to check for prep note:', error);
-          }
-        }
-      }
-    };
-
-    checkForPrepNote();
-  }, [meeting.id, meeting.filePath]);
-
   // Listen for recording started events
   useEffect(() => {
     const handleRecordingStarted = (data: any) => {
       if (data.meetingId === meeting.id) {
-        console.log('[MeetingDetailFinal] Recording started for this meeting');
+        console.log('[MeetingDetailFinal] Recording started for this meeting', { startTime: data.startTime });
         setIsRecording(true);
-        setRecordingStartTime(new Date());
+        setRecordingStartTime(data.startTime ? new Date(data.startTime) : new Date());
         // Don't clear segments - keep existing transcript and append new ones
         // This allows resuming recording on same meeting
       }
@@ -1214,6 +1197,25 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       (window as any).electronAPI?.removeListener?.(IpcChannels.COACHING_ERROR, handleCoachingError);
     };
   }, [handleCoachingFeedback, handleCoachingError]);
+
+  // Sync notes to coaching service every 10 seconds when coaching is active
+  useEffect(() => {
+    if (!isCoaching) return;
+
+    // Send immediately when coaching starts
+    if (notes) {
+      (window as any).electronAPI?.updateCoachingNotes?.(meeting.id, notes);
+    }
+
+    // Then every 10 seconds
+    const interval = setInterval(() => {
+      if (isCoaching && notes) {
+        (window as any).electronAPI?.updateCoachingNotes?.(meeting.id, notes);
+      }
+    }, 10000); // 10 seconds
+
+    return () => clearInterval(interval);
+  }, [isCoaching, notes, meeting.id]);
 
   // Listen for real-time transcript updates
   // IMPORTANT: We use useCallback with meeting.id dependency to create a stable handler
@@ -1780,9 +1782,10 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
               {meeting.meetingUrl && (
                 <Button
                   variant="primary"
-                  onClick={() => {
+                  onClick={async () => {
                     if (meeting.meetingUrl) {
-                      (window as any).electronAPI.openExternal(meeting.meetingUrl);
+                      // Use new handler that sets auto-record intent
+                      await (window as any).electronAPI.joinMeetingWithIntent(meeting.meetingUrl);
                     }
                   }}
                   style={{
@@ -2260,7 +2263,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
           {/* Actions Panel - Always rendered but hidden when not active */}
           <TabPanel isActive={viewMode === 'actions'}>
-            <TranscriptContainer>
+            <EditorContainer>
               {teamSummary ? (
                 <div style={{ padding: '20px' }}>
                   {slackShared && (
@@ -2358,7 +2361,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   )}
                 </EmptyState>
               )}
-            </TranscriptContainer>
+            </EditorContainer>
           </TabPanel>
 
           {/* Coach Panel - Always rendered but hidden when not active */}

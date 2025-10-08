@@ -5,6 +5,7 @@ export interface PromptVariables {
   meeting?: Meeting;
   transcript?: string;
   notes?: string;
+  meetingNotes?: string;
 }
 
 /**
@@ -37,6 +38,7 @@ export function interpolatePrompt(template: string, variables: PromptVariables):
   // Handle transcript and notes
   result = result.replace(/\{\{transcript\}\}/g, variables.transcript || '');
   result = result.replace(/\{\{notes\}\}/g, variables.notes || '');
+  result = result.replace(/\{\{meetingNotes\}\}/g, variables.meetingNotes || '');
 
   // Handle conditional blocks for userProfile
   if (variables.userProfile) {
@@ -86,7 +88,8 @@ export function validatePromptTemplate(template: string): { isValid: boolean; er
     'meeting.date',
     'meeting.attendees',
     'transcript',
-    'notes'
+    'notes',
+    'meetingNotes'
   ]);
 
   // Check for unclosed conditional blocks
