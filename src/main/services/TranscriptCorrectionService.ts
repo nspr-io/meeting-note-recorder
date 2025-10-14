@@ -116,7 +116,7 @@ export class TranscriptCorrectionService extends BaseAnthropicService {
       logger.debug(`Sample of transcript being corrected (first 300 chars): ${transcriptContent.substring(0, 300)}`);
 
       const apiPromise = this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 4096,
         temperature: 0.1, // Even lower temperature for more consistent corrections
         system: systemPrompt,

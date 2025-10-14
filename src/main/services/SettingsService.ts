@@ -18,7 +18,9 @@ export class SettingsService {
     selectedCalendars: [],
     recallApiKey: process.env.RECALL_API_KEY || '',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
-    slackWebhookUrl: ''
+    slackWebhookUrl: '',
+    notionIntegrationToken: process.env.NOTION_INTEGRATION_TOKEN || '',
+    notionDatabaseId: process.env.NOTION_DATABASE_ID || ''
   };
 
   constructor() {
@@ -67,14 +69,18 @@ export class SettingsService {
       selectedCalendars: this.store.get('selectedCalendars') || [],
       recallApiKey: this.getApiKey(),
       anthropicApiKey: this.getAnthropicApiKey(),
-      slackWebhookUrl: this.store.get('slackWebhookUrl') || ''
+      slackWebhookUrl: this.store.get('slackWebhookUrl') || '',
+      notionIntegrationToken: this.getNotionIntegrationToken(),
+      notionDatabaseId: this.getNotionDatabaseId()
     } : this.store.store;
     // Include the API keys from environment or store
     return {
       ...settings,
       recallApiKey: this.getApiKey(),
       anthropicApiKey: this.getAnthropicApiKey(),
-      slackWebhookUrl: this.store.get ? this.store.get('slackWebhookUrl') || '' : this.store.store?.slackWebhookUrl || ''
+      slackWebhookUrl: this.store.get ? this.store.get('slackWebhookUrl') || '' : this.store.store?.slackWebhookUrl || '',
+      notionIntegrationToken: this.getNotionIntegrationToken(),
+      notionDatabaseId: this.getNotionDatabaseId()
     };
   }
 
@@ -88,9 +94,15 @@ export class SettingsService {
     if (updates.anthropicApiKey !== undefined) {
       this.setAnthropicApiKey(updates.anthropicApiKey);
     }
+    if (updates.notionIntegrationToken !== undefined) {
+      this.setNotionIntegrationToken(updates.notionIntegrationToken);
+    }
+    if (updates.notionDatabaseId !== undefined) {
+      this.setNotionDatabaseId(updates.notionDatabaseId);
+    }
 
     // Don't store API keys in the main settings object
-    const { recallApiKey, anthropicApiKey, ...settingsToStore } = updates;
+    const { recallApiKey, anthropicApiKey, notionIntegrationToken, notionDatabaseId, ...settingsToStore } = updates;
     const newSettings = { ...currentSettings, ...settingsToStore };
     
     // If storage path changed, create new directory
@@ -119,6 +131,54 @@ export class SettingsService {
       this.store.store = { ...this.store.store, ...settingsToStore };
     }
     return this.getSettings(); // Return settings including API key
+  }
+
+  getNotionIntegrationToken(): string | undefined {
+    const envToken = process.env.NOTION_INTEGRATION_TOKEN;
+    if (envToken) {
+      return envToken;
+    }
+    return this.store.get ? this.store.get('notionIntegrationToken') : this.store.store?.notionIntegrationToken;
+  }
+
+  setNotionIntegrationToken(token: string): void {
+    if (this.store.set) {
+      this.store.set('notionIntegrationToken', token);
+    } else {
+      this.store.store = { ...this.store.store, notionIntegrationToken: token };
+    }
+  }
+
+  clearNotionIntegrationToken(): void {
+    if (this.store.delete) {
+      this.store.delete('notionIntegrationToken');
+    } else if (this.store.store) {
+      delete this.store.store.notionIntegrationToken;
+    }
+  }
+
+  getNotionDatabaseId(): string | undefined {
+    const envId = process.env.NOTION_DATABASE_ID;
+    if (envId) {
+      return envId;
+    }
+    return this.store.get ? this.store.get('notionDatabaseId') : this.store.store?.notionDatabaseId;
+  }
+
+  setNotionDatabaseId(databaseId: string): void {
+    if (this.store.set) {
+      this.store.set('notionDatabaseId', databaseId);
+    } else {
+      this.store.store = { ...this.store.store, notionDatabaseId: databaseId };
+    }
+  }
+
+  clearNotionDatabaseId(): void {
+    if (this.store.delete) {
+      this.store.delete('notionDatabaseId');
+    } else if (this.store.store) {
+      delete this.store.store.notionDatabaseId;
+    }
   }
 
   getApiKey(): string | undefined {

@@ -268,6 +268,8 @@ export class StorageService {
         status: data.status || 'completed',
         notes,
         transcript,
+        notionSharedAt: data.notion_shared_at ? new Date(data.notion_shared_at) : null,
+        notionPageId: data.notion_page_id || null,
         filePath,
         createdAt: new Date(data.created_at || Date.now()),
         updatedAt: new Date(data.updated_at || Date.now()),
@@ -308,6 +310,12 @@ export class StorageService {
     if (meeting.calendarEventId !== undefined) frontmatter.calendar_event_id = meeting.calendarEventId;
     if (meeting.meetingUrl !== undefined) frontmatter.meeting_url = meeting.meetingUrl;
     if (meeting.calendarInviteUrl !== undefined) frontmatter.calendar_invite_url = meeting.calendarInviteUrl;
+    if (meeting.notionSharedAt) {
+      frontmatter.notion_shared_at = meeting.notionSharedAt instanceof Date
+        ? meeting.notionSharedAt.toISOString()
+        : meeting.notionSharedAt;
+    }
+    if (meeting.notionPageId) frontmatter.notion_page_id = meeting.notionPageId;
 
     const content = `# Meeting Notes
 

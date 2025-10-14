@@ -3,6 +3,8 @@ export interface Attendee {
   email?: string;
 }
 
+export type NotionShareMode = 'full' | 'insights';
+
 export interface Meeting {
   id: string;
   title: string;
@@ -24,6 +26,8 @@ export interface Meeting {
   insights?: string; // JSON string containing summary, action items, decisions
   teamSummary?: string; // JSON string containing team-appropriate summary
   slackSharedAt?: Date; // Timestamp when shared to Slack
+  notionSharedAt?: Date | string | null;
+  notionPageId?: string | null;
   filePath?: string;
   createdAt?: Date;
   updatedAt?: Date;
@@ -66,6 +70,8 @@ export interface AppSettings {
   autoStartOnBoot: boolean;
   selectedCalendars: string[];
   slackWebhookUrl?: string;
+  notionIntegrationToken?: string;
+  notionDatabaseId?: string;
 }
 
 export interface CalendarEvent {
@@ -125,6 +131,7 @@ export enum IpcChannels {
   GENERATE_INSIGHTS = 'generate-insights',
   GENERATE_TEAM_SUMMARY = 'generate-team-summary',
   SHARE_TO_SLACK = 'share-to-slack',
+  SHARE_TO_NOTION = 'share-to-notion',
   GET_PROFILE = 'get-profile',
   UPDATE_PROFILE = 'update-profile',
 

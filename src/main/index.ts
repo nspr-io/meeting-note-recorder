@@ -14,7 +14,7 @@ import { getLogger } from './services/LoggingService';
 import { SearchService } from './services/SearchService';
 import { PromptService } from './services/PromptService';
 import { RealtimeCoachingService } from './services/RealtimeCoachingService';
-import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType } from '../shared/types';
+import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode } from '../shared/types';
 import { generateNotificationHTML, NotificationType } from './utils/notificationTemplate';
 
 const logger = getLogger();
@@ -557,6 +557,51 @@ function setupIpcHandlers() {
     }
   });
 
+  ipcMain.handle(IpcChannels.SHARE_TO_NOTION, async (_, { meetingId, mode }: { meetingId: string; mode: NotionShareMode }) => {
+    try {
+      const settings = settingsService.getSettings();
+      if (!settings.notionIntegrationToken || !settings.notionDatabaseId) {
+        return { success: false, error: 'Notion integration is not configured. Please add your integration token and database ID in settings.' };
+      }
+
+      const meeting = await storageService.getMeeting(meetingId);
+      if (!meeting) {
+        return { success: false, error: 'Meeting not found' };
+      }
+
+      const insightsService = recordingService.getInsightsService();
+      if (!insightsService) {
+        return { success: false, error: 'Insights service not available' };
+      }
+
+      try {
+        const result = await insightsService.shareToNotion({
+          meeting,
+          mode,
+          notionToken: settings.notionIntegrationToken,
+          notionDatabaseId: settings.notionDatabaseId
+        });
+
+        await storageService.updateMeeting(meetingId, {
+          notionSharedAt: new Date(),
+          notionPageId: result.pageId || meeting.notionPageId || null
+        });
+
+        if (mainWindow) {
+          mainWindow.webContents.send(IpcChannels.MEETINGS_UPDATED);
+        }
+
+        return { success: true, pageId: result.pageId };
+      } catch (error: any) {
+        logger.error('Failed to share to Notion:', error);
+        return { success: false, error: error.message || 'Failed to share to Notion' };
+      }
+    } catch (error: any) {
+      logger.error('Unexpected error sharing to Notion:', error);
+      return { success: false, error: error.message || 'Failed to share to Notion' };
+    }
+  });
+
   // Recording
   ipcMain.handle(IpcChannels.START_RECORDING, async (_, meetingId: string) => {
     logger.info('[JOURNEY-IPC-1] START_RECORDING IPC handler called', {
@@ -942,6 +987,9 @@ function createCustomNotification(config: {
     alwaysOnTop: true,
     skipTaskbar: true,
     transparent: true,
+    show: false,
+    focusable: process.platform === 'darwin' ? false : true,
+    acceptFirstMouse: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true
@@ -992,6 +1040,14 @@ function createCustomNotification(config: {
         windowId: notificationWindow.id,
         timestamp: new Date().toISOString()
       });
+
+      if (!notificationWindow.isDestroyed()) {
+        if (typeof notificationWindow.showInactive === 'function') {
+          notificationWindow.showInactive();
+        } else {
+          notificationWindow.show();
+        }
+      }
     })
     .catch(error => {
       logger.error('[NOTIFICATION] Failed to load notification HTML:', {
@@ -1064,6 +1120,23 @@ function createCustomNotification(config: {
         }
       }
     }
+  });
+
+  notificationWindow.on('focus', () => {
+    if (!notificationWindow.isDestroyed()) {
+      notificationWindow.blur();
+    }
+    if (process.platform === 'darwin' && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.blur();
+    }
+  });
+
+  notificationWindow.on('closed', () => {
+    activeNotifications.forEach((value, key) => {
+      if (value === notificationWindow) {
+        activeNotifications.delete(key);
+      }
+    });
   });
 
   logger.info('[NOTIFICATION-CREATE] Notification window fully configured, returning', {

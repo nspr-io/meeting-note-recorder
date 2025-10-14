@@ -36,6 +36,18 @@ export class ConfigValidator {
       }
     }
 
+    if (settings.notionIntegrationToken) {
+      if (typeof settings.notionIntegrationToken !== 'string' || !settings.notionIntegrationToken.trim()) {
+        errors.push('Notion integration token must be a non-empty string');
+      }
+    }
+
+    if (settings.notionDatabaseId) {
+      if (typeof settings.notionDatabaseId !== 'string' || !settings.notionDatabaseId.trim()) {
+        errors.push('Notion database ID must be a non-empty string');
+      }
+    }
+
     // Validate storage path
     if (settings.storagePath) {
       const pathErrors = this.validateStoragePath(settings.storagePath);
@@ -140,6 +152,8 @@ export class ConfigValidator {
       googleCalendarConnected: false,
       autoStartOnBoot: false,
       selectedCalendars: [],
+      notionIntegrationToken: '',
+      notionDatabaseId: '',
     };
   }
 
@@ -162,6 +176,14 @@ export class ConfigValidator {
     // Ensure arrays are arrays
     if (!Array.isArray(sanitized.selectedCalendars)) {
       sanitized.selectedCalendars = [];
+    }
+
+    if (sanitized.notionIntegrationToken) {
+      sanitized.notionIntegrationToken = sanitized.notionIntegrationToken.trim();
+    }
+
+    if (sanitized.notionDatabaseId) {
+      sanitized.notionDatabaseId = sanitized.notionDatabaseId.trim();
     }
 
     return sanitized;

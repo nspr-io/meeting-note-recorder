@@ -167,6 +167,8 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
   const [autoStart, setAutoStart] = useState(settings?.autoStartOnBoot || false);
   const [isCalendarConnected, setIsCalendarConnected] = useState(settings?.googleCalendarConnected || false);
   const [slackWebhookUrl, setSlackWebhookUrl] = useState(settings?.slackWebhookUrl || '');
+  const [notionIntegrationToken, setNotionIntegrationToken] = useState(settings?.notionIntegrationToken || '');
+  const [notionDatabaseId, setNotionDatabaseId] = useState(settings?.notionDatabaseId || '');
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info', text: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isConnectingCalendar, setIsConnectingCalendar] = useState(false);
@@ -182,6 +184,8 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
       setAutoStart(settings.autoStartOnBoot);
       setIsCalendarConnected(settings.googleCalendarConnected);
       setSlackWebhookUrl(settings.slackWebhookUrl || '');
+      setNotionIntegrationToken(settings.notionIntegrationToken || '');
+      setNotionDatabaseId(settings.notionDatabaseId || '');
     }
 
     // Load permission status
@@ -294,6 +298,22 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
         setStatusMessage({ type: 'error', text: 'Please enter an API key first' });
       }
     }, 1000);
+  };
+
+  const handleSaveNotionSettings = async () => {
+    setIsSaving(true);
+    try {
+      await onUpdateSettings({
+        notionIntegrationToken,
+        notionDatabaseId
+      });
+      setStatusMessage({ type: 'success', text: 'Notion settings saved successfully' });
+      setTimeout(() => setStatusMessage(null), 3000);
+    } catch (error) {
+      setStatusMessage({ type: 'error', text: 'Failed to save Notion settings' });
+    } finally {
+      setIsSaving(false);
+    }
   };
   
   const handleRequestPermissions = async () => {
@@ -454,6 +474,42 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
           disabled={isSaving}
         >
           {isSaving ? 'Saving...' : 'Save Webhook'}
+        </Button>
+      </Section>
+
+      <Section>
+        <SectionTitle>Notion Integration</SectionTitle>
+        <div style={{ fontSize: '13px', color: '#86868b', marginBottom: '16px' }}>
+          Connect a Notion database to publish meeting notes or AI insights directly from the Actions tab.
+        </div>
+
+        <FormGroup>
+          <Label>Integration Token</Label>
+          <PasswordInput
+            type="password"
+            value={notionIntegrationToken}
+            onChange={(e) => setNotionIntegrationToken(e.target.value)}
+            placeholder="Enter your Notion integration token"
+          />
+          <div style={{ fontSize: '11px', color: '#86868b', marginTop: '4px' }}>
+            Create an internal integration at notion.so/my-integrations and share your database with it.
+          </div>
+        </FormGroup>
+
+        <FormGroup>
+          <Label>Database ID</Label>
+          <Input
+            value={notionDatabaseId}
+            onChange={(e) => setNotionDatabaseId(e.target.value)}
+            placeholder="Paste the target database ID"
+          />
+          <div style={{ fontSize: '11px', color: '#86868b', marginTop: '4px' }}>
+            Open your database in a browser, copy the URL, and grab the 32-character identifier after the last slash.
+          </div>
+        </FormGroup>
+
+        <Button onClick={handleSaveNotionSettings} disabled={isSaving}>
+          {isSaving ? 'Saving...' : 'Save Notion Settings'}
         </Button>
       </Section>
 

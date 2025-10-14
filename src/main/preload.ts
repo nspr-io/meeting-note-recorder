@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IpcChannels, Meeting, AppSettings, UserProfile, SearchOptions, CoachingType } from '../shared/types';
+import { IpcChannels, Meeting, AppSettings, UserProfile, SearchOptions, CoachingType, NotionShareMode } from '../shared/types';
 
 const api = {
   // Settings
@@ -36,6 +36,8 @@ const api = {
     ipcRenderer.invoke(IpcChannels.GENERATE_TEAM_SUMMARY, meetingId),
   shareToSlack: (data: { meetingId: string; content: string }) =>
     ipcRenderer.invoke(IpcChannels.SHARE_TO_SLACK, data),
+  shareToNotion: (data: { meetingId: string; mode: NotionShareMode }) =>
+    ipcRenderer.invoke(IpcChannels.SHARE_TO_NOTION, data),
 
   // Calendar
   connectCalendar: () => 

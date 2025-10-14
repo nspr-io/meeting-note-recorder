@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import styled from '@emotion/styled';
-import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback } from '../../shared/types';
+import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback, NotionShareMode } from '../../shared/types';
 import { format, formatDistanceToNow } from 'date-fns';
 import MDEditor from '@uiw/react-md-editor';
 
@@ -629,6 +629,59 @@ const TranscriptContainer = styled.div`
   min-height: 100%;
 `;
 
+const ActionGrid = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+`;
+
+const ActionCard = styled.div`
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+`;
+
+const ActionCardHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+`;
+
+const ActionCardTitle = styled.h3`
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1a1a1a;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const ActionCardDescription = styled.p`
+  margin: 0;
+  font-size: 13px;
+  color: #6b7280;
+`;
+
+const ActionButtonRow = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+`;
+
+const ActionStatus = styled.div`
+  font-size: 12px;
+  color: #4b5563;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
 const TranscriptHeader = styled.div`
   display: flex;
   align-items: center;
@@ -956,6 +1009,9 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [editedTeamContent, setEditedTeamContent] = useState('');
   const [slackShared, setSlackShared] = useState(meeting.slackSharedAt);
   const [isSharing, setIsSharing] = useState(false);
+  const [notionShared, setNotionShared] = useState(meeting.notionSharedAt ?? null);
+  const [notionPageId, setNotionPageId] = useState(meeting.notionPageId ?? '');
+  const [sharingToNotionMode, setSharingToNotionMode] = useState<NotionShareMode | null>(null);
   const isFirstRender = useRef(true);
 
   // Coaching state
@@ -1041,6 +1097,16 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
     // Update slack shared status
     setSlackShared(meeting.slackSharedAt);
+
+    // Update Notion sharing state
+    if (meeting.notionSharedAt) {
+      const sharedAt = new Date(meeting.notionSharedAt);
+      setNotionShared(Number.isNaN(sharedAt.getTime()) ? null : sharedAt);
+    } else {
+      setNotionShared(null);
+    }
+    setNotionPageId(meeting.notionPageId ?? '');
+    setSharingToNotionMode(null);
 
     // When recording stops, clear segments and load from stored transcript
     // When recording is active, don't parse stored transcript (rely on real-time)
@@ -1504,6 +1570,37 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       onShowToast?.('An error occurred while sharing to Slack.', 'error');
     } finally {
       setIsSharing(false);
+    }
+  };
+
+  const handleShareToNotion = async (mode: NotionShareMode) => {
+    if (sharingToNotionMode) return;
+
+    try {
+      setSharingToNotionMode(mode);
+      const result = await (window as any).electronAPI.shareToNotion({
+        meetingId: meeting.id,
+        mode
+      });
+
+      if (result.success) {
+        const now = new Date();
+        setNotionShared(now);
+        if (result.pageId) {
+          setNotionPageId(result.pageId);
+        }
+        onShowToast?.('Shared to Notion successfully.', 'success');
+        if (onRefresh) {
+          await onRefresh();
+        }
+      } else {
+        onShowToast?.(result.error || 'Failed to share to Notion. Check your Notion settings.', 'error');
+      }
+    } catch (error) {
+      console.error('Error sharing to Notion:', error);
+      onShowToast?.('An unexpected error occurred while sharing to Notion.', 'error');
+    } finally {
+      setSharingToNotionMode(null);
     }
   };
 
@@ -2264,103 +2361,159 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
           {/* Actions Panel - Always rendered but hidden when not active */}
           <TabPanel isActive={viewMode === 'actions'}>
             <EditorContainer>
-              {teamSummary ? (
-                <div style={{ padding: '20px' }}>
-                  {slackShared && (
-                    <div style={{
-                      background: '#d4f4dd',
-                      padding: '10px',
-                      marginBottom: '20px',
-                      borderRadius: '6px',
-                      fontSize: '13px',
-                      color: '#00875a'
-                    }}>
-                      ✅ Shared to Slack at {format(new Date(slackShared), 'PPp')}
-                    </div>
-                  )}
+              <ActionGrid>
+                <ActionCard>
+                  <ActionCardHeader>
+                    <ActionCardTitle>📤 Share to Slack</ActionCardTitle>
+                    <ActionStatus>
+                      {slackShared ? `✅ Shared ${format(new Date(slackShared), 'PPp')}` : 'Keep your team in the loop via Slack'}
+                    </ActionStatus>
+                  </ActionCardHeader>
+                  <ActionCardDescription>
+                    Use the team summary to post a digest into your configured Slack webhook. Regenerate the summary first if you need to tweak the content.
+                  </ActionCardDescription>
 
-                  <TranscriptHeader>
-                    <TranscriptTitle>Team Summary</TranscriptTitle>
-                    <div style={{ display: 'flex', gap: '8px' }}>
+                  {teamSummary ? (
+                    <>
+                      <ActionButtonRow>
+                        <Button
+                          onClick={handleGenerateTeamSummary}
+                          disabled={isGeneratingTeamSummary}
+                          style={{
+                            background: '#34c759',
+                            borderColor: '#34c759',
+                            color: 'white'
+                          }}
+                        >
+                          {isGeneratingTeamSummary ? '🔄 Generating...' : '🔄 Regenerate'}
+                        </Button>
+                        <Button
+                          onClick={handleShareToSlack}
+                          disabled={isSharing || !teamSummary}
+                          style={{
+                            background: '#4a154b',
+                            borderColor: '#4a154b',
+                            color: 'white'
+                          }}
+                        >
+                          {isSharing ? '📤 Sharing...' : (slackShared ? '📤 Share Again' : '📤 Share to Slack')}
+                        </Button>
+                      </ActionButtonRow>
+
+                      <div style={{ marginTop: '12px' }}>
+                        <MDEditor
+                          key={`team-editor-${meeting.id}`}
+                          value={editedTeamContent || formatTeamSummary(teamSummary)}
+                          onChange={(value) => setEditedTeamContent(value || '')}
+                          height={360}
+                          preview={editorPreviewMode}
+                          hideToolbar={false}
+                          previewOptions={{
+                            style: {
+                              padding: '20px',
+                              margin: 0,
+                              width: '100%',
+                              maxWidth: 'none',
+                              boxSizing: 'border-box'
+                            },
+                            wrapperElement: {
+                              style: {
+                                margin: 0,
+                                padding: 0,
+                                width: '100%',
+                                maxWidth: 'none'
+                              }
+                            }
+                          }}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{
+                      padding: '16px',
+                      borderRadius: '8px',
+                      background: '#f9fafb',
+                      border: '1px dashed #d1d5db'
+                    }}>
+                      <div style={{ fontSize: '14px', fontWeight: 500, marginBottom: '8px' }}>
+                        {isGeneratingTeamSummary ? 'Generating team summary...' : 'No team summary available yet'}
+                      </div>
+                      <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '12px' }}>
+                        Create a shareable summary from your notes and transcript before sending to Slack.
+                      </div>
                       <Button
                         onClick={handleGenerateTeamSummary}
-                        disabled={isGeneratingTeamSummary}
+                        disabled={isGeneratingTeamSummary || (!meeting.notes && !meeting.transcript)}
                         style={{
                           background: '#34c759',
                           borderColor: '#34c759',
                           color: 'white'
                         }}
                       >
-                        {isGeneratingTeamSummary ? '🔄 Generating...' : '🔄 Regenerate'}
+                        {isGeneratingTeamSummary ? '🔄 Generating...' : '✨ Generate Team Summary'}
                       </Button>
-                      <Button
-                        onClick={handleShareToSlack}
-                        disabled={isSharing || !teamSummary}
-                        style={{
-                          background: '#4a154b',
-                          borderColor: '#4a154b',
-                          color: 'white'
-                        }}
-                      >
-                        {isSharing ? '📤 Sharing...' : (slackShared ? '📤 Share Again' : '📤 Share to Slack')}
-                      </Button>
+                      {!meeting.notes && !meeting.transcript && (
+                        <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '8px' }}>
+                          Add notes or a transcript first so the summary has context.
+                        </div>
+                      )}
                     </div>
-                  </TranscriptHeader>
+                  )}
+                </ActionCard>
 
-                  <div style={{ marginTop: '20px' }}>
-                    <MDEditor
-                      key={`team-editor-${meeting.id}`}
-                      value={editedTeamContent || formatTeamSummary(teamSummary)}
-                      onChange={(value) => setEditedTeamContent(value || '')}
-                      height={400}
-                      preview={editorPreviewMode}
-                      hideToolbar={false}
-                      previewOptions={{
-                        style: {
-                          padding: '20px',
-                          margin: 0,
-                          width: '100%',
-                          maxWidth: 'none',
-                          boxSizing: 'border-box'
-                        },
-                        wrapperElement: {
-                          style: {
-                            margin: 0,
-                            padding: 0,
-                            width: '100%',
-                            maxWidth: 'none'
-                          }
-                        }
-                      }}
-                    />
-                  </div>
-                </div>
-              ) : (
-                <EmptyState>
-                  <span className="icon">🎯</span>
-                  <h3>{isGeneratingTeamSummary ? 'Generating team summary...' : 'No team summary generated yet'}</h3>
-                  <p>Generate a team-appropriate summary from your meeting notes and transcript</p>
-                  {!isGeneratingTeamSummary && (
+                <ActionCard>
+                  <ActionCardHeader>
+                    <ActionCardTitle>🗂️ Share to Notion</ActionCardTitle>
+                    <ActionStatus>
+                      {notionShared ? `✅ Shared ${format(new Date(notionShared), 'PPp')}` : 'Publish to your Notion workspace'}
+                    </ActionStatus>
+                  </ActionCardHeader>
+                  <ActionCardDescription>
+                    Push either the full meeting package or just the AI-generated insights into your configured Notion database. Configure your integration token and database ID in Settings.
+                  </ActionCardDescription>
+
+                  <ActionButtonRow>
                     <Button
-                      onClick={handleGenerateTeamSummary}
-                      disabled={isGeneratingTeamSummary || (!meeting.notes && !meeting.transcript)}
+                      onClick={() => handleShareToNotion('full')}
+                      disabled={!!sharingToNotionMode}
                       style={{
-                        marginTop: '20px',
-                        background: '#34c759',
-                        borderColor: '#34c759',
+                        background: '#2563eb',
+                        borderColor: '#2563eb',
                         color: 'white'
                       }}
                     >
-                      {isGeneratingTeamSummary ? '🔄 Generating...' : '✨ Generate Team Summary'}
+                      {sharingToNotionMode === 'full' ? '📤 Sharing...' : '📤 Notes & Transcript'}
                     </Button>
+                    <Button
+                      onClick={() => handleShareToNotion('insights')}
+                      disabled={!!sharingToNotionMode || !insights}
+                      style={{
+                        background: '#7c3aed',
+                        borderColor: '#7c3aed',
+                        color: 'white'
+                      }}
+                    >
+                      {sharingToNotionMode === 'insights' ? '📤 Sharing...' : '✨ Insights Only'}
+                    </Button>
+                  </ActionButtonRow>
+
+                  <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                    {notionPageId ? `Last Notion page ID: ${notionPageId}` : 'A new page will be created in your database.'}
+                  </div>
+
+                  {!insights && (
+                    <div style={{ fontSize: '12px', color: '#9ca3af' }}>
+                      Generate insights to enable the insights-only export option.
+                    </div>
                   )}
-                  {!meeting.notes && !meeting.transcript && (
-                    <p style={{ marginTop: '10px', fontSize: '12px', color: '#999' }}>
-                      Add notes or a transcript first to generate team summary
-                    </p>
+
+                  {sharingToNotionMode && (
+                    <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                      Working...
+                    </div>
                   )}
-                </EmptyState>
-              )}
+                </ActionCard>
+              </ActionGrid>
             </EditorContainer>
           </TabPanel>
 

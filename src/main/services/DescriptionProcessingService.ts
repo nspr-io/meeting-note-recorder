@@ -48,8 +48,8 @@ Return JSON with:
 
 Ignore: email signatures, cancellation links, scheduling system metadata, boilerplate text like "is inviting you to a scheduled meeting"`;
 
-    const response = await this.anthropic.messages.create({
-      model: 'claude-3-haiku-20240307',
+      const response = await this.anthropic.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
       max_tokens: 500,
       temperature: 0,
       system: systemPrompt,
