@@ -1442,18 +1442,31 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     if (isGeneratingInsights) return;
 
     try {
+      console.log('[Insights][Renderer] Starting insight generation', {
+        meetingId: meeting.id,
+        hasNotes: !!meeting.notes,
+        hasTranscript: !!meeting.transcript
+      });
       setIsGeneratingInsights(true);
 
       // Call the main process to generate insights
       const result = await (window as any).electronAPI.generateInsights(meeting.id);
 
+      console.log('[Insights][Renderer] IPC response', {
+        success: result?.success,
+        error: result?.error,
+        hasInsights: !!result?.insights
+      });
+
       if (result.success && result.insights) {
         // Parse and set the insights
+        console.log('[Insights][Renderer] Parsing insights payload');
         const parsedInsights = JSON.parse(result.insights);
         setInsights(parsedInsights);
 
         // Refresh meeting data to get updated insights
         if (onRefresh) {
+          console.log('[Insights][Renderer] Invoking onRefresh after success');
           await onRefresh();
         }
         onShowToast?.('Insights generated successfully', 'success');
@@ -1465,6 +1478,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       console.error('Error generating insights:', error);
       onShowToast?.('An error occurred while generating insights.', 'error');
     } finally {
+      console.log('[Insights][Renderer] Finished insight generation flow');
       setIsGeneratingInsights(false);
     }
   };

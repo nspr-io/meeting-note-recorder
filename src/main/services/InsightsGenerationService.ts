@@ -51,10 +51,21 @@ export class InsightsGenerationService extends BaseAnthropicService {
       const systemPrompt = await this.getSystemPrompt(meeting, userProfile);
       const prompt = this.buildPrompt(meeting, userProfile);
 
+       logger.info('[Insights][Service] Requesting Anthropic insights', {
+        meetingId: meeting.id,
+        notesLength: meeting.notes?.length || 0,
+        transcriptLength: meeting.transcript?.length || 0
+      });
+
       const rawJson = await this.requestWithRetries<MeetingInsights>({
         systemPrompt,
         prompt,
         context: 'insights'
+      });
+
+      logger.info('[Insights][Service] Anthropic returned response', {
+        meetingId: meeting.id,
+        rawLength: rawJson?.length || 0
       });
 
       const parsed = JSON.parse(rawJson) as MeetingInsights;
@@ -63,7 +74,10 @@ export class InsightsGenerationService extends BaseAnthropicService {
 
       return JSON.stringify(parsed);
     } catch (error) {
-      logger.error('Failed to generate insights:', error);
+      logger.error('[Insights][Service] Failed to generate insights', {
+        meetingId: meeting.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
       this.emit('insights-failed', { meetingId: meeting.id, error });
       throw error;
     }
@@ -582,6 +596,12 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
       attempt += 1;
 
       try {
+        logger.info('[Insights][Anthropic] Sending request attempt', {
+          attempt,
+          context,
+          temperature: attempt === 1 ? 0.3 : 0.2
+        });
+
         const response = await this.anthropic.messages.create({
           model: 'claude-sonnet-4-5-20250929',
           max_tokens: 4096,
@@ -597,6 +617,11 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
 
           try {
             JSON.parse(normalized); // Validate JSON
+            logger.info('[Insights][Anthropic] Received valid JSON', {
+              attempt,
+              context,
+              length: normalized.length
+            });
             return normalized;
           } catch (parseError) {
             lastError = parseError;

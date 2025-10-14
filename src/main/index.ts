@@ -451,6 +451,7 @@ function setupIpcHandlers() {
 
   ipcMain.handle(IpcChannels.GENERATE_INSIGHTS, async (_, meetingId: string) => {
     try {
+      logger.info('[Insights][IPC] Generate insights request received', { meetingId });
       // Check if recording service is available
       if (!recordingService) {
         return { success: false, error: 'Recording service not initialized' };
@@ -459,18 +460,26 @@ function setupIpcHandlers() {
       // Get the meeting
       const meeting = await storageService.getMeeting(meetingId);
       if (!meeting) {
+        logger.warn('[Insights][IPC] Meeting not found', { meetingId });
         return { success: false, error: 'Meeting not found' };
       }
 
       // Check if insights service is available
       const insightsService = recordingService.getInsightsService();
       if (!insightsService || !insightsService.isAvailable()) {
+        logger.warn('[Insights][IPC] Insights service unavailable');
         return { success: false, error: 'Insights generation service not available. Please check your Anthropic API key in settings.' };
       }
 
       try {
         // Get user profile to personalize insights
         const userProfile = settingsService.getProfile();
+        logger.info('[Insights][IPC] Invoking insights service', {
+          meetingId,
+          hasProfile: !!userProfile,
+          hasTranscript: !!meeting.transcript,
+          notesLength: meeting.notes?.length || 0
+        });
 
         // Generate insights with profile context
         const insights = await insightsService.generateInsights(meeting, userProfile);
@@ -478,12 +487,24 @@ function setupIpcHandlers() {
         // Update the meeting with insights
         await storageService.updateMeeting(meetingId, { insights });
 
+        logger.info('[Insights][IPC] Insights generated successfully', {
+          meetingId,
+          insightsLength: insights?.length || 0
+        });
+
         return { success: true, insights };
       } catch (error) {
+        logger.error('[Insights][IPC] Insights service threw error', {
+          meetingId,
+          error: error instanceof Error ? error.message : String(error)
+        });
         throw error;
       }
     } catch (error: any) {
-      logger.error('Failed to generate insights:', error);
+      logger.error('[Insights][IPC] Failed to generate insights', {
+        meetingId,
+        error: error?.message || error
+      });
       return { success: false, error: error.message || 'Failed to generate insights' };
     }
   });
