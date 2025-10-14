@@ -206,6 +206,11 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
       throw new Error('Notion integration is not configured');
     }
 
+    logger.info('Preparing Notion share payload', {
+      meetingId: meeting.id,
+      mode
+    });
+
     const notionApiUrl = 'https://api.notion.com/v1/pages';
 
     const properties: Record<string, any> = {
@@ -225,12 +230,48 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
 
     const meetingDate = meeting.date ? new Date(meeting.date) : null;
 
+    let datePropertyName: string | null = null;
     if (meetingDate && !Number.isNaN(meetingDate.getTime())) {
-      properties['Meeting Date'] = {
-        date: {
-          start: meetingDate.toISOString()
+      try {
+        const dbResponse = await fetch(`https://api.notion.com/v1/databases/${notionDatabaseId}`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${notionToken}`,
+            'Content-Type': 'application/json',
+            'Notion-Version': '2022-06-28'
+          }
+        });
+
+        if (dbResponse.ok) {
+          const dbData = await dbResponse.json();
+          const entry = Object.entries(dbData?.properties || {}).find(([, value]) => (value as any)?.type === 'date');
+          if (entry) {
+            datePropertyName = entry[0];
+          } else {
+            logger.warn('No date property available in Notion database; adding date to page body instead.', {
+              databaseId: notionDatabaseId
+            });
+          }
+        } else {
+          logger.warn('Failed to fetch Notion database schema; proceeding without date property.', {
+            databaseId: notionDatabaseId,
+            status: dbResponse.status
+          });
         }
-      };
+      } catch (schemaError) {
+        logger.warn('Error while inspecting Notion database schema.', {
+          databaseId: notionDatabaseId,
+          error: schemaError instanceof Error ? schemaError.message : schemaError
+        });
+      }
+
+      if (datePropertyName) {
+        properties[datePropertyName] = {
+          date: {
+            start: meetingDate.toISOString()
+          }
+        };
+      }
     }
 
     if (mode === 'full') {
@@ -269,9 +310,12 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.error('Notion API error:', {
+      logger.error('Notion API error', {
         status: response.status,
-        error: errorText
+        error: errorText,
+        mode,
+        meetingId: meeting.id,
+        properties: Object.keys(properties)
       });
       throw new Error(`Notion API error: ${response.status} ${errorText}`);
     }
@@ -282,6 +326,7 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
 
   private buildFullModeBlocks(meeting: Meeting): any[] {
     const blocks: any[] = [];
+    const meetingDate = meeting.date ? new Date(meeting.date) : null;
 
     blocks.push({
       type: 'heading_2',
@@ -299,10 +344,20 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
       ? meeting.attendees.map(a => (typeof a === 'string' ? a : a.name)).join(', ')
       : 'Unknown';
 
-    const metadataLines = [
+    const metadataLines: string[] = [];
+
+    if (meeting.date) {
+      if (meetingDate && !Number.isNaN(meetingDate.getTime())) {
+        metadataLines.push(`Date: ${meetingDate.toISOString()}`);
+      } else if (typeof meeting.date === 'string') {
+        metadataLines.push(`Date: ${meeting.date}`);
+      }
+    }
+
+    metadataLines.push(
       `Status: ${meeting.status}`,
       `Attendees: ${attendees}`
-    ];
+    );
 
     blocks.push(...this.buildParagraphBlocks(metadataLines.join('\n')));
 

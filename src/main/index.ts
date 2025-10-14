@@ -559,6 +559,11 @@ function setupIpcHandlers() {
 
   ipcMain.handle(IpcChannels.SHARE_TO_NOTION, async (_, { meetingId, mode }: { meetingId: string; mode: NotionShareMode }) => {
     try {
+      logger.info('Share to Notion request received', {
+        meetingId,
+        mode
+      });
+
       const settings = settingsService.getSettings();
       if (!settings.notionIntegrationToken || !settings.notionDatabaseId) {
         return { success: false, error: 'Notion integration is not configured. Please add your integration token and database ID in settings.' };
@@ -593,11 +598,21 @@ function setupIpcHandlers() {
 
         return { success: true, pageId: result.pageId };
       } catch (error: any) {
-        logger.error('Failed to share to Notion:', error);
+        logger.error('Failed to share to Notion', {
+          meetingId,
+          mode,
+          error: error?.message || error,
+          stack: error?.stack
+        });
         return { success: false, error: error.message || 'Failed to share to Notion' };
       }
     } catch (error: any) {
-      logger.error('Unexpected error sharing to Notion:', error);
+      logger.error('Unexpected error sharing to Notion', {
+        meetingId,
+        mode,
+        error: error?.message || error,
+        stack: error?.stack
+      });
       return { success: false, error: error.message || 'Failed to share to Notion' };
     }
   });
