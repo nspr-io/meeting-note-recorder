@@ -14,7 +14,8 @@ import { getLogger } from './services/LoggingService';
 import { SearchService } from './services/SearchService';
 import { PromptService } from './services/PromptService';
 import { RealtimeCoachingService } from './services/RealtimeCoachingService';
-import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode } from '../shared/types';
+import { NotionTodoService } from './services/NotionTodoService';
+import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode, ActionItemSyncStatus } from '../shared/types';
 import { generateNotificationHTML, NotificationType } from './utils/notificationTemplate';
 
 const logger = getLogger();
@@ -65,8 +66,10 @@ let permissionService: PermissionService;
 let searchService: SearchService;
 let promptService: PromptService | null = null;
 let coachingService: RealtimeCoachingService | null = null;
+let notionTodoService: NotionTodoService;
 let currentRecordingMeetingId: string | null = null;
 let autoRecordNextMeeting = false;
+const autoInsightsInFlight = new Set<string>();
 
 // UI Notification Helper Functions
 function notifyUI(channel: IpcChannels, data?: any) {
@@ -409,7 +412,7 @@ function setupIpcHandlers() {
 
       try {
         // Correct the transcript
-        const correctedTranscript = await correctionService.correctTranscript(meeting.transcript, meetingId);
+        const correctedTranscript = await correctionService.correctTranscript(meeting);
 
         // Log if transcript actually changed
         const originalSample = meeting.transcript.substring(0, 200);
@@ -638,6 +641,345 @@ function setupIpcHandlers() {
     }
   });
 
+  const sendNotionActionItems = async (
+    meetingId: string,
+    target?: { insightIndex?: number; task?: string; owner?: string; due?: string }
+  ) => {
+    const settings = settingsService.getSettings();
+    if (!settings.notionTodoDatabaseId) {
+      throw new Error('Notion to-do integration is not configured. Add the to-do database ID in settings.');
+    }
+
+    const notionTokenForTodos = settings.notionTodoIntegrationToken || settings.notionIntegrationToken;
+    if (!notionTokenForTodos) {
+      throw new Error('Notion to-do integration is not configured. Provide either a dedicated to-do integration token or reuse the primary Notion token in settings.');
+    }
+
+    if (!notionTodoService) {
+      throw new Error('Notion to-do service is not available');
+    }
+
+    const meeting = await storageService.getMeeting(meetingId);
+    if (!meeting) {
+      throw new Error('Meeting not found');
+    }
+
+    if (!meeting.insights) {
+      throw new Error('Generate insights before sending action items to Notion.');
+    }
+
+    let insights: any;
+    try {
+      insights = JSON.parse(meeting.insights);
+    } catch (error) {
+      logger.error('Failed to parse meeting insights for Notion action items', {
+        meetingId,
+        error: error instanceof Error ? error.message : error
+      });
+      throw new Error('Stored insights are malformed. Regenerate insights and try again.');
+    }
+
+    const actionItems = Array.isArray(insights?.actionItems) ? insights.actionItems : [];
+    if (actionItems.length === 0) {
+      throw new Error('No action items available in insights to send to Notion.');
+    }
+
+    const syncStatus = Array.isArray(meeting.actionItemSyncStatus) ? meeting.actionItemSyncStatus : [];
+
+    const normalizeString = (value: unknown): string => {
+      if (typeof value !== 'string') {
+        return '';
+      }
+
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return '';
+      }
+
+      const lower = trimmed.toLowerCase();
+      if (lower === 'null' || lower === 'undefined') {
+        return '';
+      }
+
+      return trimmed;
+    };
+
+    const normalizeIndex = (value: unknown): number | null => {
+      if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+        return value;
+      }
+
+      if (typeof value === 'string') {
+        const parsed = Number.parseInt(value.trim(), 10);
+        if (!Number.isNaN(parsed) && parsed >= 0) {
+          return parsed;
+        }
+      }
+
+      return null;
+    };
+
+    const getItemDetails = (
+      source: any,
+      fallback?: { task?: string; owner?: string; due?: string }
+    ): { task: string; owner?: string; due?: string } => {
+      const sourceTask = typeof source === 'string'
+        ? source
+        : typeof source?.task === 'string'
+          ? source.task
+          : '';
+      const sourceOwner = typeof source?.owner === 'string' ? source.owner : '';
+      const sourceDue = typeof source?.due === 'string' ? source.due : '';
+
+      const fallbackTask = typeof fallback?.task === 'string' ? fallback.task : '';
+      const fallbackOwner = typeof fallback?.owner === 'string' ? fallback.owner : '';
+      const fallbackDue = typeof fallback?.due === 'string' ? fallback.due : '';
+
+      const task = normalizeString(sourceTask) || normalizeString(fallbackTask) || 'Action Item';
+      const owner = normalizeString(sourceOwner) || normalizeString(fallbackOwner);
+      const due = normalizeString(sourceDue) || normalizeString(fallbackDue);
+
+      return {
+        task,
+        owner: owner || undefined,
+        due: due || undefined
+      };
+    };
+
+    const findMatchingIndex = (details: { task: string; owner?: string; due?: string }): number => {
+      return actionItems.findIndex((candidate: any) => {
+        const normalized = getItemDetails(candidate);
+        return normalized.task === details.task &&
+          (normalized.owner || '') === (details.owner || '') &&
+          (normalized.due || '') === (details.due || '');
+      });
+    };
+
+    const buildPreparedItem = (
+      details: { task: string; owner?: string; due?: string },
+      matchIndex?: number
+    ) => {
+      const ownerKey = details.owner || '';
+      const dueKey = details.due || '';
+      const existing = syncStatus.find(status => {
+        if (typeof matchIndex === 'number' && typeof status.insightIndex === 'number' && status.insightIndex === matchIndex) {
+          return true;
+        }
+
+        return normalizeString(status.task) === details.task &&
+          normalizeString(status.owner) === ownerKey &&
+          normalizeString(status.due) === dueKey;
+      });
+
+      return {
+        payload: {
+          task: details.task,
+          owner: details.owner,
+          due: details.due,
+          alreadySent: existing?.status === 'sent',
+          insightIndex: typeof matchIndex === 'number' ? matchIndex : undefined
+        },
+        detail: details,
+        matchIndex: typeof matchIndex === 'number' ? matchIndex : undefined
+      };
+    };
+
+    const preparedItems: Array<{
+      payload: {
+        task: string;
+        owner?: string;
+        due?: string;
+        alreadySent?: boolean;
+        insightIndex?: number;
+      };
+      detail: {
+        task: string;
+        owner?: string;
+        due?: string;
+      };
+      matchIndex?: number;
+    }> = [];
+
+    if (target) {
+      const targetDetails = getItemDetails(target);
+      let matchIndex: number | undefined;
+
+      const normalizedIndex = normalizeIndex(target.insightIndex);
+      if (normalizedIndex !== null && actionItems[normalizedIndex]) {
+        matchIndex = normalizedIndex;
+      } else {
+        const found = findMatchingIndex(targetDetails);
+        if (found >= 0) {
+          matchIndex = found;
+        }
+      }
+
+      const details = typeof matchIndex === 'number' && actionItems[matchIndex]
+        ? getItemDetails(actionItems[matchIndex], targetDetails)
+        : targetDetails;
+
+      preparedItems.push(buildPreparedItem(details, matchIndex));
+    } else {
+      actionItems.forEach((item: any, index: number) => {
+        const details = getItemDetails(item);
+        preparedItems.push(buildPreparedItem(details, index));
+      });
+    }
+
+    if (preparedItems.length === 0) {
+      throw new Error('No action items available in insights to send to Notion.');
+    }
+
+    const results = await notionTodoService.createActionItems({
+      notionToken: notionTokenForTodos,
+      databaseId: settings.notionTodoDatabaseId,
+      items: preparedItems.map(item => item.payload)
+    });
+
+    if (results.length !== preparedItems.length) {
+      logger.warn('Mismatch between requested and returned Notion action items', {
+        requested: preparedItems.length,
+        received: results.length
+      });
+    }
+
+    const updatedStatus: ActionItemSyncStatus[] = Array.isArray(syncStatus) ? [...syncStatus] : [];
+
+    const upsertStatus = (status: ActionItemSyncStatus, matchIndex?: number) => {
+      const existingIndex = updatedStatus.findIndex(entry => {
+        if (typeof matchIndex === 'number') {
+          if (typeof entry.insightIndex === 'number') {
+            return entry.insightIndex === matchIndex;
+          }
+        }
+        return entry.task === status.task &&
+          (entry.owner || '') === (status.owner || '') &&
+          (entry.due || '') === (status.due || '');
+      });
+
+      if (existingIndex >= 0) {
+        updatedStatus[existingIndex] = { ...updatedStatus[existingIndex], ...status };
+      } else {
+        updatedStatus.push(status);
+      }
+    };
+
+    preparedItems.forEach((prepared, idx) => {
+      const result = results[idx] || {
+        task: prepared.detail.task,
+        success: false,
+        error: 'Unknown result from Notion'
+      };
+
+      const matchedIndex = typeof result.insightIndex === 'number'
+        ? result.insightIndex
+        : (typeof prepared.matchIndex === 'number' ? prepared.matchIndex : findMatchingIndex(prepared.detail));
+
+      const normalizedIndex = typeof matchedIndex === 'number' && matchedIndex >= 0
+        ? matchedIndex
+        : undefined;
+
+      const originalDetails = normalizedIndex !== undefined && actionItems[normalizedIndex]
+        ? getItemDetails(actionItems[normalizedIndex], prepared.detail)
+        : prepared.detail;
+
+      const ownerKey = originalDetails.owner || '';
+      const dueKey = originalDetails.due || '';
+
+      const previous = updatedStatus.find(status =>
+        (normalizedIndex !== undefined && typeof status.insightIndex === 'number' && status.insightIndex === normalizedIndex) ||
+        (normalizeString(status.task) === originalDetails.task &&
+          normalizeString(status.owner) === ownerKey &&
+          normalizeString(status.due) === dueKey)
+      );
+
+      if (result.skipped && previous && previous.status === 'sent') {
+        if (previous.insightIndex === undefined && normalizedIndex !== undefined) {
+          upsertStatus({ ...previous, insightIndex: normalizedIndex }, normalizedIndex);
+        }
+        return;
+      }
+
+      if (result.success) {
+        const sentAt = !result.skipped ? new Date().toISOString() : previous?.sentAt;
+        upsertStatus({
+          task: originalDetails.task,
+          owner: originalDetails.owner,
+          due: originalDetails.due,
+          status: 'sent',
+          notionPageId: result.notionPageId || previous?.notionPageId,
+          notionPageUrl: result.notionPageUrl || previous?.notionPageUrl,
+          sentAt: sentAt || previous?.sentAt,
+          insightIndex: normalizedIndex !== undefined ? normalizedIndex : previous?.insightIndex
+        }, normalizedIndex);
+      } else {
+        upsertStatus({
+          task: originalDetails.task,
+          owner: originalDetails.owner,
+          due: originalDetails.due,
+          status: 'failed',
+          error: result.error || 'Unknown error',
+          insightIndex: normalizedIndex !== undefined ? normalizedIndex : previous?.insightIndex
+        }, normalizedIndex);
+      }
+    });
+
+    const sortedStatus = [...updatedStatus].sort((a, b) => {
+      const aIndex = typeof a.insightIndex === 'number' ? a.insightIndex : Number.MAX_SAFE_INTEGER;
+      const bIndex = typeof b.insightIndex === 'number' ? b.insightIndex : Number.MAX_SAFE_INTEGER;
+      if (aIndex !== bIndex) {
+        return aIndex - bIndex;
+      }
+      return (a.task || '').localeCompare(b.task || '');
+    });
+
+    await storageService.updateMeeting(meetingId, {
+      actionItemSyncStatus: sortedStatus
+    });
+
+    return sortedStatus;
+  };
+
+  ipcMain.handle(IpcChannels.SEND_NOTION_ACTION_ITEMS, async (_event, meetingId: string) => {
+    try {
+      const results = await sendNotionActionItems(meetingId);
+      return {
+        success: true,
+        results
+      };
+    } catch (error) {
+      logger.error('Failed to send action items to Notion', {
+        error: error instanceof Error ? error.message : error
+      });
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to send action items to Notion'
+      };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.SEND_SINGLE_NOTION_ACTION_ITEM, async (_event, payload: { meetingId: string; item: { insightIndex?: number; task?: string; owner?: string; due?: string } }) => {
+    try {
+      if (!payload?.meetingId || !payload?.item) {
+        throw new Error('Invalid request to send Notion action item.');
+      }
+
+      const results = await sendNotionActionItems(payload.meetingId, payload.item);
+      return {
+        success: true,
+        results
+      };
+    } catch (error) {
+      logger.error('Failed to send single action item to Notion', {
+        error: error instanceof Error ? error.message : error
+      });
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to send action item to Notion'
+      };
+    }
+  });
+
   // Recording
   ipcMain.handle(IpcChannels.START_RECORDING, async (_, meetingId: string) => {
     logger.info('[JOURNEY-IPC-1] START_RECORDING IPC handler called', {
@@ -712,6 +1054,10 @@ function setupIpcHandlers() {
           status: 'completed',
           endTime: new Date()
         });
+      }
+
+      if (meetingId) {
+        void autoGenerateInsightsForMeeting(meetingId);
       }
 
       if (mainWindow) {
@@ -1709,6 +2055,57 @@ function setupMeetingDetectionHandlers() {
   });
 }
 
+async function autoGenerateInsightsForMeeting(meetingId: string): Promise<void> {
+  if (!recordingService) {
+    return;
+  }
+
+  const insightsService = recordingService.getInsightsService();
+  if (!insightsService || !insightsService.isAvailable()) {
+    return;
+  }
+
+  if (autoInsightsInFlight.has(meetingId)) {
+    return;
+  }
+
+  autoInsightsInFlight.add(meetingId);
+
+  try {
+    const meeting = await storageService.getMeeting(meetingId);
+    if (!meeting) {
+      return;
+    }
+
+    const insightsAlreadyPresent = typeof meeting.insights === 'string' && meeting.insights.trim().length > 0;
+    if (insightsAlreadyPresent) {
+      return;
+    }
+
+    const hasContent = (meeting.transcript && meeting.transcript.trim().length > 0) ||
+      (meeting.notes && meeting.notes.trim().length > 0);
+    if (!hasContent) {
+      logger.info('[AUTO-INSIGHTS] Skipping generation due to missing content', { meetingId });
+      return;
+    }
+
+    logger.info('[AUTO-INSIGHTS] Generating insights after recording completion', { meetingId });
+
+    const userProfile = settingsService.getProfile();
+    const insights = await insightsService.generateInsights(meeting, userProfile);
+    await storageService.updateMeeting(meetingId, { insights });
+
+    notifyMeetingsUpdated();
+  } catch (error) {
+    logger.warn('[AUTO-INSIGHTS] Failed to generate insights automatically', {
+      meetingId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  } finally {
+    autoInsightsInFlight.delete(meetingId);
+  }
+}
+
 
 // Consolidated helper function for starting recording with optional browser launch
 async function startRecording(meeting: Meeting, options: { logPrefix: string; openBrowser?: boolean }): Promise<void> {
@@ -1874,6 +2271,7 @@ app.whenReady().then(async () => {
   searchService.updateIndex(meetings);
 
   calendarService = new CalendarService();
+  notionTodoService = new NotionTodoService();
 
   logger.info('[MAIN-INIT] Creating RecordingService with PromptService:', { hasPromptService: promptService !== null });
   recordingService = new RecordingService(storageService, promptService);
@@ -1935,6 +2333,7 @@ app.whenReady().then(async () => {
     if (meetingId) {
       // Update meeting status to completed
       await storageService.updateMeeting(meetingId, { status: 'completed' });
+      void autoGenerateInsightsForMeeting(meetingId);
 
       if (mainWindow) {
         mainWindow.webContents.send(IpcChannels.RECORDING_STOPPED);

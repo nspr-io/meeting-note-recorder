@@ -20,7 +20,9 @@ export class SettingsService {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
     slackWebhookUrl: '',
     notionIntegrationToken: process.env.NOTION_INTEGRATION_TOKEN || '',
-    notionDatabaseId: process.env.NOTION_DATABASE_ID || ''
+    notionDatabaseId: process.env.NOTION_DATABASE_ID || '',
+    notionTodoIntegrationToken: process.env.NOTION_TODO_INTEGRATION_TOKEN || '',
+    notionTodoDatabaseId: process.env.NOTION_TODO_DATABASE_ID || ''
   };
 
   constructor() {
@@ -71,7 +73,9 @@ export class SettingsService {
       anthropicApiKey: this.getAnthropicApiKey(),
       slackWebhookUrl: this.store.get('slackWebhookUrl') || '',
       notionIntegrationToken: this.getNotionIntegrationToken(),
-      notionDatabaseId: this.getNotionDatabaseId()
+      notionDatabaseId: this.getNotionDatabaseId(),
+      notionTodoIntegrationToken: this.getNotionTodoIntegrationToken(),
+      notionTodoDatabaseId: this.getNotionTodoDatabaseId()
     } : this.store.store;
     // Include the API keys from environment or store
     return {
@@ -80,7 +84,9 @@ export class SettingsService {
       anthropicApiKey: this.getAnthropicApiKey(),
       slackWebhookUrl: this.store.get ? this.store.get('slackWebhookUrl') || '' : this.store.store?.slackWebhookUrl || '',
       notionIntegrationToken: this.getNotionIntegrationToken(),
-      notionDatabaseId: this.getNotionDatabaseId()
+      notionDatabaseId: this.getNotionDatabaseId(),
+      notionTodoIntegrationToken: this.getNotionTodoIntegrationToken(),
+      notionTodoDatabaseId: this.getNotionTodoDatabaseId()
     };
   }
 
@@ -100,9 +106,23 @@ export class SettingsService {
     if (updates.notionDatabaseId !== undefined) {
       this.setNotionDatabaseId(updates.notionDatabaseId);
     }
+    if (updates.notionTodoIntegrationToken !== undefined) {
+      this.setNotionTodoIntegrationToken(updates.notionTodoIntegrationToken);
+    }
+    if (updates.notionTodoDatabaseId !== undefined) {
+      this.setNotionTodoDatabaseId(updates.notionTodoDatabaseId);
+    }
 
     // Don't store API keys in the main settings object
-    const { recallApiKey, anthropicApiKey, notionIntegrationToken, notionDatabaseId, ...settingsToStore } = updates;
+    const {
+      recallApiKey,
+      anthropicApiKey,
+      notionIntegrationToken,
+      notionDatabaseId,
+      notionTodoIntegrationToken,
+      notionTodoDatabaseId,
+      ...settingsToStore
+    } = updates;
     const newSettings = { ...currentSettings, ...settingsToStore };
     
     // If storage path changed, create new directory
@@ -178,6 +198,54 @@ export class SettingsService {
       this.store.delete('notionDatabaseId');
     } else if (this.store.store) {
       delete this.store.store.notionDatabaseId;
+    }
+  }
+
+  getNotionTodoDatabaseId(): string | undefined {
+    const envId = process.env.NOTION_TODO_DATABASE_ID;
+    if (envId) {
+      return envId;
+    }
+    return this.store.get ? this.store.get('notionTodoDatabaseId') : this.store.store?.notionTodoDatabaseId;
+  }
+
+  setNotionTodoDatabaseId(databaseId: string): void {
+    if (this.store.set) {
+      this.store.set('notionTodoDatabaseId', databaseId);
+    } else {
+      this.store.store = { ...this.store.store, notionTodoDatabaseId: databaseId };
+    }
+  }
+
+  clearNotionTodoDatabaseId(): void {
+    if (this.store.delete) {
+      this.store.delete('notionTodoDatabaseId');
+    } else if (this.store.store) {
+      delete this.store.store.notionTodoDatabaseId;
+    }
+  }
+
+  getNotionTodoIntegrationToken(): string | undefined {
+    const envToken = process.env.NOTION_TODO_INTEGRATION_TOKEN;
+    if (envToken) {
+      return envToken;
+    }
+    return this.store.get ? this.store.get('notionTodoIntegrationToken') : this.store.store?.notionTodoIntegrationToken;
+  }
+
+  setNotionTodoIntegrationToken(token: string): void {
+    if (this.store.set) {
+      this.store.set('notionTodoIntegrationToken', token);
+    } else {
+      this.store.store = { ...this.store.store, notionTodoIntegrationToken: token };
+    }
+  }
+
+  clearNotionTodoIntegrationToken(): void {
+    if (this.store.delete) {
+      this.store.delete('notionTodoIntegrationToken');
+    } else if (this.store.store) {
+      delete this.store.store.notionTodoIntegrationToken;
     }
   }
 

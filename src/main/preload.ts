@@ -38,6 +38,10 @@ const api = {
     ipcRenderer.invoke(IpcChannels.SHARE_TO_SLACK, data),
   shareToNotion: (data: { meetingId: string; mode: NotionShareMode }) =>
     ipcRenderer.invoke(IpcChannels.SHARE_TO_NOTION, data),
+  sendNotionActionItems: (meetingId: string) =>
+    ipcRenderer.invoke(IpcChannels.SEND_NOTION_ACTION_ITEMS, meetingId),
+  sendSingleNotionActionItem: (data: { meetingId: string; item: { insightIndex?: number; task?: string; owner?: string; due?: string } }) =>
+    ipcRenderer.invoke(IpcChannels.SEND_SINGLE_NOTION_ACTION_ITEM, data),
 
   // Calendar
   connectCalendar: () => 

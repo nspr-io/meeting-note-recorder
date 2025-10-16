@@ -169,6 +169,8 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
   const [slackWebhookUrl, setSlackWebhookUrl] = useState(settings?.slackWebhookUrl || '');
   const [notionIntegrationToken, setNotionIntegrationToken] = useState(settings?.notionIntegrationToken || '');
   const [notionDatabaseId, setNotionDatabaseId] = useState(settings?.notionDatabaseId || '');
+  const [notionTodoIntegrationToken, setNotionTodoIntegrationToken] = useState(settings?.notionTodoIntegrationToken || '');
+  const [notionTodoDatabaseId, setNotionTodoDatabaseId] = useState(settings?.notionTodoDatabaseId || '');
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info', text: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isConnectingCalendar, setIsConnectingCalendar] = useState(false);
@@ -186,6 +188,8 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
       setSlackWebhookUrl(settings.slackWebhookUrl || '');
       setNotionIntegrationToken(settings.notionIntegrationToken || '');
       setNotionDatabaseId(settings.notionDatabaseId || '');
+      setNotionTodoIntegrationToken(settings.notionTodoIntegrationToken || '');
+      setNotionTodoDatabaseId(settings.notionTodoDatabaseId || '');
     }
 
     // Load permission status
@@ -305,7 +309,9 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
     try {
       await onUpdateSettings({
         notionIntegrationToken,
-        notionDatabaseId
+        notionDatabaseId,
+        notionTodoIntegrationToken,
+        notionTodoDatabaseId
       });
       setStatusMessage({ type: 'success', text: 'Notion settings saved successfully' });
       setTimeout(() => setStatusMessage(null), 3000);
@@ -480,11 +486,11 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
       <Section>
         <SectionTitle>Notion Integration</SectionTitle>
         <div style={{ fontSize: '13px', color: '#86868b', marginBottom: '16px' }}>
-          Connect a Notion database to publish meeting notes or AI insights directly from the Actions tab.
+          Connect Notion databases to publish meeting notes and push AI-generated action items directly from the Actions tab.
         </div>
 
         <FormGroup>
-          <Label>Integration Token</Label>
+          <Label>Primary Integration Token</Label>
           <PasswordInput
             type="password"
             value={notionIntegrationToken}
@@ -492,7 +498,28 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
             placeholder="Enter your Notion integration token"
           />
           <div style={{ fontSize: '11px', color: '#86868b', marginTop: '4px' }}>
-            Create an internal integration at notion.so/my-integrations and share your database with it.
+            Create an internal integration at notion.so/my-integrations and share your meeting notes database with it.
+          </div>
+        </FormGroup>
+
+        <FormGroup>
+          <Label>To-Do Integration Token (optional)</Label>
+          <PasswordInput
+            type="password"
+            value={notionTodoIntegrationToken}
+            onChange={(e) => setNotionTodoIntegrationToken(e.target.value)}
+            placeholder="Leave blank to reuse your primary Notion token"
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+            <SecondaryButton
+              type="button"
+              onClick={() => setNotionTodoIntegrationToken(notionIntegrationToken || '')}
+            >
+              Use primary token
+            </SecondaryButton>
+            <span style={{ fontSize: '11px', color: '#86868b' }}>
+              Provide a dedicated token if your to-do database uses a different integration, or leave this blank to reuse the primary one.
+            </span>
           </div>
         </FormGroup>
 
@@ -505,6 +532,18 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
           />
           <div style={{ fontSize: '11px', color: '#86868b', marginTop: '4px' }}>
             Open your database in a browser, copy the URL, and grab the 32-character identifier after the last slash.
+          </div>
+        </FormGroup>
+
+        <FormGroup>
+          <Label>To-Do Database ID</Label>
+          <Input
+            value={notionTodoDatabaseId}
+            onChange={(e) => setNotionTodoDatabaseId(e.target.value)}
+            placeholder="Paste the to-do database ID"
+          />
+          <div style={{ fontSize: '11px', color: '#86868b', marginTop: '4px' }}>
+            Provide the database where new action items should be created when you push them from meeting insights.
           </div>
         </FormGroup>
 

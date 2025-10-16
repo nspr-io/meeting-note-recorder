@@ -29,6 +29,7 @@ export class RecordingService extends EventEmitter {
   private unknownSpeakerCount = 0;
   private speakerMap: Map<string, string> = new Map();
   private autoSaveInterval: NodeJS.Timeout | null = null;
+  private finalizationTasks = new Map<string, Promise<void>>();
 
   constructor(storageService: StorageService, promptService: PromptService | null) {
     super();
@@ -938,6 +939,7 @@ export class RecordingService extends EventEmitter {
     // Store the meetingId before clearing the state
     const meetingId = this.recordingState.meetingId;
     const startTime = this.recordingState.startTime;
+    const windowId = this.currentWindowId;
 
     logger.info('[RECORDING-STOP] Setting isRecording to false immediately to prevent race conditions', {
       meetingId,
@@ -947,7 +949,8 @@ export class RecordingService extends EventEmitter {
     // Set isRecording to false immediately to prevent concurrent execution
     this.recordingState = {
       ...this.recordingState,
-      isRecording: false
+      isRecording: false,
+      connectionStatus: 'connected'
     };
 
     // Clear auto-save interval
@@ -959,102 +962,38 @@ export class RecordingService extends EventEmitter {
     // Final flush of transcript buffer
     if (meetingId) {
       await this.flushTranscriptBuffer(meetingId);
+      this.storageService.stopAutoSave(meetingId);
     }
 
-    const stopStart = Date.now();
     try {
-      logger.info('[RECORDING-STOP] Beginning stop sequence', {
-        meetingId: meetingId,
-        recordingDuration: startTime ?
-          Date.now() - startTime.getTime() : null
-      });
-
-      if (this.currentWindowId) {
-        // Stop the SDK recording
-        try {
-          const RecallAiSdk = require('@recallai/desktop-sdk').default;
-          logger.info('[RECORDING-STOP] Stopping SDK recording');
-          await RecallAiSdk.stopRecording({ windowId: this.currentWindowId });
-          logger.info('[RECORDING-STOP] Uploading recording');
-          await RecallAiSdk.uploadRecording({ windowId: this.currentWindowId });
-          logger.info('[RECORDING-STOP] Upload complete');
-        } catch (sdkError: any) {
-          logger.warn('[RECORDING-STOP] Failed to stop SDK recording', {
-            error: sdkError.message,
-            windowId: this.currentWindowId
-          });
-        }
-      }
-
       if (meetingId) {
-        this.storageService.stopAutoSave(meetingId);
-
-        // Get the current meeting to access transcript
-        const meeting = await this.storageService.getMeeting(meetingId);
-
-        // Correct transcript if available and correction service is initialized
-        if (meeting && meeting.transcript && this.transcriptCorrectionService.isAvailable()) {
-          logger.info('Starting transcript correction for meeting', { meetingId });
-          try {
-            const correctedTranscript = await this.transcriptCorrectionService.correctTranscript(
-              meeting.transcript,
-              meetingId
-            );
-
-            // Update meeting with corrected transcript
-            await this.storageService.updateMeeting(meetingId, {
-              transcript: correctedTranscript
-            });
-
-            logger.info('Transcript correction completed', { meetingId });
-          } catch (error) {
-            logger.error('Failed to correct transcript', { meetingId, error });
-            // Continue with original transcript if correction fails
-          }
-        }
-
-        // Update meeting status to completed
         await this.storageService.updateMeeting(meetingId, {
           status: 'completed',
           duration: startTime
             ? Math.floor((Date.now() - startTime.getTime()) / 1000 / 60)
             : undefined,
         });
-
-        // Fetch final transcript from Recall AI in background (non-blocking)
-        // This will attempt to replace the real-time transcript with a more accurate version
-        if (meeting && meeting.recallRecordingId && this.recallApiService) {
-          logger.info('[RECORDING-STOP] Starting background final transcript fetch', {
-            meetingId,
-            recordingId: meeting.recallRecordingId
-          });
-          this.fetchFinalTranscriptInBackground(meetingId, meeting.recallRecordingId);
-        }
-
-        // Clear the upload from API service
-        if (this.recallApiService) {
-          this.recallApiService.clearUpload(meetingId);
-        }
       }
-
-      // Finalize the recording state (isRecording already set to false above)
-      this.recordingState = {
-        isRecording: false,
-        connectionStatus: 'connected',
-      };
-
-      // Don't clear the buffer here - let the recording-ended event handler access it first
-      // The buffer will be cleared when starting a new recording
-      this.currentWindowId = null;
-      this.currentUploadToken = null;
-
-      this.emit('recording-stopped');
-      logger.info('Recording stopped successfully', { meetingId });
-      return true;
     } catch (error) {
-      logger.error('Failed to stop recording', { error });
+      logger.error('[RECORDING-STOP] Failed to update meeting status during stop', {
+        meetingId,
+        error
+      });
       throw error;
     }
+
+    this.emit('recording-stopped');
+    logger.info('Recording stopped successfully', { meetingId });
+
+    this.scheduleRecordingFinalization({
+      meetingId: meetingId || undefined,
+      windowId: windowId || undefined
+    });
+
+    this.currentWindowId = null;
+    this.currentUploadToken = null;
+
+    return true;
   }
 
 
@@ -1204,5 +1143,101 @@ export class RecordingService extends EventEmitter {
     }
 
     return lines.join('\n');
+  }
+
+  private scheduleRecordingFinalization(options: { meetingId?: string; windowId?: string }): void {
+    const key = options.meetingId || options.windowId;
+    if (!key) {
+      return;
+    }
+
+    if (this.finalizationTasks.has(key)) {
+      logger.info('[RECORDING-FINALIZE] Finalization already scheduled', { key });
+      return;
+    }
+
+    const task = this.finalizeRecording(options).finally(() => {
+      this.finalizationTasks.delete(key);
+    });
+
+    this.finalizationTasks.set(key, task);
+  }
+
+  private async finalizeRecording({ meetingId, windowId }: { meetingId?: string; windowId?: string }): Promise<void> {
+    const finalizeStart = Date.now();
+    logger.info('[RECORDING-FINALIZE] Starting background finalization', {
+      meetingId,
+      windowId
+    });
+
+    try {
+      if (windowId) {
+        try {
+          const RecallAiSdk = require('@recallai/desktop-sdk').default;
+          logger.info('[RECORDING-FINALIZE] Stopping SDK recording in background', { windowId });
+          await RecallAiSdk.stopRecording({ windowId });
+          logger.info('[RECORDING-FINALIZE] Uploading recording in background', { windowId });
+          await RecallAiSdk.uploadRecording({ windowId });
+          logger.info('[RECORDING-FINALIZE] Upload completed', { windowId });
+        } catch (sdkError: any) {
+          logger.warn('[RECORDING-FINALIZE] SDK finalization failed', {
+            windowId,
+            error: sdkError?.message || sdkError
+          });
+        }
+      }
+
+      if (meetingId) {
+        let meeting;
+        try {
+          meeting = await this.storageService.getMeeting(meetingId);
+        } catch (error) {
+          logger.error('[RECORDING-FINALIZE] Failed to load meeting for finalization', {
+            meetingId,
+            error
+          });
+        }
+
+        if (meeting && meeting.transcript && this.transcriptCorrectionService.isAvailable()) {
+          logger.info('Starting transcript correction for meeting', { meetingId });
+          try {
+            const correctedTranscript = await this.transcriptCorrectionService.correctTranscript(meeting);
+            await this.storageService.updateMeeting(meetingId, {
+              transcript: correctedTranscript
+            });
+            logger.info('Transcript correction completed', { meetingId });
+          } catch (error) {
+            logger.error('Failed to correct transcript', { meetingId, error });
+          }
+        }
+
+        if (meeting && meeting.recallRecordingId && this.recallApiService) {
+          logger.info('[RECORDING-FINALIZE] Starting background final transcript fetch', {
+            meetingId,
+            recordingId: meeting.recallRecordingId
+          });
+          this.fetchFinalTranscriptInBackground(meetingId, meeting.recallRecordingId);
+        }
+
+        if (meetingId && this.recallApiService) {
+          try {
+            this.recallApiService.clearUpload(meetingId);
+          } catch (error) {
+            logger.warn('[RECORDING-FINALIZE] Failed to clear upload', {
+              meetingId,
+              error
+            });
+          }
+        }
+      }
+    } catch (error) {
+      logger.error('[RECORDING-FINALIZE] Unexpected error', { error });
+    } finally {
+      logger.info('[RECORDING-FINALIZE] Background finalization finished', {
+        meetingId,
+        windowId,
+        durationMs: Date.now() - finalizeStart
+      });
+    }
   }
 }

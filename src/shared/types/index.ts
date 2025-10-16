@@ -24,6 +24,8 @@ export interface Meeting {
   notes: string;
   transcript: string;
   insights?: string; // JSON string containing summary, action items, decisions
+  insightsFilePath?: string | null; // Relative path to persisted insights JSON
+  actionItemSyncStatus?: ActionItemSyncStatus[];
   teamSummary?: string; // JSON string containing team-appropriate summary
   slackSharedAt?: Date; // Timestamp when shared to Slack
   notionSharedAt?: Date | string | null;
@@ -72,6 +74,20 @@ export interface AppSettings {
   slackWebhookUrl?: string;
   notionIntegrationToken?: string;
   notionDatabaseId?: string;
+  notionTodoIntegrationToken?: string;
+  notionTodoDatabaseId?: string;
+}
+
+export interface ActionItemSyncStatus {
+  task: string;
+  owner?: string;
+  due?: string;
+  status: 'pending' | 'sent' | 'failed';
+  notionPageId?: string;
+  notionPageUrl?: string;
+  sentAt?: string;
+  error?: string;
+  insightIndex?: number;
 }
 
 export interface CalendarEvent {
@@ -132,6 +148,8 @@ export enum IpcChannels {
   GENERATE_TEAM_SUMMARY = 'generate-team-summary',
   SHARE_TO_SLACK = 'share-to-slack',
   SHARE_TO_NOTION = 'share-to-notion',
+  SEND_NOTION_ACTION_ITEMS = 'send-notion-action-items',
+  SEND_SINGLE_NOTION_ACTION_ITEM = 'send-single-notion-action-item',
   GET_PROFILE = 'get-profile',
   UPDATE_PROFILE = 'update-profile',
 

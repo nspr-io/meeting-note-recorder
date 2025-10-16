@@ -4,9 +4,41 @@
     "description": "AI prompt for correcting transcript errors while maintaining format",
     "variables": ["transcript"]
   },
-  "insights-generation": {
-    "name": "Meeting Insights Generation",
-    "description": "AI prompt for generating executive-level meeting insights and action items",
+  "insights-summary": {
+    "name": "Meeting Summary Insights",
+    "description": "Generates the executive summary and follow-up items for a meeting",
+    "variables": [
+      "userProfile.name",
+      "userProfile.title",
+      "userProfile.company",
+      "userProfile.aboutMe",
+      "userProfile.preferences",
+      "meeting.title",
+      "meeting.date",
+      "meeting.attendees",
+      "notes",
+      "transcript"
+    ]
+  },
+  "insights-action-items": {
+    "name": "Meeting Action Items",
+    "description": "Generates structured action items with owners and due dates",
+    "variables": [
+      "userProfile.name",
+      "userProfile.title",
+      "userProfile.company",
+      "userProfile.aboutMe",
+      "userProfile.preferences",
+      "meeting.title",
+      "meeting.date",
+      "meeting.attendees",
+      "notes",
+      "transcript"
+    ]
+  },
+  "insights-key-decisions": {
+    "name": "Meeting Key Decisions",
+    "description": "Extracts key decisions made during the meeting",
     "variables": [
       "userProfile.name",
       "userProfile.title",

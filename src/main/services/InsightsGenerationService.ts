@@ -10,11 +10,58 @@ export interface MeetingInsights {
   actionItems: Array<{
     owner: string;
     task: string;
-    due?: string;
+    due?: string | null;
   }>;
   keyDecisions: string[];
   followUps: string[];
-  notesHighlights: string[];
+}
+
+type InsightSection = 'summary' | 'action-items' | 'key-decisions';
+
+type SectionRequestContext = 'insights-summary' | 'insights-action-items' | 'insights-key-decisions';
+
+const SECTION_PROMPT_IDS: Record<InsightSection, string> = {
+  summary: 'insights-summary',
+  'action-items': 'insights-action-items',
+  'key-decisions': 'insights-key-decisions'
+};
+
+const SECTION_CONTEXT: Record<InsightSection, SectionRequestContext> = {
+  summary: 'insights-summary',
+  'action-items': 'insights-action-items',
+  'key-decisions': 'insights-key-decisions'
+};
+
+const SECTION_FALLBACKS: Record<InsightSection, string> = {
+  summary: 'You are an experienced Executive Assistant. Using the provided meeting context, craft a concise executive summary (2-3 paragraphs) and list any unanswered questions or dependencies as follow-up items. Return JSON with keys "summary" (string) and "followUps" (array of strings).',
+  'action-items': 'You are an experienced Executive Assistant. From the meeting context, list all actionable tasks with owners and due dates when available. Return JSON with key "actionItems" containing objects with owner (string), task (string), and due (ISO date string or null).',
+  'key-decisions': 'You are an experienced Executive Assistant. Extract the concrete decisions agreed upon in the meeting, capturing any responsible parties or conditions. Return JSON with key "keyDecisions" containing an array of strings.'
+};
+
+type AnthropicRequestContext = SectionRequestContext | 'team-summary';
+
+const REQUEST_CONTEXT_LABELS: Record<AnthropicRequestContext, string> = {
+  'insights-summary': 'Meeting summary section',
+  'insights-action-items': 'Meeting action items section',
+  'insights-key-decisions': 'Meeting key decisions section',
+  'team-summary': 'Team summary'
+};
+
+interface SummarySectionPayload {
+  summary: string;
+  followUps?: string[];
+}
+
+interface ActionItemsSectionPayload {
+  actionItems: Array<{
+    owner?: string;
+    task?: string;
+    due?: string | null;
+  }>;
+}
+
+interface KeyDecisionsSectionPayload {
+  keyDecisions: string[];
 }
 
 interface ShareToNotionParams {
@@ -48,27 +95,41 @@ export class InsightsGenerationService extends BaseAnthropicService {
     this.emit('insights-started', { meetingId: meeting.id });
 
     try {
-      const systemPrompt = await this.getSystemPrompt(meeting, userProfile);
-      const prompt = this.buildPrompt(meeting, userProfile);
+      const prompt = this.buildMeetingContext(meeting);
 
-       logger.info('[Insights][Service] Requesting Anthropic insights', {
+      logger.info('[Insights][Service] Requesting Anthropic insights', {
         meetingId: meeting.id,
         notesLength: meeting.notes?.length || 0,
         transcriptLength: meeting.transcript?.length || 0
       });
 
-      const rawJson = await this.requestWithRetries<MeetingInsights>({
-        systemPrompt,
-        prompt,
-        context: 'insights'
-      });
+      const [summaryPayload, actionItemsPayload, keyDecisionsPayload] = await Promise.all([
+        this.generateInsightSection<SummarySectionPayload>('summary', meeting, prompt, userProfile),
+        this.generateInsightSection<ActionItemsSectionPayload>('action-items', meeting, prompt, userProfile),
+        this.generateInsightSection<KeyDecisionsSectionPayload>('key-decisions', meeting, prompt, userProfile)
+      ]);
 
-      logger.info('[Insights][Service] Anthropic returned response', {
-        meetingId: meeting.id,
-        rawLength: rawJson?.length || 0
-      });
+      const parsed: MeetingInsights = {
+        summary: (summaryPayload?.summary || '').trim(),
+        followUps: Array.isArray(summaryPayload?.followUps)
+          ? summaryPayload.followUps.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          : [],
+        actionItems: Array.isArray(actionItemsPayload?.actionItems)
+          ? actionItemsPayload.actionItems
+              .filter(item => item && typeof item.task === 'string' && item.task.trim())
+              .map(item => {
+                const task = (item.task || '').trim();
+                const owner = (item.owner || '').trim() || 'Unassigned';
+                const rawDue = typeof item.due === 'string' ? item.due.trim() : item.due;
+                const due = rawDue && typeof rawDue === 'string' ? rawDue : null;
+                return { owner, task, due };
+              })
+          : [],
+        keyDecisions: Array.isArray(keyDecisionsPayload?.keyDecisions)
+          ? keyDecisionsPayload.keyDecisions.filter((decision): decision is string => typeof decision === 'string' && decision.trim().length > 0)
+          : []
+      };
 
-      const parsed = JSON.parse(rawJson) as MeetingInsights;
       logger.info(`Insights generation completed for meeting ${meeting.id}`);
       this.emit('insights-completed', { meetingId: meeting.id });
 
@@ -83,26 +144,55 @@ export class InsightsGenerationService extends BaseAnthropicService {
     }
   }
 
-  private async getSystemPrompt(meeting: Meeting, userProfile?: UserProfile | null): Promise<string> {
+  private async getSectionSystemPrompt(section: InsightSection, meeting: Meeting, userProfile?: UserProfile | null): Promise<string> {
+    const promptId = SECTION_PROMPT_IDS[section];
+
     try {
       if (!this.promptService) {
-        logger.warn('PromptService not available, using fallback prompt');
+        logger.warn('PromptService not available, using fallback prompt', { section });
         throw new Error('PromptService not initialized');
       }
-      return await this.promptService.getInterpolatedPrompt('insights-generation', {
+
+      return await this.promptService.getInterpolatedPrompt(promptId, {
         userProfile,
         meeting,
         transcript: meeting.transcript,
         notes: meeting.notes
       });
     } catch (error) {
-      logger.error('Failed to load insights generation prompt, using fallback:', error);
-      // Fallback to a basic prompt if the service fails
-      return 'You are an experienced Executive Assistant. Analyze the meeting content and produce structured insights in JSON format with summary, actionItems, keyDecisions, followUps, and notesHighlights.';
+      logger.error(`Failed to load ${promptId} prompt, using fallback`, {
+        section,
+        error: error instanceof Error ? error.message : error
+      });
+      return SECTION_FALLBACKS[section];
     }
   }
 
-  private buildPrompt(meeting: Meeting, userProfile?: UserProfile | null): string {
+  private async generateInsightSection<T>(
+    section: InsightSection,
+    meeting: Meeting,
+    prompt: string,
+    userProfile?: UserProfile | null
+  ): Promise<T> {
+    const systemPrompt = await this.getSectionSystemPrompt(section, meeting, userProfile);
+    const rawJson = await this.requestWithRetries<T>({
+      systemPrompt,
+      prompt,
+      context: SECTION_CONTEXT[section]
+    });
+
+    try {
+      return JSON.parse(rawJson) as T;
+    } catch (error) {
+      logger.error('Failed to parse section JSON after successful response', {
+        section,
+        error: error instanceof Error ? error.message : error
+      });
+      throw error;
+    }
+  }
+
+  private buildMeetingContext(meeting: Meeting): string {
     const attendeesList = Array.isArray(meeting.attendees)
       ? meeting.attendees.map(a => typeof a === 'string' ? a : a.name).join(', ')
       : 'Unknown';
@@ -144,8 +234,7 @@ ${truncatedTranscript}`;
     prompt += `
 
 Analyze this meeting and create insights that an experienced Executive Assistant would prepare. Consider the strategic importance, required actions, and follow-ups needed.
-
-Return ONLY valid JSON as specified - no additional text or explanation.`;
+`;
 
     return prompt;
   }
@@ -163,7 +252,7 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
 
     try {
       const systemPrompt = await this.getSystemPromptForType('team-summary', meeting, null);
-      const prompt = this.buildPrompt(meeting, null);
+      const prompt = this.buildMeetingContext(meeting);
 
       const rawJson = await this.requestWithRetries<any>({
         systemPrompt,
@@ -480,23 +569,6 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
       });
     }
 
-    if (Array.isArray(insights.notesHighlights) && insights.notesHighlights.length > 0) {
-      blocks.push({
-        type: 'heading_2',
-        heading_2: {
-          rich_text: [{ type: 'text', text: { content: 'Notes Highlights' } }]
-        }
-      });
-      insights.notesHighlights.forEach((highlight) => {
-        blocks.push({
-          type: 'bulleted_list_item',
-          bulleted_list_item: {
-            rich_text: [{ type: 'text', text: { content: highlight } }]
-          }
-        });
-      });
-    }
-
     return blocks;
   }
 
@@ -549,7 +621,7 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
     return chunks.slice(0, 40); // cap to avoid hitting Notion block limits
   }
 
-  private normalizeAnthropicJsonResponse<T>(raw: string, context: 'insights' | 'team-summary'): string {
+  private normalizeAnthropicJsonResponse<T>(raw: string, context: AnthropicRequestContext): string {
     const trimmed = (raw || '').trim();
     if (!trimmed) {
       throw new Error('Empty response received from Anthropic');
@@ -570,14 +642,14 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
       return trimmed.slice(firstBrace, lastBrace + 1);
     }
 
-    const contextLabel = context === 'insights' ? 'Meeting insights' : 'Team summary';
+    const contextLabel = REQUEST_CONTEXT_LABELS[context] || 'Anthropic response';
     throw new Error(`${contextLabel} response was not valid JSON.`);
   }
 
   private async requestWithRetries<T>(params: {
     systemPrompt: string;
     prompt: string;
-    context: 'insights' | 'team-summary';
+    context: AnthropicRequestContext;
     maxAttempts?: number;
   }): Promise<string> {
     if (!this.anthropic) {
@@ -676,11 +748,25 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
     throw lastError instanceof Error ? lastError : new Error('Failed to produce valid JSON response');
   }
 
-  private buildRetryInstruction(context: 'insights' | 'team-summary', error: unknown): string {
+  private buildRetryInstruction(context: AnthropicRequestContext, error: unknown): string {
     const reason = error instanceof Error ? error.message : String(error ?? 'Unknown error');
-    const structureHint = context === 'insights'
-      ? 'Provide keys: summary (string), actionItems (array of objects with owner, task, optional due), keyDecisions (string array), followUps (string array), and notesHighlights (string array).'
-      : 'Return the same JSON structure used previously for the team summary, preserving all required fields exactly.';
+    let structureHint: string;
+
+    switch (context) {
+      case 'insights-summary':
+        structureHint = 'Provide keys: summary (string) and followUps (array of strings).';
+        break;
+      case 'insights-action-items':
+        structureHint = 'Provide key "actionItems" containing an array of objects with owner (string), task (string), and due (string or null).';
+        break;
+      case 'insights-key-decisions':
+        structureHint = 'Provide key "keyDecisions" containing an array of strings.';
+        break;
+      case 'team-summary':
+      default:
+        structureHint = 'Return the same JSON structure used previously for the team summary, preserving all required fields exactly.';
+        break;
+    }
 
     return [
       `The previous response was not valid JSON and could not be parsed (error: ${reason}).`,
@@ -707,7 +793,8 @@ Return ONLY valid JSON as specified - no additional text or explanation.`;
       if (promptType === 'team-summary') {
         return 'You are preparing a team update. Create a sanitized summary removing personal notes or sensitive information. Focus on key decisions, action items with owners, and required follow-ups. Return JSON with: summary, actionItems, keyDecisions, followUps.';
       }
-      return 'You are an experienced Executive Assistant. Analyze the meeting content and produce structured insights in JSON format with summary, actionItems, keyDecisions, followUps, and notesHighlights.';
+      return 'You are an experienced Executive Assistant. Analyze the meeting content and produce structured insights in JSON format with summary, actionItems, keyDecisions, and followUps.';
     }
   }
 }
+

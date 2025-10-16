@@ -42,9 +42,21 @@ export class ConfigValidator {
       }
     }
 
+    if (settings.notionTodoIntegrationToken) {
+      if (typeof settings.notionTodoIntegrationToken !== 'string' || !settings.notionTodoIntegrationToken.trim()) {
+        errors.push('Notion to-do integration token must be a non-empty string');
+      }
+    }
+
     if (settings.notionDatabaseId) {
       if (typeof settings.notionDatabaseId !== 'string' || !settings.notionDatabaseId.trim()) {
         errors.push('Notion database ID must be a non-empty string');
+      }
+    }
+
+    if (settings.notionTodoDatabaseId) {
+      if (typeof settings.notionTodoDatabaseId !== 'string' || !settings.notionTodoDatabaseId.trim()) {
+        errors.push('Notion to-do database ID must be a non-empty string');
       }
     }
 
@@ -154,6 +166,8 @@ export class ConfigValidator {
       selectedCalendars: [],
       notionIntegrationToken: '',
       notionDatabaseId: '',
+      notionTodoIntegrationToken: '',
+      notionTodoDatabaseId: '',
     };
   }
 
@@ -182,8 +196,16 @@ export class ConfigValidator {
       sanitized.notionIntegrationToken = sanitized.notionIntegrationToken.trim();
     }
 
+    if (sanitized.notionTodoIntegrationToken) {
+      sanitized.notionTodoIntegrationToken = sanitized.notionTodoIntegrationToken.trim();
+    }
+
     if (sanitized.notionDatabaseId) {
       sanitized.notionDatabaseId = sanitized.notionDatabaseId.trim();
+    }
+
+    if (sanitized.notionTodoDatabaseId) {
+      sanitized.notionTodoDatabaseId = sanitized.notionTodoDatabaseId.trim();
     }
 
     return sanitized;

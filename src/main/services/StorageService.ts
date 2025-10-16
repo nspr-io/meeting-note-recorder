@@ -39,6 +39,9 @@ export class StorageService {
     // Load all meetings from markdown files - this is the source of truth
     await this.loadAllMeetings();
 
+    // Ensure legacy meetings persist insights metadata/artifacts
+    await this.ensureInsightsArtifacts();
+
     // Clean up any stuck "recording" states from previous app crashes
     // This now runs AFTER loading files, so it can detect and fix stuck recordings
     await this.cleanupStuckRecordings();
@@ -253,6 +256,31 @@ export class StorageService {
         .replace('# Transcript', '')
         .trim();
 
+      let insightsFilePath: string | undefined;
+      let insightsContent: string | undefined;
+
+      if (typeof data.insights_file === 'string' && data.insights_file.trim()) {
+        insightsFilePath = data.insights_file.trim();
+        const storagePath = this.settingsService.getSettings().storagePath;
+        const absolutePath = path.isAbsolute(insightsFilePath)
+          ? insightsFilePath
+          : path.join(storagePath, insightsFilePath);
+
+        try {
+          insightsContent = await fs.readFile(absolutePath, 'utf-8');
+        } catch (error) {
+          logger.warn('[INSIGHTS-FILE] Failed to read insights artifact', {
+            meetingId: data.id,
+            path: absolutePath,
+            error: error instanceof Error ? error.message : error
+          });
+        }
+      }
+
+      if (!insightsContent && typeof data.insights === 'string') {
+        insightsContent = data.insights;
+      }
+
       const meeting: Meeting = {
         id: data.id || uuidv4(),
         title: data.title || 'Untitled Meeting',
@@ -268,6 +296,9 @@ export class StorageService {
         status: data.status || 'completed',
         notes,
         transcript,
+        insights: insightsContent,
+        insightsFilePath,
+        actionItemSyncStatus: Array.isArray(data.action_item_sync_status) ? data.action_item_sync_status : undefined,
         notionSharedAt: data.notion_shared_at ? new Date(data.notion_shared_at) : null,
         notionPageId: data.notion_page_id || null,
         filePath,
@@ -316,6 +347,8 @@ export class StorageService {
         : meeting.notionSharedAt;
     }
     if (meeting.notionPageId) frontmatter.notion_page_id = meeting.notionPageId;
+    if (meeting.insightsFilePath) frontmatter.insights_file = meeting.insightsFilePath;
+    if (meeting.actionItemSyncStatus) frontmatter.action_item_sync_status = meeting.actionItemSyncStatus;
 
     const content = `# Meeting Notes
 
@@ -364,6 +397,19 @@ ${meeting.transcript || ''}`;
 
     // Return path with year/month subdirectories: YYYY/MM/filename.md
     return path.join(year, month, `${dateStr}-${eventIdPart}${titleSlug}.md`);
+  }
+
+  private computeInsightsPaths(meeting: Meeting): { absolute: string; relative: string } {
+    const storagePath = this.settingsService.getSettings().storagePath;
+    const baseFilePath = meeting.filePath && meeting.filePath.trim()
+      ? meeting.filePath
+      : path.join(storagePath, this.generateFileName(meeting));
+
+    const parsed = path.parse(baseFilePath);
+    const absolute = path.join(parsed.dir, `${parsed.name}-insights.json`);
+    const relative = path.relative(storagePath, absolute);
+
+    return { absolute, relative };
   }
 
   async createMeeting(data: Partial<Meeting>): Promise<Meeting> {
@@ -462,6 +508,9 @@ ${meeting.transcript || ''}`;
     // Store original values for comparison
     const originalNotes = meeting.notes || '';
     const originalTranscript = meeting.transcript || '';
+    const originalInsightsPath = meeting.insightsFilePath || undefined;
+
+    const incomingInsights = updates.insights ?? undefined;
 
     const updatedMeeting: Meeting = {
       ...meeting,
@@ -470,90 +519,167 @@ ${meeting.transcript || ''}`;
       updatedAt: new Date(),
     };
 
-    // Check if file exists
+    if (incomingInsights === null) {
+      updatedMeeting.insights = '';
+    }
+
+    const storagePath = this.settingsService.getSettings().storagePath;
+
+    if (!updatedMeeting.filePath) {
+      const fileName = this.generateFileName(updatedMeeting);
+      updatedMeeting.filePath = path.join(storagePath, fileName);
+    }
+
+    // Check if existing markdown file is present at previous path
     const fileExists = meeting.filePath ? await fs.access(meeting.filePath).then(() => true).catch(() => false) : false;
 
-    // Determine if we have meaningful content
-    const hasSignificantNotes = updatedMeeting.notes && updatedMeeting.notes.trim().length > 0;
-    const hasSignificantTranscript = updatedMeeting.transcript && updatedMeeting.transcript.trim().length > 0;
+    // If file exists, re-read it to get latest notes before updating
+    // This prevents overwriting user edits made outside the app
+    if (fileExists && meeting.filePath) {
+      try {
+        const fileContent = await fs.readFile(meeting.filePath, 'utf-8');
+        const matter = require('gray-matter');
+        const { content: bodyContent } = matter(fileContent);
+
+        // Use the same proven parsing logic as loadMeetingFromFile
+        // This prevents capturing duplicate sections that may exist in corrupted files
+        const sections = bodyContent.split('---\n');
+        const notesSection = sections.find((s: string) => s.includes('# Meeting Notes')) || '';
+        const transcriptSection = sections.find((s: string) => s.includes('# Transcript')) || '';
+
+        const fileNotes = notesSection.replace('# Meeting Notes', '').trim();
+        const fileTranscript = transcriptSection.replace('# Transcript', '').trim();
+
+        if (fileNotes) {
+          const cacheNotes = updatedMeeting.notes || '';
+
+          // Log if notes content changed significantly
+          if (fileNotes !== cacheNotes && Math.abs(fileNotes.length - cacheNotes.length) > 10) {
+            logger.warn('[NOTES-CONTENT-CHANGED]', {
+              meetingId: id,
+              title: meeting.title,
+              oldLength: cacheNotes.length,
+              newLength: fileNotes.length,
+              lengthDiff: fileNotes.length - cacheNotes.length,
+              source: 'file-read',
+              oldPreview: cacheNotes.substring(0, 100),
+              newPreview: fileNotes.substring(0, 100)
+            });
+          }
+
+          // Only update if cache is stale (file has content that cache doesn't)
+          if (!updatedMeeting.notes || updatedMeeting.notes.trim().length < fileNotes.length) {
+            updatedMeeting.notes = fileNotes;
+            logger.info('[FILE-SYNC] Preserved notes from file (longer than cache)', {
+              fileLength: fileNotes.length,
+              cacheLength: cacheNotes.trim().length
+            });
+          }
+        }
+
+        if (fileTranscript) {
+          if (!updatedMeeting.transcript || updatedMeeting.transcript.trim().length < fileTranscript.length) {
+            updatedMeeting.transcript = fileTranscript;
+          }
+        }
+      } catch (error) {
+        logger.warn('[FILE-SYNC] Failed to read existing file, proceeding with cache data:', error);
+      }
+    }
+
+    let insightsFilePath = originalInsightsPath;
+
+    // If title or date changed AND markdown file exists, rename file (and linked insights file)
+    if ((updates.title || updates.date) && fileExists && meeting.filePath) {
+      const oldPath = meeting.filePath;
+      const newFileName = this.generateFileName(updatedMeeting);
+      const newPath = path.join(storagePath, newFileName);
+
+      if (oldPath !== newPath) {
+        await this.ensureDirectoryExists(newPath);
+        await fs.rename(oldPath, newPath);
+        updatedMeeting.filePath = newPath;
+
+        if (insightsFilePath) {
+          const oldInsightsAbsolute = path.isAbsolute(insightsFilePath)
+            ? insightsFilePath
+            : path.join(storagePath, insightsFilePath);
+          const { absolute: newInsightsAbsolute, relative: newInsightsRelative } = this.computeInsightsPaths(updatedMeeting);
+
+          try {
+            await this.ensureDirectoryExists(newInsightsAbsolute);
+            await fs.rename(oldInsightsAbsolute, newInsightsAbsolute);
+            insightsFilePath = newInsightsRelative;
+          } catch (error) {
+            logger.warn('[INSIGHTS-RENAME] Failed to rename insights artifact', {
+              meetingId: id,
+              oldPath: oldInsightsAbsolute,
+              newPath: newInsightsAbsolute,
+              error: error instanceof Error ? error.message : error
+            });
+          }
+        }
+      }
+    }
+
+    if (incomingInsights !== undefined) {
+      const raw = typeof incomingInsights === 'string' ? incomingInsights : '';
+      const trimmed = raw.trim();
+
+      if (trimmed) {
+        const { absolute: insightsAbsolute, relative: insightsRelative } = this.computeInsightsPaths(updatedMeeting);
+        await this.ensureDirectoryExists(insightsAbsolute);
+
+        let normalized = raw;
+        try {
+          normalized = JSON.stringify(JSON.parse(raw), null, 2);
+        } catch (error) {
+          logger.warn('[INSIGHTS-WRITE] Incoming insights are not valid JSON', {
+            meetingId: id,
+            error: error instanceof Error ? error.message : error
+          });
+        }
+
+        await fs.writeFile(insightsAbsolute, normalized, 'utf-8');
+        updatedMeeting.insights = normalized;
+        insightsFilePath = insightsRelative;
+      } else {
+        if (insightsFilePath) {
+          const absolutePath = path.isAbsolute(insightsFilePath)
+            ? insightsFilePath
+            : path.join(storagePath, insightsFilePath);
+          try {
+            await fs.unlink(absolutePath);
+          } catch (error: any) {
+            if (error?.code !== 'ENOENT') {
+              logger.warn('[INSIGHTS-DELETE] Failed to remove insights artifact', {
+                meetingId: id,
+                path: absolutePath,
+                error: error instanceof Error ? error.message : error
+              });
+            }
+          }
+        }
+        insightsFilePath = undefined;
+        updatedMeeting.insights = '';
+      }
+    }
+
+    updatedMeeting.insightsFilePath = insightsFilePath;
+
+    const hasSignificantNotes = !!(updatedMeeting.notes && updatedMeeting.notes.trim().length > 0);
+    const hasSignificantTranscript = !!(updatedMeeting.transcript && updatedMeeting.transcript.trim().length > 0);
     const notesChanged = updatedMeeting.notes !== originalNotes;
     const transcriptChanged = updatedMeeting.transcript !== originalTranscript;
+    const insightsPathChanged = insightsFilePath !== originalInsightsPath;
 
     // Only create/update file if:
-    // 1. File doesn't exist and we now have content
-    // 2. File exists and needs updating
-    const shouldCreateFile = !fileExists && (hasSignificantNotes || hasSignificantTranscript);
-    const shouldUpdateFile = fileExists && (notesChanged || transcriptChanged || updates.title || updates.date || updates.status || updates.duration);
+    // 1. File doesn't exist and we now have content or metadata to persist
+    // 2. File exists and needs updating (content or metadata changed)
+    const shouldCreateFile = !fileExists && (hasSignificantNotes || hasSignificantTranscript || !!insightsFilePath);
+    const shouldUpdateFile = fileExists && (notesChanged || transcriptChanged || updates.title || updates.date || updates.status || updates.duration || insightsPathChanged);
 
     if (shouldCreateFile || shouldUpdateFile) {
-      // If file exists, re-read it to get latest notes before updating
-      // This prevents overwriting user edits made outside the app
-      if (fileExists && meeting.filePath) {
-        try {
-          const fileContent = await fs.readFile(meeting.filePath, 'utf-8');
-          const matter = require('gray-matter');
-          const { content: bodyContent } = matter(fileContent);
-
-          // Use the same proven parsing logic as loadMeetingFromFile
-          // This prevents capturing duplicate sections that may exist in corrupted files
-          const sections = bodyContent.split('---\n');
-          const notesSection = sections.find((s: string) => s.includes('# Meeting Notes')) || '';
-          const transcriptSection = sections.find((s: string) => s.includes('# Transcript')) || '';
-
-          const fileNotes = notesSection.replace('# Meeting Notes', '').trim();
-          const fileTranscript = transcriptSection.replace('# Transcript', '').trim();
-
-          if (fileNotes) {
-            const cacheNotes = updatedMeeting.notes || '';
-
-            // Log if notes content changed significantly
-            if (fileNotes !== cacheNotes && Math.abs(fileNotes.length - cacheNotes.length) > 10) {
-              logger.warn('[NOTES-CONTENT-CHANGED]', {
-                meetingId: id,
-                title: meeting.title,
-                oldLength: cacheNotes.length,
-                newLength: fileNotes.length,
-                lengthDiff: fileNotes.length - cacheNotes.length,
-                source: 'file-read',
-                oldPreview: cacheNotes.substring(0, 100),
-                newPreview: fileNotes.substring(0, 100)
-              });
-            }
-
-            // Only update if cache is stale (file has content that cache doesn't)
-            if (!updatedMeeting.notes || updatedMeeting.notes.trim().length < fileNotes.length) {
-              updatedMeeting.notes = fileNotes;
-              logger.info('[FILE-SYNC] Preserved notes from file (longer than cache)', {
-                fileLength: fileNotes.length,
-                cacheLength: cacheNotes.trim().length
-              });
-            }
-          }
-
-          if (fileTranscript) {
-            if (!updatedMeeting.transcript || updatedMeeting.transcript.trim().length < fileTranscript.length) {
-              updatedMeeting.transcript = fileTranscript;
-            }
-          }
-        } catch (error) {
-          logger.warn('[FILE-SYNC] Failed to read existing file, proceeding with cache data:', error);
-        }
-      }
-
-      // If title or date changed AND file exists, rename file
-      if ((updates.title || updates.date) && fileExists) {
-        const oldPath = meeting.filePath!;
-        const newFileName = this.generateFileName(updatedMeeting);
-        const storagePath = this.settingsService.getSettings().storagePath;
-        const newPath = path.join(storagePath, newFileName);
-
-        if (oldPath !== newPath) {
-          await this.ensureDirectoryExists(newPath);
-          await fs.rename(oldPath, newPath);
-          updatedMeeting.filePath = newPath;
-        }
-      }
-
       await this.ensureDirectoryExists(updatedMeeting.filePath!);
       const markdown = this.formatMeetingToMarkdown(updatedMeeting);
       await fs.writeFile(updatedMeeting.filePath!, markdown, 'utf-8');
@@ -563,13 +689,14 @@ ${meeting.transcript || ''}`;
         filePath: updatedMeeting.filePath,
         wasCreated: shouldCreateFile,
         hasNotes: hasSignificantNotes,
-        hasTranscript: hasSignificantTranscript
+        hasTranscript: hasSignificantTranscript,
+        hasInsights: !!insightsFilePath
       });
     } else {
       logger.info('[JOURNEY-STORAGE-UPDATE] No file operation needed', {
         id: meeting.id,
         fileExists,
-        hasContent: hasSignificantNotes || hasSignificantTranscript
+        hasContent: hasSignificantNotes || hasSignificantTranscript || !!insightsFilePath
       });
     }
 
@@ -597,6 +724,23 @@ ${meeting.transcript || ''}`;
         await fs.unlink(meeting.filePath);
       } catch (error) {
         logger.error(`Failed to delete meeting file: ${error}`);
+      }
+    }
+
+    if (meeting.insightsFilePath) {
+      const storagePath = this.settingsService.getSettings().storagePath;
+      const insightsPath = path.isAbsolute(meeting.insightsFilePath)
+        ? meeting.insightsFilePath
+        : path.join(storagePath, meeting.insightsFilePath);
+
+      try {
+        await fs.unlink(insightsPath);
+      } catch (error) {
+        logger.warn('[INSIGHTS-DELETE] Failed to remove insights artifact during delete', {
+          meetingId: id,
+          path: insightsPath,
+          error: error instanceof Error ? error.message : error
+        });
       }
     }
 
@@ -1021,5 +1165,88 @@ ${meeting.transcript || ''}`;
   // Alias for compatibility
   async saveMeetingToFile(meeting: Meeting): Promise<string> {
     return this.saveMeeting(meeting);
+  }
+
+  private async ensureInsightsArtifacts(): Promise<void> {
+    let updatedCount = 0;
+
+    for (const meeting of this.meetingsCache.values()) {
+      const insightsString = typeof meeting.insights === 'string' ? meeting.insights.trim() : '';
+      const hasStoredPath = !!meeting.insightsFilePath;
+
+      if (!insightsString && !hasStoredPath) {
+        continue;
+      }
+
+      const { absolute, relative } = this.computeInsightsPaths(meeting);
+
+      let artifactExists = false;
+      try {
+        await fs.access(absolute);
+        artifactExists = true;
+      } catch {
+        artifactExists = false;
+      }
+
+      let needsMarkdownUpdate = false;
+
+      if (insightsString) {
+        if (!artifactExists) {
+          try {
+            await this.ensureDirectoryExists(absolute);
+            let normalized = meeting.insights as string;
+            try {
+              normalized = JSON.stringify(JSON.parse(normalized), null, 2);
+            } catch (error) {
+              logger.warn('[INSIGHTS-BACKFILL] Stored insights are not valid JSON', {
+                meetingId: meeting.id,
+                error: error instanceof Error ? error.message : error
+              });
+            }
+
+            await fs.writeFile(absolute, normalized, 'utf-8');
+            artifactExists = true;
+          } catch (error) {
+            logger.error('[INSIGHTS-BACKFILL] Failed to write insights artifact', {
+              meetingId: meeting.id,
+              path: absolute,
+              error: error instanceof Error ? error.message : error
+            });
+            continue;
+          }
+        }
+
+        if (meeting.insightsFilePath !== relative) {
+          meeting.insightsFilePath = relative;
+          needsMarkdownUpdate = true;
+        }
+      } else {
+        if (artifactExists) {
+          try {
+            await fs.unlink(absolute);
+          } catch (error) {
+            logger.warn('[INSIGHTS-BACKFILL] Failed to remove stale insights artifact', {
+              meetingId: meeting.id,
+              path: absolute,
+              error: error instanceof Error ? error.message : error
+            });
+          }
+        }
+
+        if (meeting.insightsFilePath) {
+          meeting.insightsFilePath = undefined;
+          needsMarkdownUpdate = true;
+        }
+      }
+
+      if (needsMarkdownUpdate) {
+        await this.saveMeetingToFile(meeting);
+        updatedCount++;
+      }
+    }
+
+    if (updatedCount > 0) {
+      logger.info(`[INSIGHTS-BACKFILL] Updated insights linkage for ${updatedCount} meetings`);
+    }
   }
 }

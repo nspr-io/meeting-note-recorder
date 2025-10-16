@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import styled from '@emotion/styled';
-import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback, NotionShareMode } from '../../shared/types';
-import { format, formatDistanceToNow } from 'date-fns';
+import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback, NotionShareMode, ActionItemSyncStatus } from '../../shared/types';
+import { format } from 'date-fns';
 import MDEditor from '@uiw/react-md-editor';
 
 const Container = styled.div`
@@ -974,7 +974,7 @@ interface MeetingDetailFinalProps {
   meeting: Meeting;
   onUpdateMeeting: (meeting: Meeting) => void;
   onDeleteMeeting?: (meetingId: string) => void;
-  onRefresh?: () => void;
+  onRefresh?: () => Promise<void> | void;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
 }
 
@@ -1012,7 +1012,111 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [notionShared, setNotionShared] = useState(meeting.notionSharedAt ?? null);
   const [notionPageId, setNotionPageId] = useState(meeting.notionPageId ?? '');
   const [sharingToNotionMode, setSharingToNotionMode] = useState<NotionShareMode | null>(null);
+  const [actionItemSyncStatus, setActionItemSyncStatus] = useState<ActionItemSyncStatus[]>(meeting.actionItemSyncStatus || []);
+  const [isSendingActionItems, setIsSendingActionItems] = useState(false);
+  const [actionItemError, setActionItemError] = useState<string | null>(null);
+  const [sendingItemIndex, setSendingItemIndex] = useState<number | null>(null);
+  const [itemErrors, setItemErrors] = useState<Record<number, string>>({});
   const isFirstRender = useRef(true);
+
+  const formatTodoDueDate = useCallback((iso?: string | null) => {
+    if (!iso) {
+      return 'No due date';
+    }
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) {
+      return iso;
+    }
+    return format(date, 'PP');
+  }, []);
+
+  const sendActionItemsToNotion = useCallback(async () => {
+    if (!(window as any).electronAPI?.sendNotionActionItems) {
+      setActionItemError('Notion integration is not available.');
+      return;
+    }
+
+    setIsSendingActionItems(true);
+    setActionItemError(null);
+
+    try {
+      const result = await (window as any).electronAPI.sendNotionActionItems(meeting.id);
+
+      if (!result?.success) {
+        setActionItemError(result?.error || 'Failed to send action items to Notion.');
+        if (Array.isArray(result?.results)) {
+          setActionItemSyncStatus(result.results);
+        }
+        return;
+      }
+
+      setActionItemSyncStatus(Array.isArray(result.results) ? result.results : []);
+      onShowToast?.('Sent action items to Notion.', 'success');
+      if (onRefresh) {
+        await onRefresh();
+      }
+    } catch (error) {
+      console.error('Failed to send action items:', error);
+      setActionItemError('Failed to send action items to Notion.');
+    } finally {
+      setIsSendingActionItems(false);
+    }
+  }, [meeting.id, onShowToast]);
+
+  const sendSingleActionItem = useCallback(async (index: number) => {
+    if (!(window as any).electronAPI?.sendSingleNotionActionItem) {
+      setItemErrors(prev => ({ ...prev, [index]: 'Notion integration is not available.' }));
+      return;
+    }
+
+    const actionItem = insights?.actionItems?.[index];
+    if (!actionItem) {
+      setItemErrors(prev => ({ ...prev, [index]: 'Action item could not be found.' }));
+      return;
+    }
+
+    setSendingItemIndex(index);
+    setItemErrors(prev => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
+
+    try {
+      const result = await (window as any).electronAPI.sendSingleNotionActionItem({
+        meetingId: meeting.id,
+        item: {
+          insightIndex: index,
+          task: actionItem?.task,
+          owner: actionItem?.owner,
+          due: actionItem?.due
+        }
+      });
+
+      if (!result?.success) {
+        const message = result?.error || 'Failed to send action item to Notion.';
+        setItemErrors(prev => ({ ...prev, [index]: message }));
+        if (Array.isArray(result?.results)) {
+          setActionItemSyncStatus(result.results);
+        }
+        return;
+      }
+
+      if (Array.isArray(result.results)) {
+        setActionItemSyncStatus(result.results);
+      }
+
+      onShowToast?.('Sent action item to Notion.', 'success');
+      if (onRefresh) {
+        await onRefresh();
+      }
+    } catch (error) {
+      console.error('Failed to send single action item:', error);
+      setItemErrors(prev => ({ ...prev, [index]: 'Failed to send action item to Notion.' }));
+    } finally {
+      setSendingItemIndex(null);
+    }
+  }, [insights?.actionItems, meeting.id, onRefresh, onShowToast]);
 
   // Coaching state
   const [isCoaching, setIsCoaching] = useState(false);
@@ -1057,6 +1161,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     setEditedTitle(meeting.title); // Update title when meeting prop changes
     setHasChanges(false);
     setIsRecording(meeting.status === 'recording');
+    setItemErrors({});
+    setSendingItemIndex(null);
     // Initialize recording start time if meeting is already recording
     if (meeting.status === 'recording' && !recordingStartTime) {
       // Use meeting's stored start time if available (persists across navigation)
@@ -1204,6 +1310,10 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
     return () => clearInterval(interval);
   }, [isRecording, recordingStartTime]);
+
+  useEffect(() => {
+    setActionItemSyncStatus(meeting.actionItemSyncStatus || []);
+  }, [meeting.actionItemSyncStatus]);
 
   // Listen for correction progress updates
   useEffect(() => {
@@ -2040,12 +2150,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
               </Tab>
               <Tab
                 active={viewMode === 'actions'}
-                onClick={() => {
-                  setViewMode('actions');
-                  if (!teamSummary && !isGeneratingTeamSummary) {
-                    handleGenerateTeamSummary();
-                  }
-                }}
+                onClick={() => setViewMode('actions')}
               >
                 Actions
               </Tab>
@@ -2326,24 +2431,6 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                     </div>
                   )}
 
-                  {/* Notes Highlights */}
-                  {insights.notesHighlights && insights.notesHighlights.length > 0 && (
-                    <div style={{ marginBottom: '30px' }}>
-                      <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '10px' }}>Key Points from Notes</h3>
-                      <ul style={{ listStyle: 'none', padding: 0 }}>
-                        {insights.notesHighlights.map((highlight: string, index: number) => (
-                          <li key={index} style={{
-                            marginBottom: '10px',
-                            padding: '10px',
-                            background: '#f0f0f0',
-                            borderRadius: '6px'
-                          }}>
-                            📝 {highlight}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
                 </div>
               ) : (
                 <EmptyState>
@@ -2524,6 +2611,118 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   {sharingToNotionMode && (
                     <div style={{ fontSize: '12px', color: '#6b7280' }}>
                       Working...
+                    </div>
+                  )}
+                </ActionCard>
+
+                <ActionCard>
+                  <ActionCardHeader>
+                    <ActionCardTitle>✅ Send Action Items to Notion</ActionCardTitle>
+                    <ActionStatus>
+                      {isSendingActionItems
+                        ? 'Sending...'
+                        : actionItemSyncStatus.some(item => item.status === 'sent')
+                          ? 'Some action items have been sent to Notion'
+                          : 'Send AI action items to your Notion to-do database'}
+                    </ActionStatus>
+                  </ActionCardHeader>
+                  <ActionCardDescription>
+                    Push meeting action items into your configured Notion to-do database. Items already sent will be skipped automatically.
+                  </ActionCardDescription>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                    <Button
+                      onClick={sendActionItemsToNotion}
+                      disabled={isSendingActionItems || !insights}
+                      style={{
+                        background: '#2563eb',
+                        borderColor: '#2563eb',
+                        color: 'white'
+                      }}
+                    >
+                      {isSendingActionItems ? '🔄 Sending...' : '✨ Send Action Items'}
+                    </Button>
+                    {!insights && (
+                      <span style={{ fontSize: '12px', color: '#9ca3af' }}>
+                        Generate insights to view action items.
+                      </span>
+                    )}
+                  </div>
+
+                  {actionItemError && (
+                    <div style={{ fontSize: '12px', color: '#dc2626', marginBottom: '12px' }}>
+                      {actionItemError}
+                    </div>
+                  )}
+
+                  {insights?.actionItems && insights.actionItems.length > 0 ? (
+                    <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {insights.actionItems.map((item: any, index: number) => {
+                        const status = actionItemSyncStatus.find(status =>
+                          (typeof status.insightIndex === 'number' && status.insightIndex === index) ||
+                          (status.task === item?.task && status.owner === item?.owner)
+                        );
+                        const isSendingItem = sendingItemIndex === index;
+                        return (
+                          <li
+                            key={`${item?.task || 'item'}-${index}`}
+                            style={{
+                              padding: '12px',
+                              background: '#f9fafb',
+                              borderRadius: '8px',
+                              border: '1px solid #e5e7eb'
+                            }}
+                          >
+                            <div style={{ fontWeight: 600, marginBottom: '6px', color: '#111827' }}>{item?.task || 'Action Item'}</div>
+                            <div style={{ fontSize: '12px', color: '#4b5563', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+                              {item?.owner && <span>Owner: {item.owner}</span>}
+                              {item?.due && <span>Due: {formatTodoDueDate(item.due)}</span>}
+                              <span>
+                                Status: {' '}
+                                {status?.status === 'sent' && (status.notionPageUrl || status.notionPageId)
+                                  ? 'Sent'
+                                  : status?.status === 'failed'
+                                    ? `Failed (${status.error || 'Unknown error'})`
+                                    : 'Not sent'}
+                              </span>
+                            </div>
+                            <div style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                              <Button
+                                variant="ghost"
+                                onClick={() => sendSingleActionItem(index)}
+                                disabled={isSendingActionItems || isSendingItem}
+                                style={{
+                                  padding: '6px 10px',
+                                  border: '1px solid #d1d5db',
+                                  borderRadius: '6px',
+                                  background: '#fff',
+                                  color: '#111827'
+                                }}
+                              >
+                                {isSendingItem ? 'Sending…' : status?.status === 'sent' ? 'Resend' : 'Send to Notion'}
+                              </Button>
+                              {status?.status === 'sent' && (status.notionPageUrl || status.notionPageId) && (
+                                <Button
+                                  variant="ghost"
+                                  onClick={() => (window as any).electronAPI?.openExternal?.(status.notionPageUrl || `https://www.notion.so/${status.notionPageId?.replace(/-/g, '')}`)}
+                                  style={{ padding: '0 4px', color: '#2563eb', fontWeight: 500 }}
+                                >
+                                  Open ↗
+                                </Button>
+                              )}
+                            </div>
+                            {itemErrors[index] && (
+                              <div style={{ fontSize: '12px', color: '#dc2626', marginTop: '8px' }}>
+                                {itemErrors[index]}
+                              </div>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <div style={{ fontSize: '13px', color: '#6b7280' }}>
+                      No action items available yet. Generate insights to populate them.
                     </div>
                   )}
                 </ActionCard>
