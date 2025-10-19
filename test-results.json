@@ -2,33 +2,23 @@
   "passed": [
     {
       "test": "App killed",
-      "timestamp": "2025-10-16T15:45:32.630Z"
+      "timestamp": "2025-10-19T15:15:42.878Z"
     },
     {
       "test": "App started",
       "details": {
         "pids": [
-          "81015"
+          "59033",
+          "59051",
+          "59052",
+          "59054"
         ],
-        "startupTimeMs": 1048
+        "startupTimeMs": 1084
       },
-      "timestamp": "2025-10-16T15:45:33.679Z"
-    },
-    {
-      "test": "Accessibility permission granted",
-      "timestamp": "2025-10-16T15:45:37.058Z"
+      "timestamp": "2025-10-19T15:15:43.962Z"
     }
   ],
-  "failed": [
-    {
-      "test": "Test execution",
-      "error": "readline was closed",
-      "details": {
-        "stack": "Error [ERR_USE_AFTER_CLOSE]: readline was closed\n    at [kQuestion] (node:internal/readline/interface:445:13)\n    at Interface.question (node:readline:158:20)\n    at /Users/joshuawohle/Documents/Workspace/Tools/meeting-note-recorder/test-production.js:79:8\n    at new Promise (<anonymous>)\n    at prompt (/Users/joshuawohle/Documents/Workspace/Tools/meeting-note-recorder/test-production.js:78:10)\n    at testPermissions (/Users/joshuawohle/Documents/Workspace/Tools/meeting-note-recorder/test-production.js:386:27)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async runProductionTests (/Users/joshuawohle/Documents/Workspace/Tools/meeting-note-recorder/test-production.js:621:5)"
-      },
-      "timestamp": "2025-10-16T15:45:37.061Z"
-    }
-  ],
+  "failed": [],
   "warnings": [
     {
       "test": "Log file",
@@ -40,7 +30,7 @@
           "/var/folders/g1/fpr63r6j06x0k813kk8ydbch0000gn/T/meeting-recorder-test/logs"
         ]
       },
-      "timestamp": "2025-10-16T15:45:36.682Z"
+      "timestamp": "2025-10-19T15:15:46.964Z"
     },
     {
       "test": "Initialization",
@@ -51,7 +41,32 @@
           "Window detection service initialized"
         ]
       },
-      "timestamp": "2025-10-16T15:45:36.682Z"
+      "timestamp": "2025-10-19T15:15:46.964Z"
+    },
+    {
+      "test": "System permissions",
+      "warning": "Skipped (non-interactive environment)",
+      "timestamp": "2025-10-19T15:15:46.964Z"
+    },
+    {
+      "test": "Manual recording test",
+      "warning": "Skipped (non-interactive environment)",
+      "timestamp": "2025-10-19T15:15:46.964Z"
+    },
+    {
+      "test": "Meeting detection test",
+      "warning": "Skipped (non-interactive environment)",
+      "timestamp": "2025-10-19T15:15:46.965Z"
+    },
+    {
+      "test": "Toast recording test",
+      "warning": "Skipped (non-interactive environment)",
+      "timestamp": "2025-10-19T15:15:46.965Z"
+    },
+    {
+      "test": "Multiple meeting test",
+      "warning": "Skipped (non-interactive environment)",
+      "timestamp": "2025-10-19T15:15:46.965Z"
     },
     {
       "test": "Log file",
@@ -63,7 +78,7 @@
           "/var/folders/g1/fpr63r6j06x0k813kk8ydbch0000gn/T/meeting-recorder-test/logs"
         ]
       },
-      "timestamp": "2025-10-16T15:45:37.065Z"
+      "timestamp": "2025-10-19T15:15:46.966Z"
     }
   ]
 }

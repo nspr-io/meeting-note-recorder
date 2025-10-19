@@ -27,10 +27,14 @@ let testResults = {
 };
 
 // Terminal interface
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+const isInteractive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+
+const rl = isInteractive
+  ? readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    })
+  : null;
 
 // Colors for terminal output
 const colors = {
@@ -74,7 +78,12 @@ function logWarning(test, warning, details) {
   testResults.warnings.push({ test, warning, details, timestamp: new Date() });
 }
 
-function prompt(question) {
+function prompt(question, defaultAnswer = '') {
+  if (!rl) {
+    log(`Skipping prompt (non-interactive): ${question}`, colors.yellow);
+    return Promise.resolve(defaultAnswer);
+  }
+
   return new Promise(resolve => {
     rl.question(colors.blue + question + colors.reset + '\n> ', answer => {
       log(`User response: ${answer}`, colors.magenta);
@@ -365,6 +374,11 @@ async function testAppLaunch() {
 }
 
 async function testPermissions() {
+  if (!isInteractive) {
+    logWarning('System permissions', 'Skipped (non-interactive environment)');
+    return true;
+  }
+
   log('\n' + '='.repeat(60), colors.bright);
   log('TEST 2: SYSTEM PERMISSIONS', colors.bright + colors.blue);
   log('='.repeat(60), colors.bright);
@@ -394,6 +408,11 @@ async function testPermissions() {
 }
 
 async function testManualRecording() {
+  if (!isInteractive) {
+    logWarning('Manual recording test', 'Skipped (non-interactive environment)');
+    return true;
+  }
+
   log('\n' + '='.repeat(60), colors.bright);
   log('TEST 3: MANUAL RECORDING', colors.bright + colors.blue);
   log('='.repeat(60), colors.bright);
@@ -436,6 +455,11 @@ async function testManualRecording() {
 }
 
 async function testMeetingDetection() {
+  if (!isInteractive) {
+    logWarning('Meeting detection test', 'Skipped (non-interactive environment)');
+    return true;
+  }
+
   log('\n' + '='.repeat(60), colors.bright);
   log('TEST 4: AUTOMATIC MEETING DETECTION', colors.bright + colors.blue);
   log('='.repeat(60), colors.bright);
@@ -496,6 +520,11 @@ async function testMeetingDetection() {
 }
 
 async function testToastRecording() {
+  if (!isInteractive) {
+    logWarning('Toast recording test', 'Skipped (non-interactive environment)');
+    return true;
+  }
+
   log('\n' + '='.repeat(60), colors.bright);
   log('TEST 5: RECORDING VIA TOAST NOTIFICATION', colors.bright + colors.blue);
   log('='.repeat(60), colors.bright);
@@ -579,6 +608,11 @@ async function testToastRecording() {
 }
 
 async function testMultipleMeetings() {
+  if (!isInteractive) {
+    logWarning('Multiple meeting test', 'Skipped (non-interactive environment)');
+    return true;
+  }
+
   log('\n' + '='.repeat(60), colors.bright);
   log('TEST 6: MULTIPLE MEETING HANDLING', colors.bright + colors.blue);
   log('='.repeat(60), colors.bright);
@@ -673,26 +707,26 @@ async function runProductionTests() {
   fs.writeFileSync(resultsFile, JSON.stringify(testResults, null, 2));
   log(`\nDetailed results saved to: ${resultsFile}`);
   
-  rl.close();
+  rl?.close();
   process.exit(testResults.failed.length > 0 ? 1 : 0);
 }
 
 // Handle errors
 process.on('uncaughtException', (error) => {
   logFailure('Uncaught exception', error.message, { stack: error.stack });
-  rl.close();
+  rl?.close();
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   logFailure('Unhandled rejection', reason, { promise });
-  rl.close();
+  rl?.close();
   process.exit(1);
 });
 
 // Run tests
 runProductionTests().catch(error => {
   logFailure('Test runner', error.message, { stack: error.stack });
-  rl.close();
+  rl?.close();
   process.exit(1);
 });
