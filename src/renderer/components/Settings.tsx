@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import styled from '@emotion/styled';
-import { AppSettings } from '../../shared/types';
+import { AppSettings, CoachConfig, IpcChannels } from '../../shared/types';
 
 interface PermissionStatus {
   'screen-capture': boolean;
@@ -112,6 +112,54 @@ const Checkbox = styled.input`
   margin-right: 8px;
 `;
 
+const CoachList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+`;
+
+const CoachCard = styled.div`
+  padding: 12px;
+  border: 1px solid #d1d1d1;
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+`;
+
+const CoachInfo = styled.div`
+  flex: 1;
+`;
+
+const CoachActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const Toggle = styled.label`
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+`;
+
+const ToggleInput = styled.input`
+  width: 32px;
+  height: 18px;
+`;
+
+const Badge = styled.span`
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #f5f5f7;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+`;
+
 const StatusMessage = styled.div<{ type: 'success' | 'error' | 'info' }>`
   padding: 12px;
   border-radius: 6px;
@@ -153,6 +201,13 @@ const ConnectionStatus = styled.div<{ connected: boolean }>`
   }
 `;
 
+const SavedBadge = styled.span`
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #34c759;
+`;
+
 interface SettingsProps {
   settings: AppSettings | null;
   onUpdateSettings: (updates: Partial<AppSettings>) => Promise<void>;
@@ -176,12 +231,17 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
   const [isConnectingCalendar, setIsConnectingCalendar] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null);
+  const [hasSavedRecallApiKey, setHasSavedRecallApiKey] = useState<boolean>(Boolean(settings?.recallApiKey));
+  const [hasSavedAnthropicKey, setHasSavedAnthropicKey] = useState<boolean>(Boolean(settings?.anthropicApiKey));
+  const [coaches, setCoaches] = useState<CoachConfig[]>(settings?.coaches || []);
 
   useEffect(() => {
     if (settings) {
-      setApiKey(settings.recallApiKey || '');
+      setHasSavedRecallApiKey(Boolean(settings.recallApiKey));
+      setHasSavedAnthropicKey(Boolean(settings.anthropicApiKey));
+      setApiKey('');
       setApiUrl(settings.recallApiUrl);
-      setAnthropicApiKey(settings.anthropicApiKey || '');
+      setAnthropicApiKey('');
       setStoragePath(settings.storagePath);
       setAutoStart(settings.autoStartOnBoot);
       setIsCalendarConnected(settings.googleCalendarConnected);
@@ -190,6 +250,7 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
       setNotionDatabaseId(settings.notionDatabaseId || '');
       setNotionTodoIntegrationToken(settings.notionTodoIntegrationToken || '');
       setNotionTodoDatabaseId(settings.notionTodoDatabaseId || '');
+      setCoaches(settings.coaches || []);
     }
 
     // Load permission status
@@ -209,27 +270,73 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
   useEffect(() => {
     const handleSettingsUpdate = (newSettings: AppSettings) => {
       setIsCalendarConnected(newSettings.googleCalendarConnected);
-      // Clear connecting state when we get an update
+      setCoaches(newSettings.coaches || []);
       setIsConnectingCalendar(false);
       if (newSettings.googleCalendarConnected) {
         setStatusMessage({ type: 'success', text: 'Google Calendar connected successfully!' });
       }
     };
 
-    window.electronAPI.on('settings-updated', handleSettingsUpdate);
-    
+    window.electronAPI.on(IpcChannels.SETTINGS_UPDATED, handleSettingsUpdate);
+
     return () => {
-      // Clean up listener
+      window.electronAPI.removeListener(IpcChannels.SETTINGS_UPDATED, handleSettingsUpdate);
     };
   }, []);
 
   const handleSaveApiKey = async () => {
     setIsSaving(true);
     try {
-      await onUpdateSettings({ recallApiKey: apiKey, recallApiUrl: apiUrl, anthropicApiKey: anthropicApiKey });
+      const updates: Partial<AppSettings> = { recallApiUrl: apiUrl };
+
+      if (apiKey.trim().length > 0) {
+        updates.recallApiKey = apiKey.trim();
+      }
+
+      if (anthropicApiKey.trim().length > 0) {
+        updates.anthropicApiKey = anthropicApiKey.trim();
+      }
+
+      await onUpdateSettings(updates);
+      if (apiKey.trim().length > 0) {
+        setApiKey('');
+        setHasSavedRecallApiKey(true);
+      }
+      if (anthropicApiKey.trim().length > 0) {
+        setAnthropicApiKey('');
+        setHasSavedAnthropicKey(true);
+      }
       setStatusMessage({ type: 'success', text: 'API settings saved successfully' });
     } catch (error) {
       setStatusMessage({ type: 'error', text: 'Failed to save API settings' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleClearApiKey = async () => {
+    setIsSaving(true);
+    try {
+      await onUpdateSettings({ recallApiKey: '' });
+      setHasSavedRecallApiKey(false);
+      setApiKey('');
+      setStatusMessage({ type: 'success', text: 'Recall API key removed' });
+    } catch (error) {
+      setStatusMessage({ type: 'error', text: 'Failed to clear Recall API key' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleClearAnthropicKey = async () => {
+    setIsSaving(true);
+    try {
+      await onUpdateSettings({ anthropicApiKey: '' });
+      setHasSavedAnthropicKey(false);
+      setAnthropicApiKey('');
+      setStatusMessage({ type: 'success', text: 'Anthropic API key removed' });
+    } catch (error) {
+      setStatusMessage({ type: 'error', text: 'Failed to clear Anthropic API key' });
     } finally {
       setIsSaving(false);
     }
@@ -335,6 +442,30 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
     }
   };
 
+  const handleToggleCoach = async (coachId: string, enabled: boolean) => {
+    try {
+      await window.electronAPI.toggleCoach(coachId, enabled);
+    } catch (error) {
+      console.error('Failed to toggle coach:', error);
+      setStatusMessage({ type: 'error', text: 'Failed to update coach' });
+    }
+  };
+
+  const handleDeleteCoach = async (coachId: string) => {
+    const coach = coaches.find(c => c.id === coachId);
+    if (!coach || !coach.isCustom) return;
+
+    const confirmed = window.confirm(`Delete "${coach.name}"? This cannot be undone.`);
+    if (!confirmed) return;
+
+    try {
+      await window.electronAPI.deleteCoach(coachId);
+    } catch (error) {
+      console.error('Failed to delete coach:', error);
+      setStatusMessage({ type: 'error', text: 'Failed to delete coach' });
+    }
+  };
+
   return (
     <SettingsContainer>
       {statusMessage && (
@@ -344,15 +475,55 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
       )}
       
       <Section>
+        <SectionTitle>Real-time Coaches</SectionTitle>
+        <CoachList>
+          {coaches.map(coach => (
+            <CoachCard key={coach.id}>
+              <CoachInfo>
+                <div style={{ display: 'flex', alignItems: 'center' }}>
+                  <strong>{coach.name}</strong>
+                  {!coach.isCustom && <Badge>Default</Badge>}
+                </div>
+                <div style={{ fontSize: '13px', color: '#6b7280', marginTop: '4px' }}>
+                  {coach.description}
+                </div>
+              </CoachInfo>
+              <CoachActions>
+                <Toggle>
+                  <ToggleInput
+                    type="checkbox"
+                    checked={coach.enabled}
+                    onChange={(e) => handleToggleCoach(coach.id, e.target.checked)}
+                  />
+                  {coach.enabled ? 'Enabled' : 'Disabled'}
+                </Toggle>
+                {coach.isCustom && (
+                  <DangerButton type="button" onClick={() => handleDeleteCoach(coach.id)}>
+                    Delete
+                  </DangerButton>
+                )}
+              </CoachActions>
+            </CoachCard>
+          ))}
+        </CoachList>
+        <div style={{ marginTop: '16px', fontSize: '12px', color: '#4b5563' }}>
+          Create new coaches from the Prompts tab using "Add Coach".
+        </div>
+      </Section>
+
+      <Section>
         <SectionTitle>recall.ai Configuration</SectionTitle>
         
         <FormGroup>
-          <Label>API Key</Label>
+        <Label>
+          API Key
+          {hasSavedRecallApiKey && <SavedBadge>Saved</SavedBadge>}
+        </Label>
           <PasswordInput
             type="password"
-            value={apiKey}
+          value={apiKey}
+          placeholder={hasSavedRecallApiKey && !apiKey ? '••••••••••' : 'Enter your recall.ai API key'}
             onChange={(e) => setApiKey(e.target.value)}
-            placeholder="Enter your recall.ai API key"
           />
         </FormGroup>
         
@@ -365,10 +536,15 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
           />
         </FormGroup>
         
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <Button onClick={handleSaveApiKey} disabled={isSaving}>
             Save API Settings
           </Button>
+          {hasSavedRecallApiKey && (
+            <SecondaryButton type="button" onClick={handleClearApiKey} disabled={isSaving}>
+              Remove Key
+            </SecondaryButton>
+          )}
           <SecondaryButton onClick={handleTestConnection}>
             Test Connection
           </SecondaryButton>
@@ -382,21 +558,31 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
         </div>
 
         <FormGroup>
-          <Label>Anthropic API Key</Label>
+        <Label>
+          Anthropic API Key
+          {hasSavedAnthropicKey && <SavedBadge>Saved</SavedBadge>}
+        </Label>
           <PasswordInput
             type="password"
-            value={anthropicApiKey}
+          value={anthropicApiKey}
+          placeholder={hasSavedAnthropicKey && !anthropicApiKey ? '••••••••••' : 'Enter your Anthropic API key (optional)'}
             onChange={(e) => setAnthropicApiKey(e.target.value)}
-            placeholder="Enter your Anthropic API key (optional)"
           />
           <div style={{ fontSize: '11px', color: '#86868b', marginTop: '4px' }}>
             Leave blank to skip transcript correction. Get your key at anthropic.com
           </div>
         </FormGroup>
 
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <Button onClick={handleSaveApiKey} disabled={isSaving}>
           Save API Settings
         </Button>
+        {hasSavedAnthropicKey && (
+          <SecondaryButton type="button" onClick={handleClearAnthropicKey} disabled={isSaving}>
+            Remove Key
+          </SecondaryButton>
+        )}
+      </div>
       </Section>
 
       <Section>

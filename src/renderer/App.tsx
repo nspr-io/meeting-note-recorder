@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import styled from '@emotion/styled';
 import Split from 'react-split';
 import { Meeting, AppSettings, IpcChannels } from '../shared/types';
@@ -239,10 +239,11 @@ const StatusBar = styled.div`
   color: #86868b;
 `;
 
-const StatusIndicator = styled.div<{ type: 'recording' | 'connected' | 'disconnected' }>`
+const StatusIndicator = styled.div<{ type: 'recording' | 'connected' | 'disconnected' | 'processing' }>`
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-right: 12px;
   
   &::before {
     content: '';
@@ -254,6 +255,7 @@ const StatusIndicator = styled.div<{ type: 'recording' | 'connected' | 'disconne
         case 'recording': return '#ff3b30';
         case 'connected': return '#34c759';
         case 'disconnected': return '#ff9500';
+        case 'processing': return '#007aff';
         default: return '#86868b';
       }
     }};
@@ -398,6 +400,9 @@ function App() {
   const [searchCollapsed, setSearchCollapsed] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
+  const [isTranscriptCleaning, setIsTranscriptCleaning] = useState(false);
+  const [transcriptCleaningProgress, setTranscriptCleaningProgress] = useState<number | null>(null);
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     // Check if electronAPI is available
@@ -411,7 +416,9 @@ function App() {
     setupEventListeners();
 
     return () => {
-      // Cleanup event listeners
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -447,6 +454,12 @@ function App() {
   const loadSettings = async () => {
     try {
       const loadedSettings = await window.electronAPI.getSettings();
+      console.log('[SETTINGS-DEBUG] Loaded settings', {
+        hasRecallApiKey: !!loadedSettings?.recallApiKey,
+        hasAnthropicKey: !!loadedSettings?.anthropicApiKey,
+        googleCalendarConnected: loadedSettings?.googleCalendarConnected,
+        storagePath: loadedSettings?.storagePath
+      });
       setSettings(loadedSettings);
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -454,13 +467,64 @@ function App() {
   };
 
   const showToastHelper = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = null;
+    }
     setToastMessage(message);
     setToastType(type);
     setShowToast(true);
-    setTimeout(() => setShowToast(false), 5000);
+    toastTimeoutRef.current = setTimeout(() => {
+      setShowToast(false);
+      toastTimeoutRef.current = null;
+    }, 5000);
   };
 
   const setupEventListeners = () => {
+    const handleTranscriptCorrectionStarted = (_data: any) => {
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+        toastTimeoutRef.current = null;
+      }
+      setIsTranscriptCleaning(true);
+      setTranscriptCleaningProgress(0);
+      setToastType('info');
+      setToastMessage('Cleaning transcript…');
+      setShowToast(true);
+    };
+
+    const handleTranscriptCorrectionProgress = (data: any) => {
+      if (typeof data?.percentage === 'number') {
+        const clamped = Math.max(0, Math.min(100, Math.round(data.percentage)));
+        setTranscriptCleaningProgress(clamped);
+        setIsTranscriptCleaning(true);
+        if (toastTimeoutRef.current) {
+          clearTimeout(toastTimeoutRef.current);
+          toastTimeoutRef.current = null;
+        }
+        setToastType('info');
+        setToastMessage(`Cleaning transcript… ${clamped}%`);
+        setShowToast(true);
+      }
+    };
+
+    const handleTranscriptCorrectionCompleted = (_data: any) => {
+      setTranscriptCleaningProgress(100);
+      setIsTranscriptCleaning(false);
+      showToastHelper('Transcript cleaned', 'success');
+    };
+
+    const handleTranscriptCorrectionFailed = (_data: any) => {
+      setIsTranscriptCleaning(false);
+      setTranscriptCleaningProgress(null);
+      showToastHelper('Transcript cleanup failed', 'error');
+    };
+
+    window.electronAPI.on('transcript-correction-started', handleTranscriptCorrectionStarted);
+    window.electronAPI.on('transcript-correction-progress', handleTranscriptCorrectionProgress);
+    window.electronAPI.on('transcript-correction-completed', handleTranscriptCorrectionCompleted);
+    window.electronAPI.on('transcript-correction-failed', handleTranscriptCorrectionFailed);
+
     window.electronAPI.on(IpcChannels.MEETINGS_UPDATED, loadMeetings);
     window.electronAPI.on(IpcChannels.RECORDING_STARTED, async (data: any) => {
       console.log('[JOURNEY-UI-EVENT-1] RECORDING_STARTED event received:', {
@@ -788,6 +852,7 @@ function App() {
                 <SystemPromptsList
                   onSelectPrompt={setSelectedPromptId}
                   selectedPromptId={selectedPromptId}
+                  onManageCoaches={() => setViewMode('settings')}
                 />
               )}
             </SidebarContent>
@@ -878,6 +943,13 @@ function App() {
       </MainContent>
       
       <StatusBar>
+        {isTranscriptCleaning && (
+          <StatusIndicator type="processing">
+            {typeof transcriptCleaningProgress === 'number'
+              ? `Cleaning transcript (${transcriptCleaningProgress}%)`
+              : 'Cleaning transcript…'}
+          </StatusIndicator>
+        )}
         {isRecording && (
           <StatusIndicator type="recording">Recording</StatusIndicator>
         )}

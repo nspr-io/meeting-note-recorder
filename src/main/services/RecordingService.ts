@@ -1240,4 +1240,27 @@ export class RecordingService extends EventEmitter {
       });
     }
   }
+
+  async waitForFinalization(meetingId: string, timeoutMs = 120000): Promise<void> {
+    if (!meetingId) {
+      return;
+    }
+
+    const task = this.finalizationTasks.get(meetingId);
+    if (!task) {
+      return;
+    }
+
+    if (!timeoutMs || timeoutMs <= 0) {
+      await task;
+      return;
+    }
+
+    await Promise.race([
+      task,
+      new Promise<void>((_, reject) => {
+        setTimeout(() => reject(new Error(`Finalization wait timeout for meeting ${meetingId}`)), timeoutMs);
+      })
+    ]);
+  }
 }

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IpcChannels, Meeting, AppSettings, UserProfile, SearchOptions, CoachingType, NotionShareMode } from '../shared/types';
+import { IpcChannels, Meeting, AppSettings, UserProfile, SearchOptions, CoachingType, NotionShareMode, CoachConfig } from '../shared/types';
 
 const api = {
   // Settings
@@ -81,6 +81,16 @@ const api = {
   resetPrompt: (promptId: string) =>
     ipcRenderer.invoke(IpcChannels.RESET_PROMPT, promptId),
 
+  // Coaches
+  getCoaches: (): Promise<CoachConfig[]> =>
+    ipcRenderer.invoke(IpcChannels.GET_COACHES),
+  upsertCoach: (coach: CoachConfig & { promptContent?: string }) =>
+    ipcRenderer.invoke(IpcChannels.UPSERT_COACH, coach),
+  toggleCoach: (coachId: string, enabled: boolean) =>
+    ipcRenderer.invoke(IpcChannels.TOGGLE_COACH, coachId, enabled),
+  deleteCoach: (coachId: string) =>
+    ipcRenderer.invoke(IpcChannels.DELETE_COACH, coachId),
+
   // Real-time coaching
   startCoaching: (meetingId: string, coachingType: CoachingType) =>
     ipcRenderer.invoke(IpcChannels.START_COACHING, meetingId, coachingType),
@@ -113,6 +123,10 @@ const api = {
       IpcChannels.COACHING_ERROR,
       'correction-progress',
       'correction-completed',
+      'transcript-correction-started',
+      'transcript-correction-progress',
+      'transcript-correction-completed',
+      'transcript-correction-failed',
     ];
 
     if (validChannels.includes(channel as any)) {

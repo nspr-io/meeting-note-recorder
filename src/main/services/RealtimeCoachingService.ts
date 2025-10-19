@@ -1,6 +1,7 @@
-import { CoachingType, CoachingFeedback, TranscriptChunk } from '../../shared/types';
+import { CoachConfig, CoachingType, CoachingFeedback, TranscriptChunk } from '../../shared/types';
 import { PromptService } from './PromptService';
 import { BaseAnthropicService } from './BaseAnthropicService';
+import { SettingsService } from './SettingsService';
 
 const ANALYSIS_INTERVAL_MS = 60000; // 60 seconds (1 minute)
 const TRANSCRIPT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
@@ -14,10 +15,12 @@ export class RealtimeCoachingService extends BaseAnthropicService {
   private transcriptHistory: TranscriptChunk[] = [];
   private feedbackHistory: CoachingFeedback[] = [];
   private currentMeetingNotes: string = '';
+  private settingsService: SettingsService;
 
-  constructor(promptService: PromptService | null) {
+  constructor(promptService: PromptService | null, settingsService: SettingsService) {
     super('RealtimeCoachingService');
     this.promptService = promptService;
+    this.settingsService = settingsService;
   }
 
   /**
@@ -26,6 +29,11 @@ export class RealtimeCoachingService extends BaseAnthropicService {
   async startCoaching(meetingId: string, coachingType: CoachingType): Promise<void> {
     if (!this.anthropic || !this.promptService) {
       throw new Error('Real-time coaching not available');
+    }
+
+    const coachConfig = this.getCoachConfig(coachingType);
+    if (!coachConfig || !coachConfig.enabled) {
+      throw new Error('Selected coach is disabled');
     }
 
     if (this.isActive) {
@@ -45,7 +53,7 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     this.intervalId = setInterval(() => {
       this.analyzeFeedback().catch(error => {
         this.logger.error('Error during coaching analysis:', error);
-        this.emit('coaching-error', { meetingId, error: error.message });
+        this.emit('coaching-error', { meetingId, error: error instanceof Error ? error.message : String(error) });
       });
     }, ANALYSIS_INTERVAL_MS);
 
@@ -53,7 +61,7 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     setTimeout(() => {
       this.analyzeFeedback().catch(error => {
         this.logger.error('Error during initial coaching analysis:', error);
-        this.emit('coaching-error', { meetingId, error: error.message });
+        this.emit('coaching-error', { meetingId, error: error instanceof Error ? error.message : String(error) });
       });
     }, 5000); // Wait 5 seconds for some transcript to accumulate
   }
@@ -273,5 +281,9 @@ export class RealtimeCoachingService extends BaseAnthropicService {
       coachingType: this.coachingType,
       meetingId: this.meetingId
     };
+  }
+
+  private getCoachConfig(coachingType: CoachingType): CoachConfig | undefined {
+    return this.settingsService.getCoaches().find(coach => coach.id === coachingType);
   }
 }

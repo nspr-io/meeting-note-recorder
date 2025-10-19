@@ -1,4 +1,4 @@
-import { AppSettings } from '../../shared/types';
+import { AppSettings, DEFAULT_COACH_CONFIGS } from '../../shared/types';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -140,6 +140,7 @@ export class ConfigValidator {
       googleCalendarConnected: oldSettings.googleCalendarConnected || false,
       autoStartOnBoot: oldSettings.autoStartOnBoot || false,
       selectedCalendars: oldSettings.selectedCalendars || [],
+      coaches: DEFAULT_COACH_CONFIGS.map(coach => ({ ...coach })),
     };
 
     // Migrate API keys if present
@@ -168,6 +169,7 @@ export class ConfigValidator {
       notionDatabaseId: '',
       notionTodoIntegrationToken: '',
       notionTodoDatabaseId: '',
+      coaches: DEFAULT_COACH_CONFIGS.map(coach => ({ ...coach })),
     };
   }
 
@@ -175,7 +177,7 @@ export class ConfigValidator {
    * Sanitize settings before saving
    */
   static sanitizeSettings(settings: AppSettings): AppSettings {
-    const sanitized = { ...settings };
+    const sanitized: AppSettings = { ...settings };
 
     // Remove trailing slashes from URLs
     if (sanitized.recallApiUrl) {
@@ -206,6 +208,27 @@ export class ConfigValidator {
 
     if (sanitized.notionTodoDatabaseId) {
       sanitized.notionTodoDatabaseId = sanitized.notionTodoDatabaseId.trim();
+    }
+
+    if (!Array.isArray(sanitized.coaches)) {
+      sanitized.coaches = DEFAULT_COACH_CONFIGS.map(coach => ({ ...coach }));
+    } else {
+      const defaultsById = new Map(DEFAULT_COACH_CONFIGS.map(coach => [coach.id, coach]));
+      sanitized.coaches = sanitized.coaches.map(coach => ({ ...coach }));
+
+      for (const def of DEFAULT_COACH_CONFIGS) {
+        if (!sanitized.coaches.some(coach => coach.id === def.id)) {
+          sanitized.coaches.push({ ...def });
+        }
+      }
+
+      sanitized.coaches = sanitized.coaches.map(coach => ({
+        id: coach.id,
+        name: coach.name || defaultsById.get(coach.id)?.name || coach.id,
+        description: coach.description || defaultsById.get(coach.id)?.description || '',
+        enabled: typeof coach.enabled === 'boolean' ? coach.enabled : defaultsById.get(coach.id)?.enabled ?? true,
+        isCustom: coach.isCustom ?? !defaultsById.has(coach.id),
+      }));
     }
 
     return sanitized;

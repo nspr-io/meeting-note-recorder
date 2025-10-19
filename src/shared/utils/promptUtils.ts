@@ -6,6 +6,8 @@ export interface PromptVariables {
   transcript?: string;
   notes?: string;
   meetingNotes?: string;
+  previousFeedback?: string;
+  recentTranscript?: string;
 }
 
 /**
@@ -39,6 +41,8 @@ export function interpolatePrompt(template: string, variables: PromptVariables):
   result = result.replace(/\{\{transcript\}\}/g, variables.transcript || '');
   result = result.replace(/\{\{notes\}\}/g, variables.notes || '');
   result = result.replace(/\{\{meetingNotes\}\}/g, variables.meetingNotes || '');
+  result = result.replace(/\{\{previousFeedback\}\}/g, variables.previousFeedback || '');
+  result = result.replace(/\{\{recentTranscript\}\}/g, variables.recentTranscript || '');
 
   // Handle conditional blocks for userProfile
   if (variables.userProfile) {
@@ -89,7 +93,9 @@ export function validatePromptTemplate(template: string): { isValid: boolean; er
     'meeting.attendees',
     'transcript',
     'notes',
-    'meetingNotes'
+    'meetingNotes',
+    'previousFeedback',
+    'recentTranscript'
   ]);
 
   // Check for unclosed conditional blocks
@@ -98,12 +104,6 @@ export function validatePromptTemplate(template: string): { isValid: boolean; er
 
   if (ifBlocks !== endifBlocks) {
     errors.push('Mismatched {{#if}} and {{/if}} blocks');
-  }
-
-  // Check for invalid variable syntax
-  const invalidVars = template.match(/\{\{[^}]*\{\{|\}\}[^}]*\}\}/g);
-  if (invalidVars) {
-    errors.push('Invalid variable syntax found');
   }
 
   // Check for invalid variable names

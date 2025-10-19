@@ -1,7 +1,7 @@
 import Store from 'electron-store';
 import path from 'path';
 import { app } from 'electron';
-import { AppSettings, UserProfile } from '../../shared/types';
+import { AppSettings, CoachConfig, DEFAULT_COACH_CONFIGS, UserProfile } from '../../shared/types';
 import { ConfigValidator } from './ConfigValidator';
 import { createServiceLogger } from './ServiceLogger';
 
@@ -22,7 +22,8 @@ export class SettingsService {
     notionIntegrationToken: process.env.NOTION_INTEGRATION_TOKEN || '',
     notionDatabaseId: process.env.NOTION_DATABASE_ID || '',
     notionTodoIntegrationToken: process.env.NOTION_TODO_INTEGRATION_TOKEN || '',
-    notionTodoDatabaseId: process.env.NOTION_TODO_DATABASE_ID || ''
+    notionTodoDatabaseId: process.env.NOTION_TODO_DATABASE_ID || '',
+    coaches: DEFAULT_COACH_CONFIGS.map(coach => ({ ...coach })),
   };
 
   constructor() {
@@ -39,9 +40,12 @@ export class SettingsService {
 
     if (!validation.valid) {
       logger.warn('Settings validation errors:', validation.errors);
-      // Apply safe defaults for invalid settings
-      const safeDefaults = ConfigValidator.getDefaults();
-      await this.updateSettings(safeDefaults);
+      // Apply sanitized settings while preserving existing values
+      const sanitizedSettings = ConfigValidator.sanitizeSettings({
+        ...this.defaultSettings,
+        ...currentSettings
+      });
+      await this.updateSettings(sanitizedSettings);
     }
 
     // Ensure storage directory exists
@@ -75,7 +79,8 @@ export class SettingsService {
       notionIntegrationToken: this.getNotionIntegrationToken(),
       notionDatabaseId: this.getNotionDatabaseId(),
       notionTodoIntegrationToken: this.getNotionTodoIntegrationToken(),
-      notionTodoDatabaseId: this.getNotionTodoDatabaseId()
+      notionTodoDatabaseId: this.getNotionTodoDatabaseId(),
+      coaches: this.ensureCoachesSchema(this.store.get('coaches')),
     } : this.store.store;
     // Include the API keys from environment or store
     return {
@@ -86,8 +91,34 @@ export class SettingsService {
       notionIntegrationToken: this.getNotionIntegrationToken(),
       notionDatabaseId: this.getNotionDatabaseId(),
       notionTodoIntegrationToken: this.getNotionTodoIntegrationToken(),
-      notionTodoDatabaseId: this.getNotionTodoDatabaseId()
+      notionTodoDatabaseId: this.getNotionTodoDatabaseId(),
+      coaches: this.ensureCoachesSchema(settings?.coaches),
     };
+  }
+
+  private ensureCoachesSchema(coachesCandidate: unknown): CoachConfig[] {
+    const existing = Array.isArray(coachesCandidate) ? coachesCandidate.filter((c): c is CoachConfig => typeof c === 'object' && !!c && typeof (c as any).id === 'string') : [];
+    const defaultsById = new Map(DEFAULT_COACH_CONFIGS.map((coach) => [coach.id, coach]));
+
+    const merged = new Map<string, CoachConfig>();
+    for (const coach of existing) {
+      const base = defaultsById.get(coach.id);
+      merged.set(coach.id, {
+        id: coach.id,
+        name: typeof (coach as any).name === 'string' ? (coach as any).name : base?.name || coach.id,
+        description: typeof (coach as any).description === 'string' ? (coach as any).description : base?.description || '',
+        enabled: typeof coach.enabled === 'boolean' ? coach.enabled : base?.enabled ?? true,
+        isCustom: coach.isCustom ?? !defaultsById.has(coach.id),
+      });
+    }
+
+    for (const def of DEFAULT_COACH_CONFIGS) {
+      if (!merged.has(def.id)) {
+        merged.set(def.id, { ...def });
+      }
+    }
+
+    return Array.from(merged.values());
   }
 
   async updateSettings(updates: Partial<AppSettings>): Promise<AppSettings> {
@@ -121,10 +152,15 @@ export class SettingsService {
       notionDatabaseId,
       notionTodoIntegrationToken,
       notionTodoDatabaseId,
+      coaches,
       ...settingsToStore
     } = updates;
-    const newSettings = { ...currentSettings, ...settingsToStore };
-    
+    const settingsWithCoaches = coaches
+      ? { ...settingsToStore, coaches: this.ensureCoachesSchema(coaches).map(coach => ({ ...coach })) }
+      : settingsToStore;
+
+    const newSettings = { ...currentSettings, ...settingsWithCoaches };
+
     // If storage path changed, create new directory
     if (updates.storagePath && updates.storagePath !== currentSettings.storagePath) {
       const fs = require('fs').promises;
@@ -143,14 +179,30 @@ export class SettingsService {
       });
     }
 
+    const dataToStore = settingsWithCoaches;
+
     if (this.store.set) {
-      Object.entries(settingsToStore).forEach(([key, value]) => {
+      Object.entries(dataToStore).forEach(([key, value]) => {
         this.store.set(key, value);
       });
     } else {
-      this.store.store = { ...this.store.store, ...settingsToStore };
+      this.store.store = { ...this.store.store, ...dataToStore };
     }
     return this.getSettings(); // Return settings including API key
+  }
+
+  setCoaches(coaches: CoachConfig[]): CoachConfig[] {
+    const sanitized = this.ensureCoachesSchema(coaches);
+    if (this.store.set) {
+      this.store.set('coaches', sanitized);
+    } else {
+      this.store.store = { ...this.store.store, coaches: sanitized };
+    }
+    return sanitized;
+  }
+
+  getCoaches(): CoachConfig[] {
+    return this.ensureCoachesSchema(this.store.get ? this.store.get('coaches') : this.store.store?.coaches);
   }
 
   getNotionIntegrationToken(): string | undefined {

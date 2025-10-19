@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import styled from '@emotion/styled';
-import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback, NotionShareMode, ActionItemSyncStatus } from '../../shared/types';
+import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback, NotionShareMode, ActionItemSyncStatus, CoachConfig } from '../../shared/types';
 import { format } from 'date-fns';
 import MDEditor from '@uiw/react-md-editor';
 
@@ -1120,7 +1120,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
   // Coaching state
   const [isCoaching, setIsCoaching] = useState(false);
-  const [selectedCoachingType, setSelectedCoachingType] = useState<CoachingType>('coach-sales');
+  const [availableCoaches, setAvailableCoaches] = useState<CoachConfig[]>([]);
+  const [selectedCoachingType, setSelectedCoachingType] = useState<CoachingType>('');
   const [coachingFeedbackHistory, setCoachingFeedbackHistory] = useState<CoachingFeedback[]>([]);
 
   // Update cache when segments change
@@ -1177,7 +1178,13 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       handleStopCoaching();
     }
     setCoachingFeedbackHistory([]);
-    setSelectedCoachingType('coach-sales');
+    setSelectedCoachingType(prev => {
+      const enabledCoaches = availableCoaches.filter(coach => coach.enabled);
+      if (prev && enabledCoaches.some(coach => coach.id === prev)) {
+        return prev;
+      }
+      return enabledCoaches[0]?.id || '';
+    });
 
     // Load existing insights if available
     if (meeting.insights) {
@@ -1365,12 +1372,34 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   }, [meeting.id]);
 
   useEffect(() => {
+    const loadCoaches = async () => {
+      try {
+        const coaches = await (window as any).electronAPI?.getCoaches?.();
+        if (Array.isArray(coaches)) {
+          setAvailableCoaches(coaches);
+          const enabled = coaches.filter((coach: CoachConfig) => coach.enabled);
+          setSelectedCoachingType(prev => {
+            if (prev && enabled.some(coach => coach.id === prev)) {
+              return prev;
+            }
+            return enabled[0]?.id || '';
+          });
+        }
+      } catch (error) {
+        console.error('[COACHING] Failed to load coaches:', error);
+      }
+    };
+
+    loadCoaches();
+
     (window as any).electronAPI?.on?.(IpcChannels.COACHING_FEEDBACK, handleCoachingFeedback);
     (window as any).electronAPI?.on?.(IpcChannels.COACHING_ERROR, handleCoachingError);
+    (window as any).electronAPI?.on?.(IpcChannels.SETTINGS_UPDATED, loadCoaches);
 
     return () => {
       (window as any).electronAPI?.removeListener?.(IpcChannels.COACHING_FEEDBACK, handleCoachingFeedback);
       (window as any).electronAPI?.removeListener?.(IpcChannels.COACHING_ERROR, handleCoachingError);
+      (window as any).electronAPI?.removeListener?.(IpcChannels.SETTINGS_UPDATED, loadCoaches);
     };
   }, [handleCoachingFeedback, handleCoachingError]);
 
@@ -1730,6 +1759,12 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
   const handleStartCoaching = async () => {
     if (isCoaching) return;
+
+    const enabledCoach = availableCoaches.find(coach => coach.id === selectedCoachingType && coach.enabled);
+    if (!enabledCoach) {
+      alert('Please select an enabled coach before starting real-time coaching.');
+      return;
+    }
 
     if (!(window as any).electronAPI?.startCoaching) {
       console.error('[COACHING] API not available');
@@ -2751,14 +2786,16 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
                 <CoachTypeSelector>
                   <CoachTypeLabel>Coaching Type</CoachTypeLabel>
-                  <CoachTypeSelect
+                <CoachTypeSelect
                     value={selectedCoachingType}
                     onChange={(e) => setSelectedCoachingType(e.target.value as CoachingType)}
-                    disabled={isCoaching}
+                    disabled={isCoaching || availableCoaches.filter(c => c.enabled).length === 0}
                   >
-                    <option value="coach-sales">Sales Coach</option>
-                    <option value="coach-interview">Interview Coach</option>
-                    <option value="coach-facilitator">Meeting Facilitator Coach</option>
+                    {availableCoaches.filter(coach => coach.enabled).map(coach => (
+                      <option key={coach.id} value={coach.id}>
+                        {coach.name}
+                      </option>
+                    ))}
                   </CoachTypeSelect>
                 </CoachTypeSelector>
 
@@ -2766,7 +2803,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   {!isCoaching ? (
                     <Button
                       onClick={handleStartCoaching}
-                      disabled={!isRecording}
+                    disabled={!isRecording || !selectedCoachingType}
                       style={{
                         background: '#34c759',
                         borderColor: '#34c759',
@@ -2795,6 +2832,16 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                     fontStyle: 'italic'
                   }}>
                     💡 Tip: Start recording first to enable real-time coaching
+                  </p>
+                )}
+                {isRecording && availableCoaches.filter(coach => coach.enabled).length === 0 && (
+                  <p style={{
+                    fontSize: '13px',
+                    color: '#666',
+                    margin: 0,
+                    fontStyle: 'italic'
+                  }}>
+                    💡 Tip: Enable a coach in Settings to start real-time coaching.
                   </p>
                 )}
               </CoachControls>

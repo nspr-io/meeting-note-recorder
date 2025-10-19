@@ -1,3 +1,4 @@
+import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import { getLogger } from './LoggingService';
 import { PromptService } from './PromptService';
 import { BaseAnthropicService } from './BaseAnthropicService';
@@ -448,7 +449,7 @@ export class TranscriptCorrectionService extends BaseAnthropicService {
     return correctedTranscript;
   }
 
-  private buildSubmitCorrectionsTool() {
+  private buildSubmitCorrectionsTool(): Tool {
     return {
       name: 'submit_corrections',
       description: 'Return only the targeted transcript edits that should be applied.',
@@ -487,7 +488,7 @@ export class TranscriptCorrectionService extends BaseAnthropicService {
         },
         required: ['changes']
       }
-    };
+    } satisfies Tool;
   }
 
   private buildDiffUserMessage(meeting: Meeting, lines: string[]): string {

@@ -63,6 +63,38 @@ export interface UserProfile {
   preferences: string;
 }
 
+export interface CoachConfig {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  isCustom?: boolean;
+}
+
+export const DEFAULT_COACH_CONFIGS: CoachConfig[] = [
+  {
+    id: 'coach-sales',
+    name: 'Sales Coach',
+    description: 'Real-time coaching for sales calls',
+    enabled: true,
+    isCustom: false,
+  },
+  {
+    id: 'coach-interview',
+    name: 'Interview Coach',
+    description: 'Real-time coaching for job interviews',
+    enabled: true,
+    isCustom: false,
+  },
+  {
+    id: 'coach-facilitator',
+    name: 'Meeting Facilitator Coach',
+    description: 'Real-time coaching for meeting facilitation',
+    enabled: true,
+    isCustom: false,
+  },
+];
+
 export interface AppSettings {
   recallApiKey?: string;
   recallApiUrl: string;
@@ -76,6 +108,7 @@ export interface AppSettings {
   notionDatabaseId?: string;
   notionTodoIntegrationToken?: string;
   notionTodoDatabaseId?: string;
+  coaches: CoachConfig[];
 }
 
 export interface ActionItemSyncStatus {
@@ -164,6 +197,10 @@ export enum IpcChannels {
   GET_PROMPT = 'get-prompt',
   UPDATE_PROMPT = 'update-prompt',
   RESET_PROMPT = 'reset-prompt',
+  GET_COACHES = 'get-coaches',
+  UPSERT_COACH = 'upsert-coach',
+  TOGGLE_COACH = 'toggle-coach',
+  DELETE_COACH = 'delete-coach',
 
   // Real-time coaching
   START_COACHING = 'start-coaching',
@@ -197,7 +234,7 @@ export interface SearchMatch {
   indices: [number, number][];
 }
 
-export type CoachingType = 'coach-sales' | 'coach-interview' | 'coach-facilitator';
+export type CoachingType = string;
 
 export interface CoachingFeedback {
   timestamp: Date;

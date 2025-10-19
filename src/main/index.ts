@@ -15,7 +15,7 @@ import { SearchService } from './services/SearchService';
 import { PromptService } from './services/PromptService';
 import { RealtimeCoachingService } from './services/RealtimeCoachingService';
 import { NotionTodoService } from './services/NotionTodoService';
-import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode, ActionItemSyncStatus } from '../shared/types';
+import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode, ActionItemSyncStatus, CoachConfig } from '../shared/types';
 import { generateNotificationHTML, NotificationType } from './utils/notificationTemplate';
 
 const logger = getLogger();
@@ -271,8 +271,8 @@ function setupIpcHandlers() {
   });
 
   ipcMain.handle(IpcChannels.UPDATE_SETTINGS, async (_, settings) => {
-    await settingsService.updateSettings(settings);
-    notifySettingsUpdated(settings);
+    const updated = await settingsService.updateSettings(settings);
+    notifySettingsUpdated(updated);
     return { success: true };
   });
 
@@ -292,7 +292,7 @@ function setupIpcHandlers() {
       logger.error('PromptService not available - returning empty prompts');
       return {};
     }
-    return promptService.getAllPrompts();
+    return promptService.getAllPrompts(settingsService.getCoaches());
   });
 
   ipcMain.handle(IpcChannels.GET_PROMPT, async (_, promptId) => {
@@ -318,6 +318,62 @@ function setupIpcHandlers() {
       throw new Error('PromptService not available');
     }
     await promptService.resetPrompt(promptId);
+    return { success: true };
+  });
+
+  ipcMain.handle(IpcChannels.GET_COACHES, async () => {
+    return settingsService.getCoaches();
+  });
+
+  ipcMain.handle(IpcChannels.UPSERT_COACH, async (_, coach: CoachConfig & { promptContent?: string }) => {
+    const prev = settingsService.getCoaches().filter(c => c.id !== coach.id);
+    const updatedCoach: CoachConfig = {
+      id: coach.id,
+      name: coach.name,
+      description: coach.description,
+      enabled: coach.enabled,
+      isCustom: coach.isCustom ?? true,
+    };
+    const updated = settingsService.setCoaches([...prev, updatedCoach]);
+
+    if (promptService && coach.promptContent !== undefined) {
+      await promptService.updatePrompt(coach.id, coach.promptContent);
+    }
+
+    notifySettingsUpdated(settingsService.getSettings());
+    return updated;
+  });
+
+  ipcMain.handle(IpcChannels.TOGGLE_COACH, async (_, coachId: string, enabled: boolean) => {
+    const updated = settingsService.setCoaches(
+      settingsService.getCoaches().map(coach =>
+        coach.id === coachId ? { ...coach, enabled } : coach
+      )
+    );
+    notifySettingsUpdated(settingsService.getSettings());
+    return updated;
+  });
+
+  ipcMain.handle(IpcChannels.DELETE_COACH, async (_, coachId: string) => {
+    const coach = settingsService.getCoaches().find(c => c.id === coachId);
+    if (!coach) {
+      throw new Error('Coach not found');
+    }
+    if (!coach.isCustom) {
+      throw new Error('Cannot delete default coach');
+    }
+
+    settingsService.setCoaches(settingsService.getCoaches().filter(c => c.id !== coachId));
+
+    if (promptService) {
+      try {
+        await promptService.deletePrompt(coachId);
+      } catch (error) {
+        logger.error('Failed to delete coach prompt:', error);
+      }
+    }
+
+    notifySettingsUpdated(settingsService.getSettings());
     return { success: true };
   });
 
@@ -2072,6 +2128,17 @@ async function autoGenerateInsightsForMeeting(meetingId: string): Promise<void> 
   autoInsightsInFlight.add(meetingId);
 
   try {
+    try {
+      logger.info('[AUTO-INSIGHTS] Waiting for transcript finalization', { meetingId });
+      await recordingService.waitForFinalization(meetingId, 120000);
+      logger.info('[AUTO-INSIGHTS] Transcript finalization complete', { meetingId });
+    } catch (finalizationError) {
+      logger.warn('[AUTO-INSIGHTS] Finalization wait failed or timed out, proceeding anyway', {
+        meetingId,
+        error: finalizationError instanceof Error ? finalizationError.message : String(finalizationError)
+      });
+    }
+
     const meeting = await storageService.getMeeting(meetingId);
     if (!meeting) {
       return;
@@ -2278,7 +2345,7 @@ app.whenReady().then(async () => {
 
   // Initialize coaching service
   logger.info('[MAIN-INIT] Creating RealtimeCoachingService with PromptService:', { hasPromptService: promptService !== null });
-  coachingService = new RealtimeCoachingService(promptService);
+  coachingService = new RealtimeCoachingService(promptService, settingsService);
   const settings = settingsService.getSettings();
   if (settings.anthropicApiKey) {
     coachingService.initialize(settings.anthropicApiKey);
@@ -2346,6 +2413,40 @@ app.whenReady().then(async () => {
           transcriptCount: data?.transcriptCount || 0
         });
       }
+    }
+  });
+
+  recordingService.on('transcript-correction-started', (payload) => {
+    logger.info('[TRANSCRIPT-CORRECTION] started', {
+      meetingId: payload?.meetingId
+    });
+    if (mainWindow) {
+      mainWindow.webContents.send('transcript-correction-started', payload);
+    }
+  });
+
+  recordingService.on('transcript-correction-progress', (payload) => {
+    if (mainWindow) {
+      mainWindow.webContents.send('transcript-correction-progress', payload);
+    }
+  });
+
+  recordingService.on('transcript-correction-completed', (payload) => {
+    logger.info('[TRANSCRIPT-CORRECTION] completed', {
+      meetingId: payload?.meetingId
+    });
+    if (mainWindow) {
+      mainWindow.webContents.send('transcript-correction-completed', payload);
+    }
+  });
+
+  recordingService.on('transcript-correction-failed', (payload) => {
+    logger.warn('[TRANSCRIPT-CORRECTION] failed', {
+      meetingId: payload?.meetingId,
+      error: payload?.error
+    });
+    if (mainWindow) {
+      mainWindow.webContents.send('transcript-correction-failed', payload);
     }
   });
 

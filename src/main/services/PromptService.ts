@@ -1,8 +1,10 @@
+const COACH_VARIABLES = ['previousFeedback', 'recentTranscript'];
 import fs from 'fs/promises';
 import path from 'path';
 import { app } from 'electron';
 import { getLogger } from './LoggingService';
 import { interpolatePrompt, PromptVariables } from '../../shared/utils/promptUtils';
+import { CoachConfig } from '../../shared/types';
 
 const logger = getLogger();
 
@@ -151,10 +153,24 @@ export class PromptService {
     }
   }
 
-  async getAllPrompts(): Promise<Record<string, { config: PromptConfig; content: string }>> {
+  async getAllPrompts(additionalCoaches: CoachConfig[] = []): Promise<Record<string, { config: PromptConfig; content: string }>> {
     const prompts: Record<string, { config: PromptConfig; content: string }> = {};
 
-    for (const [promptId, config] of Object.entries(this.promptsConfig)) {
+    const allConfigs: Record<string, PromptConfig> = {
+      ...this.promptsConfig,
+    };
+
+    additionalCoaches.forEach(coach => {
+      if (!allConfigs[coach.id]) {
+        allConfigs[coach.id] = {
+          name: coach.name,
+          description: coach.description,
+          variables: COACH_VARIABLES,
+        };
+      }
+    });
+
+    for (const [promptId, config] of Object.entries(allConfigs)) {
       try {
         const content = await this.getPrompt(promptId);
         prompts[promptId] = { config, content };
@@ -164,6 +180,17 @@ export class PromptService {
     }
 
     return prompts;
+  }
+
+  async deletePrompt(promptId: string): Promise<void> {
+    try {
+      const userPromptPath = path.join(this.userPromptsDir, `${promptId}.txt`);
+      await fs.unlink(userPromptPath);
+      logger.info(`Deleted prompt: ${promptId}`);
+    } catch (error) {
+      logger.error(`Failed to delete prompt ${promptId}:`, error);
+      throw error;
+    }
   }
 
   async getInterpolatedPrompt(promptId: string, variables: PromptVariables): Promise<string> {
