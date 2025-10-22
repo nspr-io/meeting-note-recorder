@@ -70,6 +70,8 @@ const api = {
     ipcRenderer.invoke(IpcChannels.GET_SEARCH_HISTORY),
   clearSearchHistory: () =>
     ipcRenderer.invoke(IpcChannels.CLEAR_SEARCH_HISTORY),
+  getTranscriptBuffer: (meetingId: string) =>
+    ipcRenderer.invoke(IpcChannels.GET_TRANSCRIPT_BUFFER, meetingId),
   
   // System Prompts
   getPrompts: () =>
@@ -98,6 +100,16 @@ const api = {
     ipcRenderer.invoke(IpcChannels.STOP_COACHING),
   updateCoachingNotes: (meetingId: string, notes: string) =>
     ipcRenderer.invoke(IpcChannels.UPDATE_COACHING_NOTES, meetingId, notes),
+  getCoachingState: () =>
+    ipcRenderer.invoke(IpcChannels.GET_COACHING_STATE),
+  getCoachingFeedbackHistory: () =>
+    ipcRenderer.invoke(IpcChannels.GET_COACHING_FEEDBACK),
+  openCoachWindow: (meetingId?: string) =>
+    ipcRenderer.invoke(IpcChannels.OPEN_COACH_WINDOW, meetingId || null),
+  closeCoachWindow: () =>
+    ipcRenderer.invoke(IpcChannels.CLOSE_COACH_WINDOW),
+  getCoachWindowStatus: () =>
+    ipcRenderer.invoke(IpcChannels.GET_COACH_WINDOW_STATUS),
 
   // Permissions
   getPermissionStatus: () =>
@@ -121,6 +133,7 @@ const api = {
       IpcChannels.SEARCH_RESULTS,
       IpcChannels.COACHING_FEEDBACK,
       IpcChannels.COACHING_ERROR,
+      IpcChannels.COACH_WINDOW_STATUS,
       'correction-progress',
       'correction-completed',
       'transcript-correction-started',

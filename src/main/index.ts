@@ -15,7 +15,7 @@ import { SearchService } from './services/SearchService';
 import { PromptService } from './services/PromptService';
 import { RealtimeCoachingService } from './services/RealtimeCoachingService';
 import { NotionTodoService } from './services/NotionTodoService';
-import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode, ActionItemSyncStatus, CoachConfig } from '../shared/types';
+import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode, ActionItemSyncStatus, CoachConfig, CoachWindowStatus } from '../shared/types';
 import { generateNotificationHTML, NotificationType } from './utils/notificationTemplate';
 
 const logger = getLogger();
@@ -57,6 +57,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 let mainWindow: BrowserWindow | null = null;
+let coachWindow: BrowserWindow | null = null;
 let meetingDetectionService: MeetingDetectionService;
 let recordingService: RecordingService;
 let storageService: StorageService;
@@ -73,10 +74,15 @@ const autoInsightsInFlight = new Set<string>();
 
 // UI Notification Helper Functions
 function notifyUI(channel: IpcChannels, data?: any) {
-  mainWindow?.webContents.send(channel, data);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, data);
+  }
+  if (coachWindow && !coachWindow.isDestroyed()) {
+    coachWindow.webContents.send(channel, data);
+  }
 }
 
-function notifyMeetingsUpdated() {
+export function notifyMeetingsUpdated() {
   notifyUI(IpcChannels.MEETINGS_UPDATED);
 }
 
@@ -213,6 +219,10 @@ function createWindow() {
     },
   });
 
+  mainWindow.on('focus', () => {
+    notifyUI(IpcChannels.COACH_WINDOW_STATUS, { isOpen: !!coachWindow });
+  });
+
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:9000');
     // mainWindow.webContents.openDevTools(); // Commented out - open manually with Cmd+Option+I if needed
@@ -265,6 +275,71 @@ function createWindow() {
 }
 
 function setupIpcHandlers() {
+  ipcMain.handle(IpcChannels.OPEN_COACH_WINDOW, async (_, meetingId: string | null) => {
+    try {
+      if (coachWindow && !coachWindow.isDestroyed()) {
+        coachWindow.focus();
+        coachWindow.webContents.send(IpcChannels.COACH_WINDOW_STATUS, { isOpen: true, meetingId });
+        return { success: true };
+      }
+
+      coachWindow = new BrowserWindow({
+        width: 480,
+        height: 700,
+        minWidth: 360,
+        minHeight: 500,
+        title: 'Live Coaching',
+        autoHideMenuBar: true,
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          preload: path.join(__dirname, 'preload.js'),
+        },
+      });
+
+      coachWindow.on('closed', () => {
+        coachWindow = null;
+        notifyUI(IpcChannels.COACH_WINDOW_STATUS, { isOpen: false });
+      });
+
+      if (process.env.NODE_ENV === 'development') {
+        const url = new URL('http://localhost:9000');
+        url.searchParams.set('mode', 'coach-popout');
+        if (meetingId) url.searchParams.set('meetingId', meetingId);
+        coachWindow.loadURL(url.toString());
+      } else {
+        const indexPath = path.join(__dirname, '../renderer/index.html');
+        coachWindow.loadFile(indexPath, { query: { mode: 'coach-popout', meetingId: meetingId || '' } });
+      }
+
+      coachWindow.once('ready-to-show', () => {
+        coachWindow?.show();
+        notifyUI(IpcChannels.COACH_WINDOW_STATUS, { isOpen: true, meetingId });
+      });
+
+      return { success: true };
+    } catch (error) {
+      logger.error('[COACH-WINDOW] Failed to open coach window', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      coachWindow = null;
+      notifyUI(IpcChannels.COACH_WINDOW_STATUS, { isOpen: false });
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to open coach window' };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.CLOSE_COACH_WINDOW, async () => {
+    if (coachWindow && !coachWindow.isDestroyed()) {
+      coachWindow.close();
+      coachWindow = null;
+    }
+    notifyUI(IpcChannels.COACH_WINDOW_STATUS, { isOpen: false });
+    return { success: true };
+  });
+
+  ipcMain.handle(IpcChannels.GET_COACH_WINDOW_STATUS, async (): Promise<CoachWindowStatus> => {
+    return { isOpen: !!coachWindow };
+  });
   // Settings
   ipcMain.handle(IpcChannels.GET_SETTINGS, async () => {
     return settingsService.getSettings();
@@ -1288,6 +1363,17 @@ function setupIpcHandlers() {
     searchService.clearHistory();
     return { success: true };
   });
+  ipcMain.handle(IpcChannels.GET_TRANSCRIPT_BUFFER, async (_event, meetingId: string) => {
+    try {
+      return recordingService.getBufferedChunks(meetingId);
+    } catch (error) {
+      logger.error('[IPC-GET_TRANSCRIPT_BUFFER] Failed to retrieve buffer', {
+        meetingId,
+        error: error instanceof Error ? error.message : error
+      });
+      return [];
+    }
+  });
 
   // Real-time coaching handlers
   ipcMain.handle(IpcChannels.START_COACHING, async (_, meetingId: string, coachingType: CoachingType) => {
@@ -1324,12 +1410,26 @@ function setupIpcHandlers() {
         return { success: false, error: 'Coaching service not initialized' };
       }
 
-      coachingService.updateMeetingNotes(notes);
+      coachingService.updateMeetingNotes(meetingId, notes);
       return { success: true };
     } catch (error: any) {
       logger.error('Failed to update coaching notes:', error);
       return { success: false, error: error.message || 'Failed to update coaching notes' };
     }
+  });
+
+  ipcMain.handle(IpcChannels.GET_COACHING_STATE, async () => {
+    if (!coachingService) {
+      return { isActive: false, coachingType: null, meetingId: null };
+    }
+    return coachingService.getCoachingState();
+  });
+
+  ipcMain.handle(IpcChannels.GET_COACHING_FEEDBACK, async () => {
+    if (!coachingService) {
+      return [];
+    }
+    return coachingService.getFeedbackHistory();
   });
 }
 
@@ -2011,7 +2111,8 @@ function setupMeetingDetectionHandlers() {
 
     // Forward transcript chunk to coaching service if active
     if (coachingService) {
-      coachingService.addTranscriptChunk(chunk);
+      const enrichedChunk = meetingId ? { ...chunk, meetingId } : chunk;
+      coachingService.addTranscriptChunk(enrichedChunk);
     }
   });
 
@@ -2330,12 +2431,23 @@ app.whenReady().then(async () => {
 
   logger.info('[MAIN-INIT] PromptService status:', { isNull: promptService === null });
 
-  storageService = new StorageService(settingsService);
+  storageService = new StorageService(settingsService, notifyMeetingsUpdated);
   await storageService.initialize();
 
   searchService = new SearchService();
   const meetings = await storageService.getAllMeetings();
   searchService.updateIndex(meetings);
+
+  void storageService.waitForFullRefresh()
+    .then(async () => {
+      const refreshedMeetings = await storageService.getAllMeetings();
+      searchService.updateIndex(refreshedMeetings);
+    })
+    .catch((error) => {
+      logger.error('[MAIN-INIT] Background storage refresh failed', {
+        error: error instanceof Error ? error.message : error
+      });
+    });
 
   calendarService = new CalendarService();
   notionTodoService = new NotionTodoService();

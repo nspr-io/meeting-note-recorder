@@ -208,6 +208,8 @@ const SavedBadge = styled.span`
   color: #34c759;
 `;
 
+const MASKED_VALUE = '••••••••••';
+
 interface SettingsProps {
   settings: AppSettings | null;
   onUpdateSettings: (updates: Partial<AppSettings>) => Promise<void>;
@@ -215,9 +217,9 @@ interface SettingsProps {
 
 
 function Settings({ settings, onUpdateSettings }: SettingsProps) {
-  const [apiKey, setApiKey] = useState(settings?.recallApiKey || '');
+  const [apiKey, setApiKey] = useState(settings?.recallApiKey ? MASKED_VALUE : '');
   const [apiUrl, setApiUrl] = useState(settings?.recallApiUrl || 'https://us-west-2.recall.ai');
-  const [anthropicApiKey, setAnthropicApiKey] = useState(settings?.anthropicApiKey || '');
+  const [anthropicApiKey, setAnthropicApiKey] = useState(settings?.anthropicApiKey ? MASKED_VALUE : '');
   const [storagePath, setStoragePath] = useState(settings?.storagePath || '');
   const [autoStart, setAutoStart] = useState(settings?.autoStartOnBoot || false);
   const [isCalendarConnected, setIsCalendarConnected] = useState(settings?.googleCalendarConnected || false);
@@ -233,15 +235,21 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
   const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null);
   const [hasSavedRecallApiKey, setHasSavedRecallApiKey] = useState<boolean>(Boolean(settings?.recallApiKey));
   const [hasSavedAnthropicKey, setHasSavedAnthropicKey] = useState<boolean>(Boolean(settings?.anthropicApiKey));
+  const [isRecallApiKeyMasked, setIsRecallApiKeyMasked] = useState<boolean>(Boolean(settings?.recallApiKey));
+  const [isAnthropicApiKeyMasked, setIsAnthropicApiKeyMasked] = useState<boolean>(Boolean(settings?.anthropicApiKey));
   const [coaches, setCoaches] = useState<CoachConfig[]>(settings?.coaches || []);
 
   useEffect(() => {
     if (settings) {
-      setHasSavedRecallApiKey(Boolean(settings.recallApiKey));
-      setHasSavedAnthropicKey(Boolean(settings.anthropicApiKey));
-      setApiKey('');
+      const hasRecallKey = Boolean(settings.recallApiKey);
+      const hasAnthropic = Boolean(settings.anthropicApiKey);
+      setHasSavedRecallApiKey(hasRecallKey);
+      setIsRecallApiKeyMasked(hasRecallKey);
+      setApiKey(hasRecallKey ? MASKED_VALUE : '');
       setApiUrl(settings.recallApiUrl);
-      setAnthropicApiKey('');
+      setHasSavedAnthropicKey(hasAnthropic);
+      setIsAnthropicApiKeyMasked(hasAnthropic);
+      setAnthropicApiKey(hasAnthropic ? MASKED_VALUE : '');
       setStoragePath(settings.storagePath);
       setAutoStart(settings.autoStartOnBoot);
       setIsCalendarConnected(settings.googleCalendarConnected);
@@ -289,21 +297,26 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
     try {
       const updates: Partial<AppSettings> = { recallApiUrl: apiUrl };
 
-      if (apiKey.trim().length > 0) {
+      const shouldUpdateRecallKey = !isRecallApiKeyMasked && apiKey.trim().length > 0;
+      const shouldUpdateAnthropicKey = !isAnthropicApiKeyMasked && anthropicApiKey.trim().length > 0;
+
+      if (shouldUpdateRecallKey) {
         updates.recallApiKey = apiKey.trim();
       }
 
-      if (anthropicApiKey.trim().length > 0) {
+      if (shouldUpdateAnthropicKey) {
         updates.anthropicApiKey = anthropicApiKey.trim();
       }
 
       await onUpdateSettings(updates);
-      if (apiKey.trim().length > 0) {
-        setApiKey('');
+      if (shouldUpdateRecallKey) {
+        setApiKey(MASKED_VALUE);
+        setIsRecallApiKeyMasked(true);
         setHasSavedRecallApiKey(true);
       }
-      if (anthropicApiKey.trim().length > 0) {
-        setAnthropicApiKey('');
+      if (shouldUpdateAnthropicKey) {
+        setAnthropicApiKey(MASKED_VALUE);
+        setIsAnthropicApiKeyMasked(true);
         setHasSavedAnthropicKey(true);
       }
       setStatusMessage({ type: 'success', text: 'API settings saved successfully' });
@@ -320,6 +333,7 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
       await onUpdateSettings({ recallApiKey: '' });
       setHasSavedRecallApiKey(false);
       setApiKey('');
+      setIsRecallApiKeyMasked(false);
       setStatusMessage({ type: 'success', text: 'Recall API key removed' });
     } catch (error) {
       setStatusMessage({ type: 'error', text: 'Failed to clear Recall API key' });
@@ -334,6 +348,7 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
       await onUpdateSettings({ anthropicApiKey: '' });
       setHasSavedAnthropicKey(false);
       setAnthropicApiKey('');
+      setIsAnthropicApiKeyMasked(false);
       setStatusMessage({ type: 'success', text: 'Anthropic API key removed' });
     } catch (error) {
       setStatusMessage({ type: 'error', text: 'Failed to clear Anthropic API key' });
@@ -523,6 +538,18 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
             type="password"
           value={apiKey}
           placeholder={hasSavedRecallApiKey && !apiKey ? '••••••••••' : 'Enter your recall.ai API key'}
+            onFocus={() => {
+              if (isRecallApiKeyMasked) {
+                setApiKey('');
+                setIsRecallApiKeyMasked(false);
+              }
+            }}
+            onBlur={() => {
+              if (!apiKey && hasSavedRecallApiKey) {
+                setApiKey(MASKED_VALUE);
+                setIsRecallApiKeyMasked(true);
+              }
+            }}
             onChange={(e) => setApiKey(e.target.value)}
           />
         </FormGroup>
@@ -566,6 +593,18 @@ function Settings({ settings, onUpdateSettings }: SettingsProps) {
             type="password"
           value={anthropicApiKey}
           placeholder={hasSavedAnthropicKey && !anthropicApiKey ? '••••••••••' : 'Enter your Anthropic API key (optional)'}
+            onFocus={() => {
+              if (isAnthropicApiKeyMasked) {
+                setAnthropicApiKey('');
+                setIsAnthropicApiKeyMasked(false);
+              }
+            }}
+            onBlur={() => {
+              if (!anthropicApiKey && hasSavedAnthropicKey) {
+                setAnthropicApiKey(MASKED_VALUE);
+                setIsAnthropicApiKeyMasked(true);
+              }
+            }}
             onChange={(e) => setAnthropicApiKey(e.target.value)}
           />
           <div style={{ fontSize: '11px', color: '#86868b', marginTop: '4px' }}>

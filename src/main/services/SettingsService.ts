@@ -1,4 +1,5 @@
 import Store from 'electron-store';
+import { promises as fs } from 'fs';
 import path from 'path';
 import { app } from 'electron';
 import { AppSettings, CoachConfig, DEFAULT_COACH_CONFIGS, UserProfile } from '../../shared/types';
@@ -50,13 +51,13 @@ export class SettingsService {
 
     // Ensure storage directory exists
     const storagePath = this.getSettings().storagePath;
-    const fs = require('fs').promises;
-
     try {
       await fs.mkdir(storagePath, { recursive: true });
     } catch (error) {
       logger.error('Failed to create storage directory:', error);
     }
+
+    await this.syncCustomCoachesFromPrompts();
 
     // Log current settings for debugging
     logger.info('Settings initialized:', {
@@ -119,6 +120,72 @@ export class SettingsService {
     }
 
     return Array.from(merged.values());
+  }
+
+  private async syncCustomCoachesFromPrompts(): Promise<void> {
+    try {
+      const promptsDir = path.join(app.getPath('userData'), 'prompts');
+      await fs.mkdir(promptsDir, { recursive: true });
+
+      const entries = await fs.readdir(promptsDir);
+      const coachPromptIds = new Set(
+        entries
+          .filter(name => name.startsWith('coach-') && name.endsWith('.txt'))
+          .map(name => name.slice(0, -4))
+      );
+
+      const defaultCoachIds = new Set(DEFAULT_COACH_CONFIGS.map(coach => coach.id));
+      const currentCoaches = this.getCoaches();
+      const coachMap = new Map<string, CoachConfig>(currentCoaches.map(coach => [coach.id, { ...coach }]));
+
+      let mutated = false;
+
+      for (const coachId of coachPromptIds) {
+        if (defaultCoachIds.has(coachId)) {
+          continue;
+        }
+
+        if (!coachMap.has(coachId)) {
+          coachMap.set(coachId, {
+            id: coachId,
+            name: this.deriveCoachName(coachId),
+            description: '',
+            enabled: true,
+            isCustom: true,
+          });
+          mutated = true;
+        }
+      }
+
+      for (const [coachId, coach] of coachMap.entries()) {
+        if (coach.isCustom && !coachPromptIds.has(coachId) && coach.enabled) {
+          coachMap.set(coachId, { ...coach, enabled: false });
+          mutated = true;
+        }
+      }
+
+      if (mutated) {
+        this.setCoaches(Array.from(coachMap.values()));
+      }
+    } catch (error) {
+      logger.warn('Failed to synchronize custom coaches from prompts directory:', error);
+    }
+  }
+
+  private deriveCoachName(coachId: string): string {
+    const trimmed = coachId.replace(/^coach-/, '');
+    if (!trimmed) {
+      return 'Custom Coach';
+    }
+
+    const parts = trimmed.split('-').filter(Boolean);
+    if (parts.length === 0) {
+      return 'Custom Coach';
+    }
+
+    return parts
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
   }
 
   async updateSettings(updates: Partial<AppSettings>): Promise<AppSettings> {

@@ -4,23 +4,30 @@ import { v4 as uuidv4 } from 'uuid';
 import matter from 'gray-matter';
 import path from 'path';
 import fs from 'fs/promises';
+import chokidar, { FSWatcher } from 'chokidar';
 import { format } from 'date-fns';
 import { app } from 'electron';
 import { DescriptionProcessingService } from './DescriptionProcessingService';
 import { detectPlatform } from '../../shared/utils/PlatformDetector';
 import { getLogger } from './LoggingService';
+import { notifyMeetingsUpdated } from '../index';
 
 const logger = getLogger();
 
 export class StorageService {
   private meetingsCache: Map<string, Meeting> = new Map();
+  private fileWatchers: Map<string, { watcher: FSWatcher; debounceTimer?: NodeJS.Timeout }> = new Map();
+  private readonly watcherDebounceMs = 300;
   private settingsService: SettingsService;
   private storagePath: string;
   private cacheFilePath: string;
   private descriptionProcessor: DescriptionProcessingService;
+  private notifyMeetingsUpdated: () => void;
+  private fullRefreshPromise: Promise<void> | null = null;
 
-  constructor(settingsService: SettingsService) {
+  constructor(settingsService: SettingsService, notifyMeetingsUpdated: () => void) {
     this.settingsService = settingsService;
+    this.notifyMeetingsUpdated = notifyMeetingsUpdated;
     this.storagePath = settingsService.getSettings().storagePath;
     // Store cache in app data directory for fast loading
     const appDataPath = app.getPath('userData');
@@ -32,24 +39,133 @@ export class StorageService {
     this.descriptionProcessor.initialize(apiKey);
   }
 
-  async initialize(): Promise<void> {
-    // Migrate existing flat files to year/month structure (one-time operation)
-    await this.migrateExistingFilesToYearMonth();
+  private watchMeetingFile(meeting: Meeting): void {
+    if (!meeting.filePath || this.fileWatchers.has(meeting.id)) {
+      return;
+    }
 
-    // Load all meetings from markdown files - this is the source of truth
-    await this.loadAllMeetings();
+    const normalizedPath = path.resolve(meeting.filePath);
+    const watcher = chokidar.watch(normalizedPath, {
+      persistent: true,
+      ignoreInitial: true,
+      depth: 0,
+      awaitWriteFinish: {
+        stabilityThreshold: 200,
+        pollInterval: 100
+      }
+    });
 
-    // Ensure legacy meetings persist insights metadata/artifacts
-    await this.ensureInsightsArtifacts();
+    const handleChange = () => {
+      const entry = this.fileWatchers.get(meeting.id);
+      if (!entry) {
+        return;
+      }
 
-    // Clean up any stuck "recording" states from previous app crashes
-    // This now runs AFTER loading files, so it can detect and fix stuck recordings
-    await this.cleanupStuckRecordings();
+      if (entry.debounceTimer) {
+        clearTimeout(entry.debounceTimer);
+      }
 
-    // Adoption logic removed - MCP handles prep notes now
+      entry.debounceTimer = setTimeout(async () => {
+        try {
+          const refreshed = await this.loadMeetingFromFile(normalizedPath);
+          if (refreshed) {
+            this.meetingsCache.set(meeting.id, refreshed);
+            logger.info('[FILE-WATCHER] Reloaded meeting from disk', {
+              meetingId: meeting.id,
+              filePath: normalizedPath
+            });
+            this.notifyMeetingsUpdated();
+          }
+        } catch (error) {
+          logger.warn('[FILE-WATCHER] Failed to reload meeting from disk', {
+            meetingId: meeting.id,
+            filePath: normalizedPath,
+            error: error instanceof Error ? error.message : error
+          });
+        }
+      }, this.watcherDebounceMs);
+    };
 
-    // Save the cleaned-up cache to disk
-    await this.saveCacheToDisk();
+    watcher.on('change', handleChange);
+    watcher.on('error', (error: unknown) => {
+      logger.warn('[FILE-WATCHER] Watcher error', {
+        meetingId: meeting.id,
+        filePath: normalizedPath,
+        error: error instanceof Error ? error.message : error
+      });
+    });
+
+    this.fileWatchers.set(meeting.id, { watcher });
+  }
+
+  private unwatchMeetingFile(meetingId: string): void {
+    const entry = this.fileWatchers.get(meetingId);
+    if (!entry) {
+      return;
+    }
+
+    if (entry.debounceTimer) {
+      clearTimeout(entry.debounceTimer);
+    }
+
+    entry.watcher.close().catch((error) => {
+      logger.warn('[FILE-WATCHER] Failed to close watcher', {
+        meetingId,
+        error: error instanceof Error ? error.message : error
+      });
+    });
+
+    this.fileWatchers.delete(meetingId);
+  }
+
+  private unwatchAllMeetingFiles(): void {
+    for (const meetingId of this.fileWatchers.keys()) {
+      this.unwatchMeetingFile(meetingId);
+    }
+  }
+
+  async initialize(options?: { awaitFullSync?: boolean }): Promise<void> {
+    await this.loadCacheFromDisk();
+
+    // Inform listeners that cached data is available immediately
+    this.notifyMeetingsUpdated();
+
+    const runFullRefresh = async () => {
+      try {
+        await this.migrateExistingFilesToYearMonth();
+        await this.loadAllMeetings();
+        await this.ensureInsightsArtifacts();
+        await this.cleanupStuckRecordings();
+        await this.saveCacheToDisk();
+        this.notifyMeetingsUpdated();
+      } finally {
+        this.fullRefreshPromise = null;
+      }
+    };
+
+    const fullRefreshPromise = runFullRefresh().catch((error) => {
+      logger.error('[STORAGE] Full refresh failed', {
+        error: error instanceof Error ? error.message : error
+      });
+      throw error;
+    });
+
+    this.fullRefreshPromise = fullRefreshPromise;
+
+    if (options?.awaitFullSync) {
+      await fullRefreshPromise;
+    } else {
+      // Prevent unhandled rejection warnings
+      fullRefreshPromise.catch(() => undefined);
+    }
+  }
+
+  async waitForFullRefresh(): Promise<void> {
+    if (!this.fullRefreshPromise) {
+      return;
+    }
+
+    await this.fullRefreshPromise;
   }
 
   private async migrateExistingFilesToYearMonth(): Promise<void> {
@@ -149,6 +265,7 @@ export class StorageService {
     const storagePath = this.settingsService.getSettings().storagePath;
 
     try {
+      this.unwatchAllMeetingFiles();
       // IMPORTANT: Clear the cache first to avoid mixing old/new data
       this.meetingsCache.clear();
       logger.info('[LOAD] Cleared existing cache before loading from files');
@@ -200,6 +317,7 @@ export class StorageService {
         const meeting = await this.loadMeetingFromFile(filePath);
         if (meeting) {
           this.meetingsCache.set(meeting.id, meeting);
+          this.watchMeetingFile(meeting);
           loadedCount++;
         }
       }
@@ -438,54 +556,20 @@ ${meeting.transcript || ''}`;
       status: meeting.status
     });
 
-    const storagePath = this.settingsService.getSettings().storagePath;
-    const fileName = this.generateFileName(meeting);
-    meeting.filePath = path.join(storagePath, fileName);
-
-    // Only create file if there's actual content (notes or transcript)
-    const hasNotes = meeting.notes && meeting.notes.trim().length > 0;
-    const hasTranscript = meeting.transcript && meeting.transcript.trim().length > 0;
-
-    if (hasNotes || hasTranscript) {
-      await this.ensureDirectoryExists(meeting.filePath);
-      const markdown = this.formatMeetingToMarkdown(meeting);
-      await fs.writeFile(meeting.filePath, markdown, 'utf-8');
-      logger.info('[JOURNEY-STORAGE-3] Meeting file created immediately (has content)', {
-        id: meeting.id,
-        hasNotes,
-        hasTranscript,
-        filePath: meeting.filePath
-      });
-    } else {
-      logger.info('[JOURNEY-STORAGE-3] Meeting file NOT created (no content yet)', {
-        id: meeting.id,
-        filePath: meeting.filePath
-      });
-    }
-
-    this.meetingsCache.set(meeting.id, meeting);
-    logger.info('[JOURNEY-STORAGE-4] Meeting added to cache', {
-      id: meeting.id,
-      cacheSize: this.meetingsCache.size
-    });
-
-    logger.info('[JOURNEY-STORAGE-4.5] About to save cache to disk', {
-      id: meeting.id,
-      cacheSize: this.meetingsCache.size
-    });
-
     try {
-      await this.saveCacheToDisk(); // Save cache after creating meeting
-      logger.info('[JOURNEY-STORAGE-5] Cache saved to disk', {
-        id: meeting.id
+      const filePath = await this.saveMeeting(meeting);
+      logger.info('[JOURNEY-STORAGE-3] Meeting file ensured on create', {
+        id: meeting.id,
+        filePath
       });
+      this.watchMeetingFile(meeting);
     } catch (error) {
-      logger.error('[JOURNEY-STORAGE-5-ERROR] Failed to save cache to disk', {
+      logger.error('[JOURNEY-STORAGE-3-ERROR] Failed to persist new meeting to disk', {
         id: meeting.id,
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined
       });
-      throw error; // Re-throw to ensure the error propagates
+      throw error;
     }
 
     return meeting;
@@ -673,10 +757,7 @@ ${meeting.transcript || ''}`;
     const transcriptChanged = updatedMeeting.transcript !== originalTranscript;
     const insightsPathChanged = insightsFilePath !== originalInsightsPath;
 
-    // Only create/update file if:
-    // 1. File doesn't exist and we now have content or metadata to persist
-    // 2. File exists and needs updating (content or metadata changed)
-    const shouldCreateFile = !fileExists && (hasSignificantNotes || hasSignificantTranscript || !!insightsFilePath);
+    const shouldCreateFile = !fileExists;
     const shouldUpdateFile = fileExists && (notesChanged || transcriptChanged || updates.title || updates.date || updates.status || updates.duration || insightsPathChanged);
 
     if (shouldCreateFile || shouldUpdateFile) {
@@ -701,6 +782,7 @@ ${meeting.transcript || ''}`;
     }
 
     this.meetingsCache.set(id, updatedMeeting);
+    this.watchMeetingFile(updatedMeeting);
     logger.info('[JOURNEY-STORAGE-UPDATE-2] Meeting updated in cache', {
       id,
       title: updatedMeeting.title,
@@ -718,6 +800,8 @@ ${meeting.transcript || ''}`;
     if (!meeting) {
       throw new Error(`Meeting ${id} not found`);
     }
+
+    this.unwatchMeetingFile(id);
 
     if (meeting.filePath) {
       try {
@@ -774,6 +858,7 @@ ${meeting.transcript || ''}`;
       const refreshed = await this.loadMeetingFromFile(meeting.filePath);
       if (refreshed) {
         this.meetingsCache.set(id, refreshed);
+        this.watchMeetingFile(refreshed);
         logger.info('[REFRESH-MEETING] Refreshed meeting from disk', {
           id,
           title: refreshed.title,
@@ -782,7 +867,24 @@ ${meeting.transcript || ''}`;
         return refreshed;
       }
     } catch (error) {
-      logger.error('[REFRESH-MEETING] Failed to refresh from disk, using cache', { id, error });
+      const err = error as NodeJS.ErrnoException;
+      if (err?.code === 'ENOENT') {
+        logger.warn('[REFRESH-MEETING] Meeting file missing on disk, regenerating from cache', {
+          id,
+          filePath: meeting.filePath
+        });
+        try {
+          await this.saveMeetingToFile(meeting);
+          this.watchMeetingFile(meeting);
+        } catch (saveError) {
+          logger.error('[REFRESH-MEETING] Failed to recreate missing meeting file', {
+            id,
+            error: saveError instanceof Error ? saveError.message : saveError
+          });
+        }
+      } else {
+        logger.error('[REFRESH-MEETING] Failed to refresh from disk, using cache', { id, error });
+      }
     }
 
     return meeting;
@@ -1045,12 +1147,16 @@ ${meeting.transcript || ''}`;
     }
   }
 
-  async appendTranscript(meetingId: string, chunk: TranscriptChunk): Promise<void> {
+  async appendTranscript(meetingId: string, chunk: TranscriptChunk, options?: { dedupeKey?: string; replace?: boolean }): Promise<void> {
     logger.info('[JOURNEY-TRANSCRIPT-APPEND] Appending transcript chunk', {
       meetingId,
       speaker: chunk.speaker,
       textLength: chunk.text?.length,
-      timestamp: chunk.timestamp
+      timestamp: chunk.timestamp,
+      sequenceId: chunk.sequenceId,
+      isFinal: chunk.isFinal,
+      dedupeKey: options?.dedupeKey,
+      replace: options?.replace
     });
 
     const meeting = this.meetingsCache.get(meetingId);
@@ -1059,14 +1165,49 @@ ${meeting.transcript || ''}`;
       throw new Error(`Meeting ${meetingId} not found`);
     }
 
-    const timestamp = format(chunk.timestamp, 'HH:mm:ss');
+    const timestamp = format(new Date(chunk.timestamp), 'HH:mm:ss');
     const line = chunk.speaker 
       ? `[${timestamp}] ${chunk.speaker}: ${chunk.text}`
       : `[${timestamp}] ${chunk.text}`;
 
-    meeting.transcript = meeting.transcript 
-      ? `${meeting.transcript}\n${line}`
-      : line;
+    // Deduplicate by hashed key to avoid duplicates from partial/final pairs
+    const dedupeKey = options?.dedupeKey || chunk.sequenceId || chunk.hash;
+    if (dedupeKey) {
+      if (!meeting.__transcriptDedupeIndex) {
+        Object.defineProperty(meeting, '__transcriptDedupeIndex', {
+          value: new Map<string, string>(),
+          enumerable: false,
+          configurable: false,
+          writable: false
+        });
+      }
+      const dedupeIndex: Map<string, string> = meeting.__transcriptDedupeIndex!;
+      const existingLine = dedupeIndex.get(dedupeKey);
+
+      if (existingLine && !options?.replace) {
+        logger.info('[JOURNEY-TRANSCRIPT-APPEND] Skipping duplicate transcript chunk', {
+          meetingId,
+          dedupeKey
+        });
+        return;
+      }
+
+      if (options?.replace && existingLine) {
+        meeting.transcript = meeting.transcript
+          ? meeting.transcript.replace(existingLine, line)
+          : line;
+      } else {
+        meeting.transcript = meeting.transcript
+          ? `${meeting.transcript}\n${line}`
+          : line;
+      }
+
+      dedupeIndex.set(dedupeKey, line);
+    } else {
+      meeting.transcript = meeting.transcript
+        ? `${meeting.transcript}\n${line}`
+        : line;
+    }
 
     await this.updateMeeting(meetingId, { transcript: meeting.transcript });
   }
@@ -1128,6 +1269,7 @@ ${meeting.transcript || ''}`;
     for (const [meetingId] of this.autoSaveTimers) {
       this.stopAutoSave(meetingId);
     }
+    this.unwatchAllMeetingFiles();
   }
 
   getStoragePath(): string {

@@ -234,13 +234,15 @@ function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalenda
     );
   }
 
+  const showSkeleton = isLoading && meetings.length === 0;
+
   return (
     <ListContainer>
       <SyncStatus>
         Auto-syncing • Last sync {formatDistanceToNow(lastSyncTime, { addSuffix: true })}
       </SyncStatus>
 
-      {isLoading ? (
+      {showSkeleton ? (
         <>
           {[1, 2, 3, 4, 5].map(i => (
             <SkeletonItem key={i}>

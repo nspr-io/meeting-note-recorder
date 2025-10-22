@@ -34,6 +34,7 @@ export interface Meeting {
   createdAt?: Date;
   updatedAt?: Date;
   autoRecordApproved?: boolean; // Flag to track if user pre-approved recording
+  __transcriptDedupeIndex?: Map<string, string>;
 }
 
 export interface MeetingNotification {
@@ -50,9 +51,15 @@ export interface NotificationAction {
 }
 
 export interface TranscriptChunk {
-  timestamp: Date;
+  timestamp: Date | string;
   speaker?: string;
   text: string;
+  sequenceId?: string;
+  isFinal?: boolean;
+  partial?: boolean;
+  persisted?: boolean;
+  hash?: string;
+  meetingId?: string;
 }
 
 export interface UserProfile {
@@ -153,6 +160,7 @@ export enum IpcChannels {
   RECORDING_STARTED = 'recording-started',
   RECORDING_STOPPED = 'recording-stopped',
   TRANSCRIPT_UPDATE = 'transcript-update',
+  GET_TRANSCRIPT_BUFFER = 'get-transcript-buffer',
   CONNECTION_STATUS = 'connection-status',
   SETTINGS_UPDATED = 'settings-updated',
   MEETINGS_UPDATED = 'meetings-updated',
@@ -206,8 +214,14 @@ export enum IpcChannels {
   START_COACHING = 'start-coaching',
   STOP_COACHING = 'stop-coaching',
   UPDATE_COACHING_NOTES = 'update-coaching-notes',
+  GET_COACHING_STATE = 'get-coaching-state',
+  GET_COACHING_FEEDBACK = 'get-coaching-feedback',
+  OPEN_COACH_WINDOW = 'open-coach-window',
+  CLOSE_COACH_WINDOW = 'close-coach-window',
+  GET_COACH_WINDOW_STATUS = 'get-coach-window-status',
   COACHING_FEEDBACK = 'coaching-feedback',
   COACHING_ERROR = 'coaching-error',
+  COACH_WINDOW_STATUS = 'coach-window-status',
 }
 
 export interface SearchOptions {
@@ -241,4 +255,14 @@ export interface CoachingFeedback {
   alerts: string[];
   observations: string[];
   suggestions: string[];
+}
+
+export interface CoachingState {
+  isActive: boolean;
+  coachingType: CoachingType | null;
+  meetingId: string | null;
+}
+
+export interface CoachWindowStatus {
+  isOpen: boolean;
 }

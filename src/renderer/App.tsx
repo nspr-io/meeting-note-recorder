@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import styled from '@emotion/styled';
 import Split from 'react-split';
-import { Meeting, AppSettings, IpcChannels } from '../shared/types';
+import { Meeting, AppSettings, IpcChannels, CoachingFeedback, CoachingState } from '../shared/types';
 import MeetingList from './components/MeetingList';
 import MeetingDetailFinal from './components/MeetingDetailFinal';
 import Settings from './components/Settings';
@@ -239,7 +239,7 @@ const StatusBar = styled.div`
   color: #86868b;
 `;
 
-const StatusIndicator = styled.div<{ type: 'recording' | 'connected' | 'disconnected' | 'processing' }>`
+const StatusIndicator = styled.div<{ type: 'recording' | 'connected' | 'disconnected' | 'processing' | 'coaching' }>`
   display: flex;
   align-items: center;
   gap: 6px;
@@ -255,6 +255,7 @@ const StatusIndicator = styled.div<{ type: 'recording' | 'connected' | 'disconne
         case 'recording': return '#ff3b30';
         case 'connected': return '#34c759';
         case 'disconnected': return '#ff9500';
+        case 'coaching': return '#5856d6';
         case 'processing': return '#007aff';
         default: return '#86868b';
       }
@@ -383,8 +384,12 @@ const Toast = styled.div<{ show: boolean; type?: 'success' | 'error' | 'info' }>
 
 type ViewMode = 'meetings' | 'settings' | 'profile' | 'prompts';
 type TabMode = 'upcoming' | 'past';
+type CoachingSessionState = CoachingState & { feedbackHistory: CoachingFeedback[] };
 
 function App() {
+  const searchParams = new URLSearchParams(window.location.search);
+  const isCoachPopout = searchParams.get('mode') === 'coach-popout';
+  const focusMeetingIdFromUrl = searchParams.get('meetingId') || undefined;
   const [viewMode, setViewMode] = useState<ViewMode>('meetings');
   const [tabMode, setTabMode] = useState<TabMode>('upcoming');
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -398,6 +403,46 @@ function App() {
   const [toastMessage, setToastMessage] = useState('');
   const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('success');
   const [searchCollapsed, setSearchCollapsed] = useState(false);
+  const [coachingState, setCoachingState] = useState<CoachingSessionState>({
+    isActive: false,
+    coachingType: null,
+    meetingId: null,
+    feedbackHistory: [],
+  });
+  const [isCoachWindowOpen, setIsCoachWindowOpen] = useState(false);
+
+  const refreshCoachingState = useCallback(async () => {
+    if (typeof window.electronAPI === 'undefined') {
+      return;
+    }
+
+    try {
+      const [state, history] = await Promise.all([
+        window.electronAPI.getCoachingState?.(),
+        window.electronAPI.getCoachingFeedbackHistory?.(),
+      ]);
+
+      const safeState: CoachingState = state || { isActive: false, coachingType: null, meetingId: null };
+      const safeHistory: CoachingFeedback[] = Array.isArray(history) ? history : [];
+
+      setCoachingState({
+        isActive: !!safeState.isActive,
+        coachingType: safeState.coachingType ?? null,
+        meetingId: safeState.meetingId ?? null,
+        feedbackHistory: safeHistory,
+      });
+    } catch (error) {
+      console.error('[COACHING] Failed to refresh coaching state:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedMeeting) return;
+    const updated = meetings.find(m => m.id === selectedMeeting.id);
+    if (updated && updated !== selectedMeeting) {
+      setSelectedMeeting(updated);
+    }
+  }, [meetings, selectedMeeting]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
   const [isTranscriptCleaning, setIsTranscriptCleaning] = useState(false);
@@ -413,14 +458,27 @@ function App() {
     
     loadMeetings();
     loadSettings();
-    setupEventListeners();
+    const teardownListeners = setupEventListeners();
+    refreshCoachingState();
+    window.electronAPI.getCoachWindowStatus?.()
+      ?.then((status: { isOpen?: boolean } | undefined) => {
+        if (status) {
+          setIsCoachWindowOpen(!!status.isOpen);
+        }
+      })
+      .catch((error: any) => {
+        console.error('[COACHING] Failed to get coach window status:', error);
+      });
 
     return () => {
       if (toastTimeoutRef.current) {
         clearTimeout(toastTimeoutRef.current);
       }
+      if (typeof teardownListeners === 'function') {
+        teardownListeners();
+      }
     };
-  }, []);
+  }, [refreshCoachingState]);
 
   const loadMeetings = async () => {
     try {
@@ -619,6 +677,23 @@ function App() {
     window.electronAPI.on(IpcChannels.SETTINGS_UPDATED, (newSettings: AppSettings) => {
       setSettings(newSettings);
     });
+    const handleCoachWindowStatus = (status: { isOpen?: boolean }) => {
+      setIsCoachWindowOpen(!!status?.isOpen);
+    };
+    window.electronAPI.on(IpcChannels.COACH_WINDOW_STATUS, handleCoachWindowStatus);
+    const handleCoachingFeedback = async () => {
+      await refreshCoachingState();
+    };
+
+    const handleCoachingError = async (data: { meetingId?: string; error?: string }) => {
+      await refreshCoachingState();
+      if (data?.error) {
+        showToastHelper(`Coaching error: ${data.error}`, 'error');
+      }
+    };
+
+    window.electronAPI.on(IpcChannels.COACHING_FEEDBACK, handleCoachingFeedback);
+    window.electronAPI.on(IpcChannels.COACHING_ERROR, handleCoachingError);
     // Listen for select-meeting event from main process
     window.electronAPI.on('select-meeting', async (data: { meetingId: string }) => {
       // Reload meetings first
@@ -655,6 +730,10 @@ function App() {
         });
       }
     });
+
+    return () => {
+      window.electronAPI.removeListener?.(IpcChannels.COACH_WINDOW_STATUS, handleCoachWindowStatus);
+    };
   };
 
   const handleCreateMeeting = async () => {
@@ -738,6 +817,40 @@ function App() {
     });
   };
 
+  const coachingMeeting = coachingState.meetingId
+    ? meetings.find(m => m.id === coachingState.meetingId)
+    : null;
+
+  useEffect(() => {
+    if (!isCoachPopout) return;
+    const targetId = focusMeetingIdFromUrl || coachingState.meetingId;
+    if (!targetId) return;
+    if (!meetings || meetings.length === 0) return;
+    const found = meetings.find(m => m.id === targetId);
+    if (found && (!selectedMeeting || selectedMeeting.id !== found.id)) {
+      setSelectedMeeting(found);
+    }
+  }, [isCoachPopout, focusMeetingIdFromUrl, coachingState.meetingId, meetings, selectedMeeting]);
+
+  const handleOpenCoachWindow = useCallback(async (meetingId: string) => {
+    try {
+      await window.electronAPI.openCoachWindow?.(meetingId);
+      setIsCoachWindowOpen(true);
+    } catch (error) {
+      console.error('[COACHING] Failed to open coach window:', error);
+      showToastHelper('Failed to open coach window.', 'error');
+    }
+  }, []);
+
+  const handleCloseCoachWindow = useCallback(async () => {
+    try {
+      await window.electronAPI.closeCoachWindow?.();
+      setIsCoachWindowOpen(false);
+    } catch (error) {
+      console.error('[COACHING] Failed to close coach window:', error);
+    }
+  }, []);
+
   // Show error if electronAPI is not available
   if (typeof window.electronAPI === 'undefined') {
     return (
@@ -747,6 +860,47 @@ function App() {
           <p>The Electron API is not available. Please restart the application.</p>
           <p>If this persists, check the console for errors.</p>
         </div>
+      </AppContainer>
+    );
+  }
+
+  if (isCoachPopout) {
+    return (
+      <AppContainer>
+        {selectedMeeting ? (
+          <MeetingDetailFinal
+            key={selectedMeeting.id}
+            meeting={selectedMeeting}
+            onUpdateMeeting={async (updates) => {
+              await window.electronAPI.updateMeeting(selectedMeeting.id, updates);
+              await loadMeetings();
+            }}
+            onDeleteMeeting={async (meetingId) => {
+              await window.electronAPI.deleteMeeting(meetingId);
+              await loadMeetings();
+            }}
+            onRefresh={async () => {
+              await loadMeetings();
+              const updatedMeetings = await window.electronAPI.getMeetings();
+              const updatedMeeting = updatedMeetings.find((m: Meeting) => m.id === selectedMeeting.id);
+              if (updatedMeeting) {
+                setSelectedMeeting(updatedMeeting);
+              }
+            }}
+            onShowToast={showToastHelper}
+            coachingState={coachingState}
+            onCoachingStateRefresh={refreshCoachingState}
+            activeCoachingMeeting={coachingMeeting || null}
+            isCoachWindowOpen={true}
+            onCloseCoachWindow={handleCloseCoachWindow}
+            isCoachPopout
+          />
+        ) : (
+          <div style={{ padding: 48, textAlign: 'center' }}>
+            <h2>No coaching session active</h2>
+            <p>Start coaching from the main window to view it here.</p>
+          </div>
+        )}
       </AppContainer>
     );
   }
@@ -919,6 +1073,12 @@ function App() {
                   }
                 }}
                 onShowToast={showToastHelper}
+                coachingState={coachingState}
+                onCoachingStateRefresh={refreshCoachingState}
+                activeCoachingMeeting={coachingMeeting || null}
+                isCoachWindowOpen={isCoachWindowOpen}
+                onOpenCoachWindow={handleOpenCoachWindow}
+                onCloseCoachWindow={handleCloseCoachWindow}
               />
             ) : (
               <div style={{ padding: 50, textAlign: 'center', color: '#86868b' }}>
@@ -952,6 +1112,11 @@ function App() {
         )}
         {isRecording && (
           <StatusIndicator type="recording">Recording</StatusIndicator>
+        )}
+        {coachingState.isActive && (
+          <StatusIndicator type="coaching">
+            Coaching{coachingMeeting ? ` • ${coachingMeeting.title}` : ''}{isCoachWindowOpen ? ' (Pop-out)' : ''}
+          </StatusIndicator>
         )}
         {!isRecording && (
           <StatusIndicator type={connectionStatus}>

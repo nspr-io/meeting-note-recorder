@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { StorageService } from './StorageService';
 import { RecallApiService, TranscriptResponse } from './RecallApiService';
 import { TranscriptChunk, RecordingState } from '../../shared/types';
+import crypto from 'crypto';
 import { SDKDebugger } from './SDKDebugger';
 import { TranscriptCorrectionService } from './TranscriptCorrectionService';
 import { InsightsGenerationService } from './InsightsGenerationService';
@@ -24,6 +25,7 @@ export class RecordingService extends EventEmitter {
   private currentUploadToken: string | null = null;
   private transcriptBuffer: TranscriptChunk[] = [];
   private transcriptBuffers = new Map<string, TranscriptChunk[]>();
+  private partialChunkIndex = new Map<string, TranscriptChunk>();
   private isInitialized = false;
   private sdkDebugger: SDKDebugger;
   private unknownSpeakerCount = 0;
@@ -535,9 +537,20 @@ export class RecordingService extends EventEmitter {
             }
           }
 
+          const captureWindowId = event.window?.id;
+
           // Parse the transcript data based on the Recall.ai format
           let transcriptText = '';
           let speaker = '';
+          let segmentId: string | undefined;
+          let isFinal = event.event === 'transcript.data';
+
+          // Extract segment/sequence identifiers for dedupe
+          if (event.data?.data?.segment || event.data?.data?.sequenceId) {
+            segmentId = String(event.data.data.segment ?? event.data.data.sequenceId);
+          } else if (event.data?.segment || event.data?.sequenceId) {
+            segmentId = String(event.data.segment ?? event.data.sequenceId);
+          }
 
           if (event.data && event.data.data && event.data.data.words && Array.isArray(event.data.data.words) && event.data.data.words.length > 0) {
             // Recall.ai Desktop SDK format - combine all words
@@ -597,23 +610,15 @@ export class RecordingService extends EventEmitter {
             });
 
             // Add to both global and meeting-specific buffers
-            this.transcriptBuffer.push(chunk);
-
-            if (this.recordingState.meetingId) {
-              const buffer = this.transcriptBuffers.get(this.recordingState.meetingId);
-              if (buffer) {
-                buffer.push(chunk);
-              }
-            }
-
-            this.emit('transcript-chunk', chunk);
+            this.storeTranscriptChunk(chunk, segmentId, isFinal, captureWindowId);
 
             // Append to meeting file in real-time
             if (this.recordingState.meetingId) {
-              await this.storageService.appendTranscript(
-                this.recordingState.meetingId,
-                chunk
-              );
+              await this.storageService.appendTranscript(this.recordingState.meetingId, chunk, {
+                dedupeKey: segmentId,
+                replace: isFinal
+              });
+              chunk.persisted = true;
             }
           }
         }
@@ -859,7 +864,7 @@ export class RecordingService extends EventEmitter {
 
       // Start auto-save interval for transcripts
       this.autoSaveInterval = setInterval(() => {
-        this.flushTranscriptBuffer(meetingId);
+        void this.flushTranscriptBuffer(meetingId);
       }, 10000); // Every 10 seconds
 
       // Update meeting status and store recording start time
@@ -998,15 +1003,108 @@ export class RecordingService extends EventEmitter {
 
 
 
+  private formatTranscriptChunk(chunk: TranscriptChunk): string {
+    const time = new Date(chunk.timestamp).toLocaleTimeString();
+    return chunk.speaker
+      ? `[${time}] ${chunk.speaker}: ${chunk.text}`
+      : `[${time}] ${chunk.text}`;
+  }
+
   private formatTranscriptBuffer(): string {
-    return this.transcriptBuffer
-      .map(chunk => {
-        const time = chunk.timestamp.toLocaleTimeString();
-        return chunk.speaker 
-          ? `[${time}] ${chunk.speaker}: ${chunk.text}`
-          : `[${time}] ${chunk.text}`;
-      })
-      .join('\n');
+    return this.transcriptBuffer.map(chunk => this.formatTranscriptChunk(chunk)).join('\n');
+  }
+
+  private generateChunkHash(chunk: TranscriptChunk): string {
+    const base = [
+      chunk.speaker || 'unknown',
+      chunk.text?.trim() || '',
+      new Date(chunk.timestamp).toISOString()
+    ].join('|');
+    return crypto.createHash('sha1').update(base).digest('hex');
+  }
+
+  private storeTranscriptChunk(
+    chunk: TranscriptChunk,
+    sequenceId?: string,
+    isFinal = false,
+    _windowId?: string,
+    fromReplay = false
+  ): void {
+    const meetingId = this.recordingState.meetingId;
+    if (!meetingId) {
+      logger.warn('[TRANSCRIPT] Received chunk without active meeting', {
+        sequenceId,
+        textPreview: chunk.text?.substring(0, 50)
+      });
+      return;
+    }
+
+    const normalized: TranscriptChunk = {
+      ...chunk,
+      timestamp: new Date(chunk.timestamp),
+      sequenceId,
+      isFinal,
+      partial: !isFinal,
+      hash: chunk.hash || this.generateChunkHash(chunk),
+      meetingId,
+      persisted: chunk.persisted || false
+    };
+
+    const dedupeKey = sequenceId || normalized.hash;
+    const existingPartial = dedupeKey ? this.partialChunkIndex.get(dedupeKey) : undefined;
+
+    if (existingPartial) {
+      if (isFinal) {
+        this.partialChunkIndex.delete(dedupeKey!);
+        logger.info('[TRANSCRIPT] Replacing partial chunk with final version', {
+          meetingId,
+          sequenceId: dedupeKey,
+          previousText: existingPartial.text?.substring(0, 50),
+          newText: normalized.text?.substring(0, 50)
+        });
+        this.replaceBufferChunk(meetingId, existingPartial, normalized);
+      } else {
+        // Partial update - replace text but keep in index
+        existingPartial.text = normalized.text;
+        existingPartial.timestamp = normalized.timestamp;
+        existingPartial.hash = normalized.hash;
+        return;
+      }
+    } else {
+      if (!isFinal && dedupeKey) {
+        this.partialChunkIndex.set(dedupeKey, normalized);
+      }
+      this.transcriptBuffer.push(normalized);
+      const buffer = this.transcriptBuffers.get(meetingId);
+      if (buffer) {
+        buffer.push(normalized);
+      }
+    }
+
+    this.emit('transcript-chunk', normalized);
+  }
+
+  private replaceBufferChunk(meetingId: string, existing: TranscriptChunk, replacement: TranscriptChunk) {
+    const replace = (list: TranscriptChunk[]) => {
+      const index = list.findIndex(item => item.hash === existing.hash || (item.sequenceId && item.sequenceId === existing.sequenceId));
+      if (index >= 0) {
+        list[index] = replacement;
+      }
+    };
+
+    replace(this.transcriptBuffer);
+
+    const meetingBuffer = this.transcriptBuffers.get(meetingId);
+    if (meetingBuffer) {
+      replace(meetingBuffer);
+    }
+  }
+
+  getBufferedChunks(meetingId: string): TranscriptChunk[] {
+    return (this.transcriptBuffers.get(meetingId) || []).map(chunk => ({
+      ...chunk,
+      timestamp: new Date(chunk.timestamp).toISOString()
+    }));
   }
 
   // Called by MeetingDetectionService when a meeting window is detected
@@ -1027,20 +1125,35 @@ export class RecordingService extends EventEmitter {
     return this.isInitialized;
   }
 
-  async addTranscriptChunk(meetingId: string, chunk: any): Promise<void> {
+  async addTranscriptChunk(meetingId: string, chunk: TranscriptChunk): Promise<void> {
     if (!this.recordingState.isRecording || this.recordingState.meetingId !== meetingId) {
-      logger.warn('Cannot add transcript chunk - not recording this meeting', { meetingId });
+      logger.warn('Cannot add transcript chunk - not recording this meeting', {
+        meetingId,
+        requestedMeetingId: this.recordingState.meetingId,
+        isRecording: this.recordingState.isRecording
+      });
       return;
     }
 
-    const transcriptChunk: TranscriptChunk = {
+    const normalizedChunk: TranscriptChunk = {
       timestamp: new Date(chunk.timestamp),
       speaker: chunk.speaker,
-      text: chunk.text
+      text: chunk.text,
+      sequenceId: chunk.sequenceId,
+      isFinal: chunk.isFinal,
+      partial: chunk.partial,
+      persisted: chunk.persisted,
+      hash: chunk.hash,
+      meetingId
     };
 
-    this.transcriptBuffer.push(transcriptChunk);
-    logger.info('Transcript chunk added', { meetingId, speaker: chunk.speaker });
+    this.storeTranscriptChunk(normalizedChunk, chunk.sequenceId, chunk.isFinal ?? false, undefined, true);
+    logger.info('Transcript chunk added from external source', {
+      meetingId,
+      speaker: normalizedChunk.speaker,
+      isFinal: normalizedChunk.isFinal,
+      sequenceId: normalizedChunk.sequenceId
+    });
   }
 
   getCorrectionService(): TranscriptCorrectionService {
@@ -1053,10 +1166,56 @@ export class RecordingService extends EventEmitter {
 
   private async flushTranscriptBuffer(meetingId: string) {
     const buffer = this.transcriptBuffers.get(meetingId);
-    if (buffer && buffer.length > 0) {
-      logger.info(`Auto-saving ${buffer.length} transcript chunks for meeting ${meetingId}`);
-      // The chunks are already being persisted in real-time via appendTranscript
-      // This is just a log for monitoring
+    if (!buffer || buffer.length === 0) {
+      logger.info('[TRANSCRIPT-FLUSH] No buffered transcript chunks to flush', { meetingId });
+      return;
+    }
+
+    const unsaved = buffer.filter(chunk => !chunk.persisted);
+    if (unsaved.length === 0) {
+      logger.info('[TRANSCRIPT-FLUSH] All buffered chunks already persisted', {
+        meetingId,
+        totalBuffered: buffer.length
+      });
+      return;
+    }
+
+    logger.info('[TRANSCRIPT-FLUSH] Flushing transcript buffer', {
+      meetingId,
+      pendingCount: unsaved.length
+    });
+
+    for (const chunk of unsaved) {
+      let attempts = 0;
+      const maxAttempts = 3;
+      let success = false;
+
+      while (!success && attempts < maxAttempts) {
+        attempts++;
+        try {
+          await this.storageService.appendTranscript(meetingId, chunk);
+          chunk.persisted = true;
+          success = true;
+        } catch (error) {
+          logger.warn('[TRANSCRIPT-FLUSH] Failed to append transcript chunk', {
+            meetingId,
+            attempt: attempts,
+            maxAttempts,
+            error: error instanceof Error ? error.message : String(error)
+          });
+
+          if (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 250 * attempts));
+          }
+        }
+      }
+
+      if (!success) {
+        logger.error('[TRANSCRIPT-FLUSH] Exhausted retry attempts for chunk', {
+          meetingId,
+          textPreview: chunk.text?.substring(0, 50)
+        });
+      }
     }
   }
 

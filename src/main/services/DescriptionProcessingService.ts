@@ -64,19 +64,117 @@ Ignore: email signatures, cancellation links, scheduling system metadata, boiler
     // Parse the response
     const responseText = response.content[0].type === 'text' ? response.content[0].text : '';
 
-    try {
-      // Try to parse as JSON
-      const parsed = JSON.parse(responseText);
-      return {
-        meetingUrl: parsed.meetingUrl || undefined,
-        platform: parsed.platform || detectPlatform(parsed.meetingUrl),
-        notes: parsed.notes || ''
-      };
-    } catch (parseError) {
-      // If JSON parsing fails, try to extract from text
-      logger.warn('Failed to parse LLM response as JSON, attempting text extraction');
-      return this.extractFromText(responseText);
+    const normalized = this.parseLLMResponse(responseText);
+    if (normalized) {
+      return normalized;
     }
+
+    logger.warn('LLM response not in expected JSON format, falling back to text extraction');
+    return this.extractFromText(responseText);
+  }
+
+  private parseLLMResponse(raw: string): ProcessedDescription | null {
+    const stripped = this.stripCodeFences(raw);
+    const candidate = this.extractJsonBlock(stripped) ?? stripped.trim();
+
+    if (!candidate) {
+      return null;
+    }
+
+    try {
+      let parsed: any = JSON.parse(candidate);
+
+      if (Array.isArray(parsed)) {
+        parsed = parsed[0];
+      }
+
+      if (!parsed || typeof parsed !== 'object') {
+        return null;
+      }
+
+      const meetingUrl = typeof parsed.meetingUrl === 'string' ? parsed.meetingUrl.trim() : undefined;
+      const platform = typeof parsed.platform === 'string' ? parsed.platform.trim() : undefined;
+      const notes = typeof parsed.notes === 'string' ? parsed.notes.trim() : '';
+
+      return {
+        meetingUrl: meetingUrl || undefined,
+        platform: platform || (meetingUrl ? detectPlatform(meetingUrl) : undefined),
+        notes: notes || ''
+      };
+    } catch (error) {
+      logger.warn('Failed to parse sanitized LLM JSON payload', {
+        error: error instanceof Error ? error.message : error
+      });
+      return null;
+    }
+  }
+
+  private stripCodeFences(text: string): string {
+    if (!text) {
+      return '';
+    }
+
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenceMatch) {
+      return fenceMatch[1].trim();
+    }
+
+    return text.trim();
+  }
+
+  private extractJsonBlock(text: string): string | null {
+    const start = text.search(/[\[{]/);
+    if (start === -1) {
+      return null;
+    }
+
+    const stack: string[] = [];
+    let inString: string | null = null;
+    let escape = false;
+
+    for (let i = start; i < text.length; i++) {
+      const char = text[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        escape = true;
+        continue;
+      }
+
+      if (char === '"') {
+        if (inString) {
+          inString = inString === '"' ? null : inString;
+        } else {
+          inString = '"';
+        }
+        continue;
+      }
+
+      if (inString) {
+        continue;
+      }
+
+      if (char === '{' || char === '[') {
+        stack.push(char);
+      } else if (char === '}' || char === ']') {
+        const expected = stack.pop();
+        if (!expected) {
+          return null;
+        }
+        if ((expected === '{' && char !== '}') || (expected === '[' && char !== ']')) {
+          return null;
+        }
+        if (stack.length === 0) {
+          return text.slice(start, i + 1);
+        }
+      }
+    }
+
+    return null;
   }
 
   private extractWithRegex(description: string): ProcessedDescription {

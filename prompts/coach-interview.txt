@@ -32,11 +32,9 @@ Recent conversation (last 10 minutes):
 Meeting notes taken so far:
 {{meetingNotes}}
 
-Return JSON:
-{
-  "alerts": ["short alert"],
-  "observations": ["short observation"],
-  "suggestions": ["short suggestion"]
-}
-
 If nothing meaningful to say, return empty arrays. Be BRIEF and SPECIFIC.
+
+Respond ONLY by calling the `submit_coaching_feedback` tool with three arrays:
+- alerts: short critical warnings (or empty)
+- observations: notable patterns (or empty)
+- suggestions: actionable guidance (or empty)

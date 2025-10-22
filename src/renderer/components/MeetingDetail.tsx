@@ -211,6 +211,7 @@ function MeetingDetail({ meeting, onUpdateMeeting, isRecording }: MeetingDetailP
   const [previewHtml, setPreviewHtml] = useState('');
   const [transcript, setTranscript] = useState(meeting.transcript || '');
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const dedupeMapRef = useRef<Map<string, string>>(new Map());
   const saveTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 
   console.log('[JOURNEY-DETAIL-1] MeetingDetail rendered', {
@@ -234,11 +235,20 @@ function MeetingDetail({ meeting, onUpdateMeeting, isRecording }: MeetingDetailP
     setNotes(meeting.notes || '');
     setTitle(meeting.title);
     setTranscript(meeting.transcript || '');
+    dedupeMapRef.current.clear();
   }, [meeting]);
 
   useEffect(() => {
     // Listen for live transcript updates
     const handleTranscriptUpdate = (chunk: TranscriptChunk) => {
+      if (chunk.meetingId && chunk.meetingId !== meeting.id) {
+        console.log('[JOURNEY-DETAIL-TRANSCRIPT] Ignoring chunk for different meeting', {
+          chunkMeetingId: chunk.meetingId,
+          currentMeetingId: meeting.id
+        });
+        return;
+      }
+
       console.log('[JOURNEY-DETAIL-TRANSCRIPT] Received transcript chunk', {
         speaker: chunk.speaker,
         text: chunk.text,
@@ -251,13 +261,43 @@ function MeetingDetail({ meeting, onUpdateMeeting, isRecording }: MeetingDetailP
         : `[${timestamp}] ${chunk.text}`;
 
       setTranscript(prev => {
-        const newTranscript = prev ? `${prev}\n${line}` : line;
+        const previous = prev || '';
+        const dedupeKey = chunk.sequenceId || chunk.hash;
+        let lines = previous ? previous.split('\n') : [];
+
+        if (dedupeKey) {
+          const existingLine = dedupeMapRef.current.get(dedupeKey);
+          if (existingLine) {
+            const index = lines.lastIndexOf(existingLine);
+            if (index >= 0) {
+              lines[index] = line;
+            } else {
+              lines.push(line);
+            }
+            dedupeMapRef.current.set(dedupeKey, line);
+            const updated = lines.join('\n');
+            console.log('[JOURNEY-DETAIL-TRANSCRIPT-2] Replaced existing transcript line', {
+              dedupeKey,
+              isFinal: chunk.isFinal,
+              newLength: updated.length
+            });
+            return updated;
+          }
+          dedupeMapRef.current.set(dedupeKey, line);
+        }
+
+        if (lines.length > 0 && lines[lines.length - 1] === line) {
+          return previous;
+        }
+
+        lines.push(line);
+        const updated = lines.join('\n');
         console.log('[JOURNEY-DETAIL-TRANSCRIPT-2] Updated transcript state', {
-          previousLength: prev?.length,
-          newLength: newTranscript.length,
+          previousLength: previous.length,
+          newLength: updated.length,
           newLine: line
         });
-        return newTranscript;
+        return updated;
       });
       
       // Auto-scroll to bottom

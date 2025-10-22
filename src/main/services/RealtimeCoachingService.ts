@@ -1,4 +1,5 @@
-import { CoachConfig, CoachingType, CoachingFeedback, TranscriptChunk } from '../../shared/types';
+import type { Message, Tool, ToolUseBlock } from '@anthropic-ai/sdk/resources/messages';
+import { CoachConfig, CoachingType, CoachingFeedback, CoachingState, TranscriptChunk } from '../../shared/types';
 import { PromptService } from './PromptService';
 import { BaseAnthropicService } from './BaseAnthropicService';
 import { SettingsService } from './SettingsService';
@@ -48,6 +49,7 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     this.meetingId = meetingId;
     this.transcriptHistory = [];
     this.feedbackHistory = [];
+    this.currentMeetingNotes = '';
 
     // Start periodic analysis
     this.intervalId = setInterval(() => {
@@ -90,6 +92,13 @@ export class RealtimeCoachingService extends BaseAnthropicService {
    */
   addTranscriptChunk(chunk: TranscriptChunk): void {
     if (!this.isActive) return;
+    if (this.meetingId && chunk.meetingId && chunk.meetingId !== this.meetingId) {
+      this.logger.debug('Ignoring transcript chunk for non-active meeting', {
+        activeMeetingId: this.meetingId,
+        chunkMeetingId: chunk.meetingId
+      });
+      return;
+    }
 
     this.transcriptHistory.push(chunk);
 
@@ -103,8 +112,15 @@ export class RealtimeCoachingService extends BaseAnthropicService {
   /**
    * Update current meeting notes for coaching context
    */
-  updateMeetingNotes(notes: string): void {
+  updateMeetingNotes(meetingId: string, notes: string): void {
     if (!this.isActive) return;
+    if (this.meetingId && meetingId !== this.meetingId) {
+      this.logger.debug('Ignoring coaching notes for non-active meeting', {
+        activeMeetingId: this.meetingId,
+        incomingMeetingId: meetingId
+      });
+      return;
+    }
 
     this.currentMeetingNotes = notes;
     this.logger.debug('Updated meeting notes for coaching', {
@@ -147,11 +163,14 @@ export class RealtimeCoachingService extends BaseAnthropicService {
         .replace('{{recentTranscript}}', recentTranscript)
         .replace('{{meetingNotes}}', this.currentMeetingNotes || 'No notes yet');
 
-      // Call Claude
+      const coachingTool = this.buildCoachingTool();
+
       const response = await this.anthropic.messages.create({
         model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 2048,
-        temperature: 0.5,
+        max_tokens: 512,
+        temperature: 0.3,
+        tools: [coachingTool],
+        tool_choice: { type: 'tool', name: coachingTool.name },
         messages: [{
           role: 'user',
           content: prompt
@@ -164,44 +183,30 @@ export class RealtimeCoachingService extends BaseAnthropicService {
         return;
       }
 
-      if (response.content[0].type === 'text') {
-        const feedbackJson = response.content[0].text.trim();
+      const feedback = this.extractCoachingFeedback(response as Message);
 
-        // Parse JSON response with better error handling
-        let parsed: any;
-        try {
-          parsed = JSON.parse(feedbackJson);
-        } catch (parseError) {
-          this.logger.error('Failed to parse coaching feedback JSON:', parseError);
-          this.logger.error('Raw response:', feedbackJson);
-          this.emit('coaching-error', {
-            meetingId: currentMeetingId,
-            error: 'Invalid feedback format from AI'
-          });
-          return;
-        }
-
-        const feedback: CoachingFeedback = {
-          timestamp: new Date(),
-          alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [],
-          observations: Array.isArray(parsed.observations) ? parsed.observations : [],
-          suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : []
-        };
-
-        // Store in history (keep last 5 feedback items for context)
-        this.feedbackHistory.push(feedback);
-        if (this.feedbackHistory.length > 5) {
-          this.feedbackHistory.shift();
-        }
-
-        // Emit feedback to UI
-        this.emit('coaching-feedback', {
+      if (!feedback) {
+        this.logger.error('Claude response missing coaching feedback tool call');
+        this.emit('coaching-error', {
           meetingId: currentMeetingId,
-          feedback
+          error: 'Invalid feedback format from AI'
         });
-
-        this.logger.info('Coaching feedback generated and emitted');
+        return;
       }
+
+      feedback.timestamp = new Date();
+
+      this.feedbackHistory.push(feedback);
+      if (this.feedbackHistory.length > 5) {
+        this.feedbackHistory.shift();
+      }
+
+      this.emit('coaching-feedback', {
+        meetingId: currentMeetingId,
+        feedback
+      });
+
+      this.logger.info('Coaching feedback generated and emitted');
     } catch (error) {
       this.logger.error('Failed to generate coaching feedback:', error);
       this.emit('coaching-error', {
@@ -275,7 +280,7 @@ export class RealtimeCoachingService extends BaseAnthropicService {
   /**
    * Get current coaching state
    */
-  getCoachingState(): { isActive: boolean; coachingType: CoachingType | null; meetingId: string | null } {
+  getCoachingState(): CoachingState {
     return {
       isActive: this.isActive,
       coachingType: this.coachingType,
@@ -283,7 +288,69 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     };
   }
 
+  getFeedbackHistory(): CoachingFeedback[] {
+    return [...this.feedbackHistory];
+  }
+
   private getCoachConfig(coachingType: CoachingType): CoachConfig | undefined {
     return this.settingsService.getCoaches().find(coach => coach.id === coachingType);
+  }
+
+  private buildCoachingTool(): Tool {
+    return {
+      name: 'submit_coaching_feedback',
+      description: 'Report sales coaching insights as structured arrays.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['alerts', 'observations', 'suggestions'],
+        properties: {
+          alerts: {
+            type: 'array',
+            description: 'Critical issues detected during the last segment.',
+            items: { type: 'string' }
+          },
+          observations: {
+            type: 'array',
+            description: 'Notable patterns or signals worth highlighting.',
+            items: { type: 'string' }
+          },
+          suggestions: {
+            type: 'array',
+            description: 'Actionable guidance tailored to the current call.',
+            items: { type: 'string' }
+          }
+        }
+      }
+    } satisfies Tool;
+  }
+
+  private extractCoachingFeedback(response: Message): CoachingFeedback | null {
+    if (!response || !Array.isArray(response.content)) {
+      return null;
+    }
+
+    const toolBlock = response.content.find((block): block is ToolUseBlock => block.type === 'tool_use' && block.name === 'submit_coaching_feedback');
+
+    if (!toolBlock || !toolBlock.input) {
+      return null;
+    }
+
+    const { alerts, observations, suggestions } = toolBlock.input as {
+      alerts?: unknown;
+      observations?: unknown;
+      suggestions?: unknown;
+    };
+
+    const safeAlerts = Array.isArray(alerts) ? alerts.filter(item => typeof item === 'string') : [];
+    const safeObservations = Array.isArray(observations) ? observations.filter(item => typeof item === 'string') : [];
+    const safeSuggestions = Array.isArray(suggestions) ? suggestions.filter(item => typeof item === 'string') : [];
+
+    return {
+      timestamp: new Date(),
+      alerts: safeAlerts,
+      observations: safeObservations,
+      suggestions: safeSuggestions
+    };
   }
 }

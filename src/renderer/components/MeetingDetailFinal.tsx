@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import styled from '@emotion/styled';
-import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback, NotionShareMode, ActionItemSyncStatus, CoachConfig } from '../../shared/types';
+import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback, CoachingState, NotionShareMode, ActionItemSyncStatus, CoachConfig } from '../../shared/types';
 import { format } from 'date-fns';
 import MDEditor from '@uiw/react-md-editor';
+import { combineNoteSections, extractNoteSections, hasSectionChanges } from './noteSectionUtils';
 
 const Container = styled.div`
   display: flex;
@@ -141,9 +142,11 @@ const AttendeeToggle = styled.button`
 `;
 
 const TabPanel = styled.div<{ isActive: boolean }>`
-  display: ${props => props.isActive ? 'block' : 'none'};
+  display: ${props => props.isActive ? 'flex' : 'none'};
+  flex: 1;
+  flex-direction: column;
   width: 100%;
-  height: 100%;
+  min-height: 0;
 `;
 
 const ActionButtons = styled.div`
@@ -233,8 +236,10 @@ const Tab = styled.button<{ active: boolean }>`
 
 const Content = styled.div`
   flex: 1;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   background: #fafafa;
+  min-height: 0;
 
   &::-webkit-scrollbar {
     width: 8px;
@@ -257,24 +262,38 @@ const Content = styled.div`
 const EditorContainer = styled.div`
   padding: 16px;
   background: white;
-  min-height: 100%;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
 
   .w-md-editor {
     border: 1px solid #e5e7eb;
     border-radius: 8px;
     background: white;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   .w-md-editor-toolbar {
     background: #fafafa;
     border-bottom: 1px solid #e5e7eb;
+    flex: none;
   }
 
   .w-md-editor-content {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .w-md-editor-preview {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
   }
 
   /* NUCLEAR OVERRIDE - Force full width preview with zero margins */
@@ -543,10 +562,119 @@ const EditorContainer = styled.div`
   }
 `;
 
+const SectionStack = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+`;
+
+const NotesScrollArea = styled.div`
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #ddd;
+    border-radius: 4px;
+
+    &:hover {
+      background: #ccc;
+    }
+  }
+`;
+
+const SectionCard = styled.div`
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+`;
+
+const SectionHeader = styled.div`
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+`;
+
+const SectionTitle = styled.h3`
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1a1a;
+`;
+
+const SectionActions = styled.div`
+  display: flex;
+  gap: 8px;
+`;
+
+const SectionContent = styled.div`
+  font-size: 13px;
+  color: #4a5568;
+  white-space: pre-wrap;
+  line-height: 1.6;
+`;
+
+const SectionTextarea = styled.textarea`
+  width: 100%;
+  min-height: 120px;
+  border: 1px solid #dfe3eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #1a1a1a;
+  resize: vertical;
+
+  &:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+  }
+
+  &:disabled {
+    background: #f8fafc;
+    color: #64748b;
+  }
+`;
+
+const InlineButton = styled.button`
+  border: none;
+  background: transparent;
+  color: #667eea;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+
+  &:hover {
+    text-decoration: underline;
+  }
+`;
+
 const EditorToolbar = styled.div`
+  position: sticky;
+  top: 0;
   display: flex;
   justify-content: flex-end;
   gap: 4px;
+  padding-top: 8px;
+  background: white;
+  z-index: 1;
 `;
 
 const EditorModeButton = styled.button<{ isActive?: boolean }>`
@@ -626,7 +754,29 @@ const SaveStatus = styled.div`
 const TranscriptContainer = styled.div`
   padding: 24px;
   background: white;
-  min-height: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #ddd;
+    border-radius: 4px;
+
+    &:hover {
+      background: #ccc;
+    }
+  }
 `;
 
 const ActionGrid = styled.div`
@@ -976,16 +1126,31 @@ interface MeetingDetailFinalProps {
   onDeleteMeeting?: (meetingId: string) => void;
   onRefresh?: () => Promise<void> | void;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
+  coachingState: (CoachingState & { feedbackHistory: CoachingFeedback[] });
+  onCoachingStateRefresh: () => Promise<void> | void;
+  activeCoachingMeeting?: Meeting | null;
+  isCoachWindowOpen?: boolean;
+  onOpenCoachWindow?: (meetingId: string) => void;
+  onCloseCoachWindow?: () => void;
+  isCoachPopout?: boolean;
 }
 
 type ViewMode = 'notes' | 'transcript' | 'insights' | 'actions' | 'coach';
 
 // Module-level transcript cache to persist across component re-renders
 const transcriptCache = new Map<string, any[]>();
+const transcriptSequenceCache = new Map<string, Set<string>>();
 
-function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefresh, onShowToast }: MeetingDetailFinalProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>('notes');
-  const [notes, setNotes] = useState(meeting.notes || '');
+function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefresh, onShowToast, coachingState, onCoachingStateRefresh, activeCoachingMeeting, isCoachWindowOpen = false, onOpenCoachWindow, onCloseCoachWindow, isCoachPopout = false }: MeetingDetailFinalProps) {
+  const initialSections = extractNoteSections(meeting.notes || '');
+  const [viewMode, setViewMode] = useState<ViewMode>(isCoachPopout ? 'coach' : 'notes');
+  const [calendarInfo, setCalendarInfo] = useState(initialSections.calendarInfo);
+  const [prepNotes, setPrepNotes] = useState(initialSections.prepNotes);
+  const [meetingNotes, setMeetingNotes] = useState(initialSections.meetingNotes);
+  const [combinedNotes, setCombinedNotes] = useState(combineNoteSections(initialSections));
+  const [baselineNotes, setBaselineNotes] = useState(meeting.notes || '');
+  const [showPrepEditor, setShowPrepEditor] = useState(false);
+  const [isEditingCalendar, setIsEditingCalendar] = useState(false);
   const [editorPreviewMode, setEditorPreviewMode] = useState<'edit' | 'live' | 'preview'>('preview');
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -1018,6 +1183,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [sendingItemIndex, setSendingItemIndex] = useState<number | null>(null);
   const [itemErrors, setItemErrors] = useState<Record<number, string>>({});
   const isFirstRender = useRef(true);
+  const previousMeetingIdRef = useRef(meeting.id);
 
   const formatTodoDueDate = useCallback((iso?: string | null) => {
     if (!iso) {
@@ -1119,10 +1285,38 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   }, [insights?.actionItems, meeting.id, onRefresh, onShowToast]);
 
   // Coaching state
-  const [isCoaching, setIsCoaching] = useState(false);
   const [availableCoaches, setAvailableCoaches] = useState<CoachConfig[]>([]);
   const [selectedCoachingType, setSelectedCoachingType] = useState<CoachingType>('');
-  const [coachingFeedbackHistory, setCoachingFeedbackHistory] = useState<CoachingFeedback[]>([]);
+  const isCoachingActive = coachingState.isActive;
+  const isCoachingForCurrentMeeting = isCoachingActive && coachingState.meetingId === meeting.id;
+  const isCoachingOnAnotherMeeting = isCoachingActive && coachingState.meetingId !== meeting.id;
+  const coachingFeedbackHistory = isCoachingForCurrentMeeting ? coachingState.feedbackHistory : [];
+  const isCoaching = isCoachingForCurrentMeeting;
+  const hasCalendarContent = calendarInfo.trim().length > 0;
+  const hasPrepContent = prepNotes.trim().length > 0;
+
+  useEffect(() => {
+    if (isCoachingForCurrentMeeting) {
+      void onCoachingStateRefresh?.();
+    }
+  }, [isCoachingForCurrentMeeting, onCoachingStateRefresh]);
+
+  useEffect(() => {
+    if (isCoachPopout) {
+      setViewMode('coach');
+    }
+  }, [isCoachPopout]);
+
+  useEffect(() => {
+    const sections = { calendarInfo, prepNotes, meetingNotes };
+    const nextCombined = combineNoteSections(sections);
+
+    if (nextCombined !== combinedNotes) {
+      setCombinedNotes(nextCombined);
+    }
+
+    setHasChanges(hasSectionChanges(sections, baselineNotes));
+  }, [calendarInfo, prepNotes, meetingNotes, baselineNotes, combinedNotes]);
 
   // Update cache when segments change
   useEffect(() => {
@@ -1158,7 +1352,16 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       transcriptLength: meeting.transcript?.length || 0
     });
 
-    setNotes(meeting.notes || '');
+    const previousMeetingId = previousMeetingIdRef.current;
+    const meetingIdChanged = previousMeetingId !== meeting.id;
+
+    const parsedSections = extractNoteSections(meeting.notes || '');
+    setCalendarInfo(parsedSections.calendarInfo);
+    setPrepNotes(parsedSections.prepNotes);
+    setMeetingNotes(parsedSections.meetingNotes);
+    setIsEditingCalendar(false);
+    setCombinedNotes(combineNoteSections(parsedSections));
+    setBaselineNotes(meeting.notes || '');
     setEditedTitle(meeting.title); // Update title when meeting prop changes
     setHasChanges(false);
     setIsRecording(meeting.status === 'recording');
@@ -1169,22 +1372,27 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       // Use meeting's stored start time if available (persists across navigation)
       setRecordingStartTime(meeting.startTime ? new Date(meeting.startTime) : new Date());
     }
-    setEditorKey(Date.now()); // Force complete editor remount when meeting changes
+    if (meetingIdChanged) {
+      setEditorKey(Date.now()); // Force complete editor remount only when meeting changes
+    }
     isFirstRender.current = true; // Reset first render flag for new meeting
 
-    // Clear coaching state when switching meetings
-    if (isCoaching) {
-      console.log('[COACHING] Auto-stopping coaching due to meeting change');
-      handleStopCoaching();
+    if (meetingIdChanged) {
+      setShowPrepEditor(false);
     }
-    setCoachingFeedbackHistory([]);
-    setSelectedCoachingType(prev => {
-      const enabledCoaches = availableCoaches.filter(coach => coach.enabled);
-      if (prev && enabledCoaches.some(coach => coach.id === prev)) {
-        return prev;
-      }
-      return enabledCoaches[0]?.id || '';
-    });
+
+    if (meetingIdChanged) {
+      setSelectedCoachingType(prev => {
+        if (isCoachingForCurrentMeeting && coachingState.coachingType) {
+          return coachingState.coachingType;
+        }
+        const enabledCoaches = availableCoaches.filter(coach => coach.enabled);
+        if (prev && enabledCoaches.some(coach => coach.id === prev)) {
+          return prev;
+        }
+        return enabledCoaches[0]?.id || '';
+      });
+    }
 
     // Load existing insights if available
     if (meeting.insights) {
@@ -1220,6 +1428,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     }
     setNotionPageId(meeting.notionPageId ?? '');
     setSharingToNotionMode(null);
+    previousMeetingIdRef.current = meeting.id;
 
     // When recording stops, clear segments and load from stored transcript
     // When recording is active, don't parse stored transcript (rely on real-time)
@@ -1256,7 +1465,17 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       setTranscriptSegments([]);
       transcriptCache.set(meeting.id, []);
     }
-  }, [meeting.id, meeting.status, meeting.transcript, meeting.title]);
+  }, [
+    meeting.id,
+    meeting.status,
+    meeting.transcript,
+    meeting.notes,
+    meeting.title,
+    availableCoaches,
+    coachingState.coachingType,
+    coachingState.meetingId,
+    isCoachingForCurrentMeeting
+  ]);
 
   // Listen for recording started events
   useEffect(() => {
@@ -1276,7 +1495,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       setRecordingStartTime(null);
 
       // Auto-stop coaching when recording ends
-      if (isCoaching) {
+      if (isCoachingForCurrentMeeting) {
         console.log('[COACHING] Auto-stopping coaching due to recording end');
         handleStopCoaching();
       }
@@ -1289,7 +1508,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       (window as any).electronAPI?.removeListener?.('recording-started', handleRecordingStarted);
       (window as any).electronAPI?.removeListener?.('recording-stopped', handleRecordingStopped);
     };
-  }, [meeting.id, isCoaching]);
+  }, [meeting.id, isCoachingForCurrentMeeting]);
 
   // Update elapsed time timer
   useEffect(() => {
@@ -1357,13 +1576,6 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   // Listen for coaching feedback
   // Listen for real-time coaching feedback
   // Use useCallback to create stable handler references that prevent duplicate listeners
-  const handleCoachingFeedback = useCallback((data: any) => {
-    if (data.meetingId === meeting.id) {
-      console.log('[COACHING] Received feedback:', data.feedback);
-      setCoachingFeedbackHistory(prev => [...prev, data.feedback]);
-    }
-  }, [meeting.id]);
-
   const handleCoachingError = useCallback((data: any) => {
     if (data.meetingId === meeting.id) {
       console.error('[COACHING] Error:', data.error);
@@ -1379,6 +1591,9 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
           setAvailableCoaches(coaches);
           const enabled = coaches.filter((coach: CoachConfig) => coach.enabled);
           setSelectedCoachingType(prev => {
+            if (isCoachingForCurrentMeeting && coachingState.coachingType) {
+              return coachingState.coachingType;
+            }
             if (prev && enabled.some(coach => coach.id === prev)) {
               return prev;
             }
@@ -1391,36 +1606,33 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     };
 
     loadCoaches();
-
-    (window as any).electronAPI?.on?.(IpcChannels.COACHING_FEEDBACK, handleCoachingFeedback);
     (window as any).electronAPI?.on?.(IpcChannels.COACHING_ERROR, handleCoachingError);
     (window as any).electronAPI?.on?.(IpcChannels.SETTINGS_UPDATED, loadCoaches);
 
     return () => {
-      (window as any).electronAPI?.removeListener?.(IpcChannels.COACHING_FEEDBACK, handleCoachingFeedback);
       (window as any).electronAPI?.removeListener?.(IpcChannels.COACHING_ERROR, handleCoachingError);
       (window as any).electronAPI?.removeListener?.(IpcChannels.SETTINGS_UPDATED, loadCoaches);
     };
-  }, [handleCoachingFeedback, handleCoachingError]);
+  }, [handleCoachingError, isCoachingForCurrentMeeting, coachingState.coachingType]);
 
   // Sync notes to coaching service every 10 seconds when coaching is active
   useEffect(() => {
-    if (!isCoaching) return;
+    if (!isCoachingForCurrentMeeting) return;
 
     // Send immediately when coaching starts
-    if (notes) {
-      (window as any).electronAPI?.updateCoachingNotes?.(meeting.id, notes);
+    if (combinedNotes) {
+      (window as any).electronAPI?.updateCoachingNotes?.(meeting.id, combinedNotes);
     }
 
     // Then every 10 seconds
     const interval = setInterval(() => {
-      if (isCoaching && notes) {
-        (window as any).electronAPI?.updateCoachingNotes?.(meeting.id, notes);
+      if (isCoachingForCurrentMeeting && combinedNotes) {
+        (window as any).electronAPI?.updateCoachingNotes?.(meeting.id, combinedNotes);
       }
     }, 10000); // 10 seconds
 
     return () => clearInterval(interval);
-  }, [isCoaching, notes, meeting.id]);
+  }, [isCoachingForCurrentMeeting, combinedNotes, meeting.id]);
 
   // Listen for real-time transcript updates
   // IMPORTANT: We use useCallback with meeting.id dependency to create a stable handler
@@ -1438,42 +1650,82 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       return;
     }
 
+    const sequenceId = data.sequenceId || data.hash;
+    if (!transcriptSequenceCache.has(meeting.id)) {
+      transcriptSequenceCache.set(meeting.id, new Set());
+    }
+    const seenSequences = transcriptSequenceCache.get(meeting.id)!;
+
     setTranscriptSegments(prev => {
       console.log('[TRANSCRIPT-UPDATE] Current segment count before add:', prev.length);
 
-      // Normalize timestamp for comparison (IPC serializes Date to string)
       const newTimestamp = typeof data.timestamp === 'string'
         ? new Date(data.timestamp).getTime()
         : data.timestamp?.getTime?.() || Date.now();
 
-      // Check for duplicates before adding - compare text and normalized timestamps
-      const isDuplicate = prev.some(s => {
+      const isExactDuplicate = prev.some(s => {
         const existingTimestamp = typeof s.timestamp === 'string'
           ? new Date(s.timestamp).getTime()
           : s.timestamp?.getTime?.() || 0;
 
-        // Consider duplicate if same text and timestamp within 100ms (accounts for slight timing differences)
         return s.text === data.text && Math.abs(existingTimestamp - newTimestamp) < 100;
       });
 
-      if (!isDuplicate) {
-        const newSegment = {
-          id: `${Date.now()}-${Math.random()}`,
-          time: format(new Date(data.timestamp), 'HH:mm:ss'),
-          speaker: data.speaker || 'Unknown Speaker',
-          text: data.text,
-          timestamp: data.timestamp
-        };
-
-        const updated = [...prev, newSegment];
-        console.log('[TRANSCRIPT-UPDATE] Added new segment, total now:', updated.length);
-
-        // Update cache immediately
-        transcriptCache.set(meeting.id, updated);
-        return updated;
+      if (isExactDuplicate) {
+        console.log('[TRANSCRIPT-UPDATE] Duplicate detected via timestamp/text, skipping');
+        return prev;
       }
-      console.log('[TRANSCRIPT-UPDATE] Duplicate detected, not adding');
-      return prev;
+
+      if (sequenceId) {
+        if (seenSequences.has(sequenceId) && !data.isFinal) {
+          console.log('[TRANSCRIPT-UPDATE] Partial update received but sequence already processed, skipping');
+          return prev;
+        }
+
+        const existingIndex = prev.findIndex(segment => segment.sequenceId === sequenceId);
+        if (existingIndex >= 0) {
+          const updatedSegments = [...prev];
+          updatedSegments[existingIndex] = {
+            ...updatedSegments[existingIndex],
+            time: format(new Date(data.timestamp), 'HH:mm:ss'),
+            speaker: data.speaker || 'Unknown Speaker',
+            text: data.text,
+            timestamp: data.timestamp,
+            isFinal: data.isFinal,
+            sequenceId,
+            hash: data.hash
+          };
+
+          transcriptCache.set(meeting.id, updatedSegments);
+          seenSequences.add(sequenceId);
+          return updatedSegments;
+        }
+      }
+
+      if (data.isFinal && sequenceId) {
+        seenSequences.add(sequenceId);
+      }
+
+      const newSegment = {
+        id: `${Date.now()}-${Math.random()}`,
+        time: format(new Date(data.timestamp), 'HH:mm:ss'),
+        speaker: data.speaker || 'Unknown Speaker',
+        text: data.text,
+        timestamp: data.timestamp,
+        isFinal: data.isFinal,
+        sequenceId,
+        hash: data.hash
+      };
+
+      if (sequenceId) {
+        seenSequences.add(sequenceId);
+      }
+
+      const updated = [...prev, newSegment];
+      console.log('[TRANSCRIPT-UPDATE] Added new segment, total now:', updated.length);
+
+      transcriptCache.set(meeting.id, updated);
+      return updated;
     });
   }, [meeting.id]);
 
@@ -1481,24 +1733,64 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   useEffect(() => {
     console.log('[MeetingDetailFinal] Setting up transcript listener for meeting:', meeting.id);
 
-    // Use the IPC channel constant to ensure we're listening to the correct channel
-    const channel = IpcChannels.TRANSCRIPT_UPDATE;
+    if (!transcriptSequenceCache.has(meeting.id)) {
+      transcriptSequenceCache.set(meeting.id, new Set());
+    }
 
-    // Register the listener
+    const channel = IpcChannels.TRANSCRIPT_UPDATE;
     (window as any).electronAPI?.on?.(channel, handleTranscriptUpdate);
 
-    // Return cleanup function
+    const fetchBuffered = async () => {
+      try {
+        const buffered = await (window as any).electronAPI?.getTranscriptBuffer?.(meeting.id);
+        if (Array.isArray(buffered) && buffered.length > 0) {
+          console.log('[MeetingDetailFinal] Reconciling buffered transcript chunks', {
+            meetingId: meeting.id,
+            bufferedCount: buffered.length
+          });
+
+          const seenSequences = transcriptSequenceCache.get(meeting.id)!;
+
+          const normalized = buffered.map((chunk: any) => ({
+            id: `${Date.now()}-${Math.random()}`,
+            time: format(new Date(chunk.timestamp), 'HH:mm:ss'),
+            speaker: chunk.speaker || 'Unknown Speaker',
+            text: chunk.text,
+            timestamp: chunk.timestamp,
+            isFinal: chunk.isFinal,
+            sequenceId: chunk.sequenceId || chunk.hash,
+            hash: chunk.hash
+          }));
+
+          normalized.forEach(segment => {
+            if (segment.sequenceId) {
+              seenSequences.add(segment.sequenceId);
+            }
+          });
+
+          transcriptCache.set(meeting.id, normalized);
+          setTranscriptSegments(normalized);
+        }
+      } catch (error) {
+        console.error('[MeetingDetailFinal] Failed to load buffered transcript chunks', error);
+      }
+    };
+
+    fetchBuffered();
+
     return () => {
       console.log('[MeetingDetailFinal] Cleaning up transcript listener for meeting:', meeting.id);
       (window as any).electronAPI?.removeListener?.(channel, handleTranscriptUpdate);
+      transcriptSequenceCache.delete(meeting.id);
     };
-  }, [handleTranscriptUpdate]); // Depend on the memoized handler, not meeting.id directly
+  }, [handleTranscriptUpdate, meeting.id]);
 
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await onUpdateMeeting({ ...meeting, notes });
+      await onUpdateMeeting({ ...meeting, notes: combinedNotes });
       setHasChanges(false);
+      setBaselineNotes(combinedNotes);
     } catch (error) {
       console.error('Failed to save notes:', error);
     } finally {
@@ -1510,14 +1802,19 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     // Ignore the first onChange trigger from editor mount
     if (isFirstRender.current) {
       isFirstRender.current = false;
-      setNotes(value);
+      setMeetingNotes(value);
       return;
     }
 
-    setNotes(value);
-    // Only mark as changed if the value actually differs from the original
-    const originalNotes = meeting.notes || '';
-    setHasChanges(value !== originalNotes);
+    setMeetingNotes(value);
+  };
+
+  const handlePrepNotesChange = (value: string) => {
+    setPrepNotes(value);
+  };
+
+  const handleCalendarInfoChange = (value: string) => {
+    setCalendarInfo(value);
   };
 
   const handleDelete = () => {
@@ -1758,7 +2055,14 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   };
 
   const handleStartCoaching = async () => {
-    if (isCoaching) return;
+    if (isCoachingForCurrentMeeting) {
+      return;
+    }
+
+    if (isCoachingOnAnotherMeeting) {
+      onShowToast?.('Coaching is already active on another meeting. Please stop it before starting here.', 'info');
+      return;
+    }
 
     const enabledCoach = availableCoaches.find(coach => coach.id === selectedCoachingType && coach.enabled);
     if (!enabledCoach) {
@@ -1777,9 +2081,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       const result = await (window as any).electronAPI.startCoaching(meeting.id, selectedCoachingType);
 
       if (result.success) {
-        setIsCoaching(true);
-        setCoachingFeedbackHistory([]);
         console.log('[COACHING] Coaching started successfully');
+        await onCoachingStateRefresh?.();
       } else {
         console.error('[COACHING] Failed to start coaching:', result.error);
         alert('Failed to start coaching. Please check your Anthropic API key in settings.');
@@ -1791,11 +2094,11 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   };
 
   const handleStopCoaching = async () => {
-    if (!isCoaching) return;
+    if (!isCoachingActive) return;
 
     if (!(window as any).electronAPI?.stopCoaching) {
       console.error('[COACHING] API not available');
-      setIsCoaching(false);
+      await onCoachingStateRefresh?.();
       return;
     }
 
@@ -1804,18 +2107,16 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       const result = await (window as any).electronAPI.stopCoaching();
 
       if (result.success) {
-        setIsCoaching(false);
         console.log('[COACHING] Coaching stopped successfully');
+        await onCoachingStateRefresh?.();
       } else {
         console.error('[COACHING] Failed to stop coaching:', result.error);
         alert('Failed to stop coaching.');
-        // Still set to false locally even if backend fails
-        setIsCoaching(false);
+        await onCoachingStateRefresh?.();
       }
     } catch (error) {
       console.error('[COACHING] Error stopping coaching:', error);
-      // Still set to false locally even if backend fails
-      setIsCoaching(false);
+      await onCoachingStateRefresh?.();
     }
   };
 
@@ -1996,7 +2297,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     }, 2000);
 
     return () => clearTimeout(timer);
-  }, [notes, hasChanges]);
+  }, [combinedNotes, hasChanges]);
 
   return (
     <>
@@ -2239,54 +2540,130 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
           {/* Notes Panel - Always rendered but hidden when not active */}
           <TabPanel isActive={viewMode === 'notes'}>
             <EditorContainer>
-              <EditorToolbar>
-                <SaveStatus>
-                  {isSaving ? '💾 Saving...' : hasChanges ? '⚠️ Unsaved changes' : '✓ Saved'}
-                </SaveStatus>
-                <EditorModeButton
-                  isActive={editorPreviewMode === 'preview'}
-                  onClick={() => setEditorPreviewMode('preview')}
-                >
-                  📖 Preview
-                </EditorModeButton>
-                <EditorModeButton
-                  isActive={editorPreviewMode === 'live'}
-                  onClick={() => setEditorPreviewMode('live')}
-                >
-                  ⚡ Split
-                </EditorModeButton>
-                <EditorModeButton
-                  isActive={editorPreviewMode === 'edit'}
-                  onClick={() => setEditorPreviewMode('edit')}
-                >
-                  ✏️ Edit
-                </EditorModeButton>
-              </EditorToolbar>
-              <MDEditor
-                key={`editor-${meeting.id}-${editorKey}`}
-                value={notes}
-                onChange={(value) => handleNotesChange(value || '')}
-                height={400}
-                preview={editorPreviewMode}
-                hideToolbar={false}
-                previewOptions={{
-                  style: {
-                    padding: '20px',
-                    margin: 0,
-                    width: '100%',
-                    maxWidth: 'none',
-                    boxSizing: 'border-box'
-                  },
-                  wrapperElement: {
+              <NotesScrollArea>
+                {(hasCalendarContent || isEditingCalendar || showPrepEditor || hasPrepContent) && (
+                  <SectionStack>
+                    {(hasCalendarContent || isEditingCalendar) && (
+                      <SectionCard>
+                        <SectionHeader>
+                          <SectionTitle>Calendar Context</SectionTitle>
+                          <SectionActions>
+                            <InlineButton onClick={() => setIsEditingCalendar(!isEditingCalendar)}>
+                              {isEditingCalendar ? 'Done' : 'Edit'}
+                            </InlineButton>
+                            {hasCalendarContent && (
+                              <InlineButton
+                                onClick={() => {
+                                  setCalendarInfo('');
+                                  setIsEditingCalendar(false);
+                                }}
+                              >
+                                Clear
+                              </InlineButton>
+                            )}
+                          </SectionActions>
+                        </SectionHeader>
+                        {isEditingCalendar ? (
+                          <SectionTextarea
+                            value={calendarInfo}
+                            onChange={(e) => handleCalendarInfoChange(e.target.value)}
+                            placeholder="Paste agenda or dial-in details from the calendar invite."
+                          />
+                        ) : (
+                          <SectionContent>
+                            {calendarInfo}
+                          </SectionContent>
+                        )}
+                      </SectionCard>
+                    )}
+                    {(showPrepEditor || hasPrepContent) && (
+                      <SectionCard>
+                        <SectionHeader>
+                          <SectionTitle>Prep Notes</SectionTitle>
+                          <SectionActions>
+                            <InlineButton onClick={() => setShowPrepEditor(!showPrepEditor)}>
+                              {showPrepEditor ? 'Done' : 'Edit'}
+                            </InlineButton>
+                            {hasPrepContent && (
+                              <InlineButton
+                                onClick={() => {
+                                  setPrepNotes('');
+                                  setShowPrepEditor(false);
+                                }}
+                              >
+                                Clear
+                              </InlineButton>
+                            )}
+                          </SectionActions>
+                        </SectionHeader>
+                        {showPrepEditor ? (
+                          <SectionTextarea
+                            value={prepNotes}
+                            onChange={(e) => handlePrepNotesChange(e.target.value)}
+                            placeholder="Outline goals, risks, and context before the meeting."
+                          />
+                        ) : (
+                          <SectionContent>
+                            {prepNotes}
+                          </SectionContent>
+                        )}
+                      </SectionCard>
+                    )}
+                  </SectionStack>
+                )}
+                <EditorToolbar>
+                  <SaveStatus>
+                    {isSaving ? '💾 Saving...' : hasChanges ? '⚠️ Unsaved changes' : '✓ Saved'}
+                  </SaveStatus>
+                  {!hasPrepContent && !showPrepEditor && (
+                    <InlineButton onClick={() => setShowPrepEditor(true)}>＋ Add Prep Notes</InlineButton>
+                  )}
+                  <EditorModeButton
+                    isActive={editorPreviewMode === 'preview'}
+                    onClick={() => setEditorPreviewMode('preview')}
+                  >
+                    📖 Preview
+                  </EditorModeButton>
+                  <EditorModeButton
+                    isActive={editorPreviewMode === 'live'}
+                    onClick={() => setEditorPreviewMode('live')}
+                  >
+                    ⚡ Split
+                  </EditorModeButton>
+                  <EditorModeButton
+                    isActive={editorPreviewMode === 'edit'}
+                    onClick={() => setEditorPreviewMode('edit')}
+                  >
+                    ✏️ Edit
+                  </EditorModeButton>
+                </EditorToolbar>
+                <MDEditor
+                  key={`editor-${meeting.id}-${editorKey}`}
+                  value={meetingNotes}
+                  onChange={(value) => handleNotesChange(value || '')}
+                  height="100%"
+                  preview={editorPreviewMode}
+                  hideToolbar={false}
+                  style={{ flex: 1, minHeight: 0 }}
+                  previewOptions={{
                     style: {
+                      padding: '20px',
                       margin: 0,
-                      padding: 0,
                       width: '100%',
-                      maxWidth: 'none'
+                      maxWidth: 'none',
+                      boxSizing: 'border-box'
+                    },
+                    wrapperElement: {
+                      style: {
+                        margin: 0,
+                        padding: 0,
+                        width: '100%',
+                        maxWidth: 'none'
+                      }
                     }
-                  }
-                }}
-              />
+                  }}
+                />
+              </NotesScrollArea>
             </EditorContainer>
           </TabPanel>
 
@@ -2799,30 +3176,68 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   </CoachTypeSelect>
                 </CoachTypeSelector>
 
-                <CoachButtonGroup>
-                  {!isCoaching ? (
+                {!isCoachPopout && (
+                  <CoachButtonGroup>
+                    {!isCoaching ? (
+                      <Button
+                        onClick={handleStartCoaching}
+                        disabled={!isRecording || !selectedCoachingType || isCoachingOnAnotherMeeting}
+                        style={{
+                          background: '#34c759',
+                          borderColor: '#34c759',
+                          color: 'white',
+                          flex: 1
+                        }}
+                      >
+                        {!isRecording ? '⏸ Start Recording First' : '▶️ Start Coaching'}
+                      </Button>
+                    ) : (
+                      <Button
+                        onClick={handleStopCoaching}
+                        variant="danger"
+                        style={{ flex: 1 }}
+                      >
+                        ⏹ Stop Coaching
+                      </Button>
+                    )}
                     <Button
-                      onClick={handleStartCoaching}
-                    disabled={!isRecording || !selectedCoachingType}
+                      onClick={() => onOpenCoachWindow?.(meeting.id)}
+                      disabled={isCoachWindowOpen}
                       style={{
-                        background: '#34c759',
-                        borderColor: '#34c759',
-                        color: 'white',
-                        flex: 1
+                        flex: 1,
+                        background: isCoachWindowOpen ? '#93c5fd' : '#2563eb',
+                        borderColor: isCoachWindowOpen ? '#93c5fd' : '#2563eb',
+                        color: isCoachWindowOpen ? '#1d4ed8' : 'white'
                       }}
                     >
-                      {!isRecording ? '⏸ Start Recording First' : '▶️ Start Coaching'}
+                      {isCoachWindowOpen ? '🟦 Coach Window Open' : '🔲 Pop Out Coach'}
                     </Button>
-                  ) : (
+                  </CoachButtonGroup>
+                )}
+                {isCoachPopout && (
                     <Button
-                      onClick={handleStopCoaching}
-                      variant="danger"
-                      style={{ flex: 1 }}
-                    >
-                      ⏹ Stop Coaching
-                    </Button>
-                  )}
-                </CoachButtonGroup>
+                    onClick={() => onCloseCoachWindow?.()}
+                    style={{
+                      background: '#4b5563',
+                      borderColor: '#4b5563',
+                      color: 'white',
+                      alignSelf: 'flex-start'
+                    }}
+                  >
+                    ⬅️ Return to Main Window
+                  </Button>
+                )}
+                {!isCoachPopout && isCoachWindowOpen && (
+                  <p
+                    style={{
+                      fontSize: '13px',
+                      color: '#2563eb',
+                      margin: 0
+                    }}
+                  >
+                    Coach window is active on another screen.
+                  </p>
+                )}
 
                 {!isRecording && (
                   <p style={{
@@ -2842,6 +3257,17 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                     fontStyle: 'italic'
                   }}>
                     💡 Tip: Enable a coach in Settings to start real-time coaching.
+                  </p>
+                )}
+                {isCoachingOnAnotherMeeting && activeCoachingMeeting && (
+                  <p
+                    style={{
+                      fontSize: '13px',
+                      color: '#c05621',
+                      marginTop: '12px'
+                    }}
+                  >
+                    Coaching is currently active on “{activeCoachingMeeting.title}”. Stop it there (or use the stop button here) before starting on this meeting.
                   </p>
                 )}
               </CoachControls>
