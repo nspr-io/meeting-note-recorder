@@ -688,11 +688,11 @@ export class RecordingService extends EventEmitter {
         throw new Error('Recording system not ready. Please restart the app.');
       }
 
-      // Create meeting-specific buffer instead of clearing global one
-      if (!this.transcriptBuffers.has(meetingId)) {
-        this.transcriptBuffers.set(meetingId, []);
-        logger.info('[RECORDING-START] Created transcript buffer for meeting', { meetingId });
-      }
+      // Reset buffers for this meeting to avoid stale duplicates when resuming
+      this.transcriptBuffers.set(meetingId, []);
+      this.transcriptBuffer = [];
+      this.partialChunkIndex.clear();
+      logger.info('[RECORDING-START] Initialized transcript buffers for meeting', { meetingId });
 
       // Only reset speaker tracking for new meetings
       this.unknownSpeakerCount = 0;
@@ -1015,10 +1015,12 @@ export class RecordingService extends EventEmitter {
   }
 
   private generateChunkHash(chunk: TranscriptChunk): string {
+    const timestamp = new Date(chunk.timestamp).getTime();
+    const timeBucket = Number.isNaN(timestamp) ? 0 : Math.floor(timestamp / 1000); // bucket to the nearest second
     const base = [
-      chunk.speaker || 'unknown',
-      chunk.text?.trim() || '',
-      new Date(chunk.timestamp).toISOString()
+      (chunk.speaker || 'unknown').trim().toLowerCase(),
+      (chunk.text || '').trim(),
+      timeBucket
     ].join('|');
     return crypto.createHash('sha1').update(base).digest('hex');
   }
@@ -1050,6 +1052,12 @@ export class RecordingService extends EventEmitter {
       persisted: chunk.persisted || false
     };
 
+    let meetingBuffer = this.transcriptBuffers.get(meetingId);
+    if (!meetingBuffer) {
+      meetingBuffer = [];
+      this.transcriptBuffers.set(meetingId, meetingBuffer);
+    }
+
     const dedupeKey = sequenceId || normalized.hash;
     const existingPartial = dedupeKey ? this.partialChunkIndex.get(dedupeKey) : undefined;
 
@@ -1071,13 +1079,23 @@ export class RecordingService extends EventEmitter {
         return;
       }
     } else {
+      if (dedupeKey && meetingBuffer) {
+        const existing = meetingBuffer.find(item => (item.sequenceId || item.hash) === dedupeKey);
+        if (existing) {
+          if (isFinal) {
+            this.replaceBufferChunk(meetingId, existing, normalized);
+          }
+          return;
+        }
+      }
+
       if (!isFinal && dedupeKey) {
         this.partialChunkIndex.set(dedupeKey, normalized);
       }
+
       this.transcriptBuffer.push(normalized);
-      const buffer = this.transcriptBuffers.get(meetingId);
-      if (buffer) {
-        buffer.push(normalized);
+      if (meetingBuffer) {
+        meetingBuffer.push(normalized);
       }
     }
 
@@ -1101,7 +1119,48 @@ export class RecordingService extends EventEmitter {
   }
 
   getBufferedChunks(meetingId: string): TranscriptChunk[] {
-    return (this.transcriptBuffers.get(meetingId) || []).map(chunk => ({
+    const buffer = this.transcriptBuffers.get(meetingId) || [];
+    const deduped: TranscriptChunk[] = [];
+    const indexByKey = new Map<string, number>();
+
+    const computeKey = (chunk: TranscriptChunk): string => {
+      if (chunk.sequenceId) {
+        return `seq:${chunk.sequenceId}`;
+      }
+      if (chunk.hash) {
+        return `hash:${chunk.hash}`;
+      }
+      const timestamp = new Date(chunk.timestamp).getTime();
+      const bucket = Number.isNaN(timestamp) ? 0 : Math.floor(timestamp / 1000);
+      const speaker = (chunk.speaker || 'unknown').trim().toLowerCase();
+      const text = (chunk.text || '').trim();
+      return `fallback:${speaker}:${bucket}:${text}`;
+    };
+
+    buffer.forEach(chunk => {
+      const key = computeKey(chunk);
+      const existingIndex = indexByKey.get(key);
+
+      if (existingIndex === undefined) {
+        indexByKey.set(key, deduped.length);
+        deduped.push(chunk);
+        return;
+      }
+
+      const existing = deduped[existingIndex];
+      const incomingTime = new Date(chunk.timestamp).getTime();
+      const existingTime = new Date(existing.timestamp).getTime();
+      const preferIncoming =
+        (!existing.isFinal && !!chunk.isFinal) ||
+        (!existing.persisted && !!chunk.persisted) ||
+        (Number.isFinite(incomingTime) && Number.isFinite(existingTime) && incomingTime > existingTime);
+
+      if (preferIncoming) {
+        deduped[existingIndex] = chunk;
+      }
+    });
+
+    return deduped.map(chunk => ({
       ...chunk,
       timestamp: new Date(chunk.timestamp).toISOString()
     }));

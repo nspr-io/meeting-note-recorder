@@ -399,6 +399,9 @@ export class StorageService {
         insightsContent = data.insights;
       }
 
+      const startTime = data.start_time || data.startTime;
+      const endTime = data.end_time || data.endTime;
+
       const meeting: Meeting = {
         id: data.id || uuidv4(),
         title: data.title || 'Untitled Meeting',
@@ -412,6 +415,8 @@ export class StorageService {
         meetingUrl: data.meeting_url,
         calendarInviteUrl: data.calendar_invite_url,
         status: data.status || 'completed',
+        startTime: startTime ? new Date(startTime) : undefined,
+        endTime: endTime ? new Date(endTime) : undefined,
         notes,
         transcript,
         insights: insightsContent,
@@ -453,6 +458,14 @@ export class StorageService {
 
     // Only add optional fields if they're defined
     if (meeting.duration !== undefined) frontmatter.duration = meeting.duration;
+    if (meeting.startTime) {
+      const start = meeting.startTime instanceof Date ? meeting.startTime.toISOString() : meeting.startTime;
+      frontmatter.start_time = start;
+    }
+    if (meeting.endTime) {
+      const end = meeting.endTime instanceof Date ? meeting.endTime.toISOString() : meeting.endTime;
+      frontmatter.end_time = end;
+    }
     if (meeting.recallRecordingId !== undefined) frontmatter.recall_recording_id = meeting.recallRecordingId;
     if (meeting.recallVideoUrl !== undefined) frontmatter.recall_video_url = meeting.recallVideoUrl;
     if (meeting.recallAudioUrl !== undefined) frontmatter.recall_audio_url = meeting.recallAudioUrl;
@@ -550,6 +563,14 @@ ${meeting.transcript || ''}`;
       ...data,
     };
 
+    if (meeting.startTime && !(meeting.startTime instanceof Date)) {
+      meeting.startTime = new Date(meeting.startTime);
+    }
+
+    if (meeting.endTime && !(meeting.endTime instanceof Date)) {
+      meeting.endTime = new Date(meeting.endTime);
+    }
+
     logger.info('[JOURNEY-STORAGE-2] Meeting object created', {
       id: meeting.id,
       title: meeting.title,
@@ -602,6 +623,14 @@ ${meeting.transcript || ''}`;
       id: meeting.id, // Ensure ID doesn't change
       updatedAt: new Date(),
     };
+
+    if (updatedMeeting.startTime && !(updatedMeeting.startTime instanceof Date)) {
+      updatedMeeting.startTime = new Date(updatedMeeting.startTime);
+    }
+
+    if (updatedMeeting.endTime && !(updatedMeeting.endTime instanceof Date)) {
+      updatedMeeting.endTime = new Date(updatedMeeting.endTime);
+    }
 
     if (incomingInsights === null) {
       updatedMeeting.insights = '';
@@ -1099,12 +1128,21 @@ ${meeting.transcript || ''}`;
       sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
       for (const meeting of meetings) {
-        const meetingDate = new Date(meeting.date);
+        const hydratedMeeting: Meeting = {
+          ...meeting,
+          date: new Date(meeting.date),
+          startTime: meeting.startTime ? new Date(meeting.startTime as any) : meeting.startTime,
+          endTime: meeting.endTime ? new Date(meeting.endTime as any) : meeting.endTime,
+          createdAt: meeting.createdAt ? new Date(meeting.createdAt as any) : meeting.createdAt,
+          updatedAt: meeting.updatedAt ? new Date(meeting.updatedAt as any) : meeting.updatedAt,
+        };
+
+        const meetingDate = hydratedMeeting.date instanceof Date ? hydratedMeeting.date : new Date(hydratedMeeting.date);
         const now = new Date();
 
         // Include meetings from last 6 months OR future meetings OR active/recording meetings
-        if (meetingDate >= sixMonthsAgo || meetingDate > now || meeting.status === 'active' || meeting.status === 'recording') {
-          this.meetingsCache.set(meeting.id, meeting);
+        if (meetingDate >= sixMonthsAgo || meetingDate > now || hydratedMeeting.status === 'active' || hydratedMeeting.status === 'recording') {
+          this.meetingsCache.set(hydratedMeeting.id, hydratedMeeting);
         }
       }
 
