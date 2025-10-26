@@ -195,9 +195,18 @@ function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalenda
     
     return () => clearInterval(interval);
   }, []);
+  const parseMeetingDate = (value: Date | string) => {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
   const formatMeetingDate = (date: Date | string) => {
-    const meetingDate = new Date(date);
-    
+    const meetingDate = parseMeetingDate(date);
+
+    if (!meetingDate) {
+      return 'Date unavailable';
+    }
+
     if (isToday(meetingDate)) {
       return `Today, ${format(meetingDate, 'h:mm a')}`;
     } else if (isTomorrow(meetingDate)) {

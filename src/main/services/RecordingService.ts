@@ -251,9 +251,11 @@ export class RecordingService extends EventEmitter {
             // Permissions are managed by PermissionService, not SDK
             logger.info('Permissions will be checked by PermissionService before recording starts');
 
-            // Start debugging after init
-            this.sdkDebugger.startDebugging();
-            await SDKDebugger.checkSDKPermissions();
+            // Start debugger helpers only in development to avoid production polling
+            if (process.env.NODE_ENV === 'development') {
+              this.sdkDebugger.startDebugging();
+              await SDKDebugger.checkSDKPermissions();
+            }
 
           } catch (sdkError) {
             logger.error('RecallAI SDK not available or init failed', sdkError);
@@ -485,50 +487,48 @@ export class RecordingService extends EventEmitter {
        * Events are emitted as 'realtime-event' with transcript data.
        */
       RecallAiSdk.addEventListener('realtime-event', async (event: any) => {
-        // Log EVERY realtime event to understand what's coming through
-        logger.info('🎤 Real-time event from SDK', {
-          windowId: event.window?.id,
-          eventType: event.type || event.event,
-          eventString: event.event,
-          hasData: !!event.data,
-          dataKeys: event.data ? Object.keys(event.data) : [],
-          fullEvent: JSON.stringify(event, null, 2)
-        });
-
-        // Also log to console for immediate visibility
-        console.log('🔴 REALTIME EVENT RECEIVED:', {
-          event: event.event,
-          data: event.data,
-          window: event.window?.id
-        });
+        const isDev = process.env.NODE_ENV === 'development';
+        if (isDev) {
+          logger.debug('🎤 Real-time event from SDK', {
+            windowId: event.window?.id,
+            eventType: event.type || event.event,
+            eventString: event.event,
+            hasData: !!event.data,
+            dataKeys: event.data ? Object.keys(event.data) : [],
+            fullEvent: JSON.stringify(event, null, 2)
+          });
+        } else {
+          logger.debug('🎤 Real-time event from SDK', {
+            windowId: event.window?.id,
+            eventType: event.type || event.event,
+            hasData: !!event.data
+          });
+        }
 
         // Handle real-time transcript chunks
         if (event.event === 'transcript.data' || event.event === 'transcript.partial_data') {
-          logger.info('📝 TRANSCRIPT EVENT DETECTED!', {
+          logger.debug('📝 Transcript event detected', {
             eventType: event.event,
             hasData: !!event.data
           });
 
-          // Log the actual structure to debug
-          if (event.data) {
-            logger.info('📊 Event data structure:', {
+          if (event.data && isDev) {
+            logger.debug('📊 Event data structure', {
               hasTranscript: !!event.data.transcript,
               hasData: !!event.data.data,
               transcriptKeys: event.data.transcript ? Object.keys(event.data.transcript) : [],
               dataKeys: event.data.data ? Object.keys(event.data.data) : []
             });
 
-            // Check for words in different locations
             if (event.data.data) {
-              logger.info('📊 Data.data structure:', {
+              logger.debug('📊 Data.data structure', {
                 hasWords: !!event.data.data.words,
                 hasTranscript: !!event.data.data.transcript,
                 dataDataKeys: Object.keys(event.data.data)
               });
 
-              // Log the actual transcript content if it exists
               if (event.data.data.transcript) {
-                logger.info('📊 Transcript content:', {
+                logger.debug('📊 Transcript content preview', {
                   transcriptType: typeof event.data.data.transcript,
                   transcriptLength: JSON.stringify(event.data.data.transcript).length,
                   transcriptSample: JSON.stringify(event.data.data.transcript).substring(0, 200)
@@ -603,7 +603,7 @@ export class RecordingService extends EventEmitter {
               text: transcriptText
             };
 
-            logger.info('📝 Processing transcript chunk', {
+            logger.debug('📝 Processing transcript chunk', {
               speaker: chunk.speaker,
               textLength: chunk.text.length,
               text: chunk.text.substring(0, 100) // Log first 100 chars

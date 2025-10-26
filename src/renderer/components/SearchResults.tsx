@@ -249,40 +249,47 @@ export default function SearchResults({ results, onSelectResult, onClear, loadin
         )}
       </ResultsHeader>
 
-      {results.map((result, index) => (
-        <ResultItem key={index} onClick={() => onSelectResult(result.meeting)}>
-          <ResultHeader>
-            <ResultTitle>{result.meeting.title}</ResultTitle>
-            <Score>{formatScore(result.score)}</Score>
-          </ResultHeader>
+      {results.map((result, index) => {
+        const meetingDate = new Date(result.meeting.date);
+        const isValidDate = !Number.isNaN(meetingDate.getTime());
+        const absoluteDate = isValidDate ? format(meetingDate, 'MMM d, yyyy') : 'Date unavailable';
+        const relativeDate = isValidDate ? formatDistanceToNow(meetingDate, { addSuffix: true }) : '';
 
-          <ResultMeta>
-            <span>
-              {format(new Date(result.meeting.date), 'MMM d, yyyy')} • {' '}
-              {formatDistanceToNow(new Date(result.meeting.date), { addSuffix: true })}
-            </span>
-            <StatusBadge status={result.meeting.status}>
-              {result.meeting.status}
-            </StatusBadge>
-            {result.meeting.platform && (
-              <span>{result.meeting.platform}</span>
+        return (
+          <ResultItem key={index} onClick={() => onSelectResult(result.meeting)}>
+            <ResultHeader>
+              <ResultTitle>{result.meeting.title}</ResultTitle>
+              <Score>{formatScore(result.score)}</Score>
+            </ResultHeader>
+
+            <ResultMeta>
+              <span>
+                {absoluteDate}
+                {relativeDate ? ` • ${relativeDate}` : ''}
+              </span>
+              <StatusBadge status={result.meeting.status}>
+                {result.meeting.status}
+              </StatusBadge>
+              {result.meeting.platform && (
+                <span>{result.meeting.platform}</span>
+              )}
+            </ResultMeta>
+
+            {result.matches.length > 0 && (
+              <>
+                <MatchPreview>
+                  {getMatchPreview(result)}
+                </MatchPreview>
+                <MatchInfo>
+                  {Array.from(new Set(result.matches.map(m => m.field))).map(field => (
+                    <MatchField key={field}>{field}</MatchField>
+                  ))}
+                </MatchInfo>
+              </>
             )}
-          </ResultMeta>
-
-          {result.matches.length > 0 && (
-            <>
-              <MatchPreview>
-                {getMatchPreview(result)}
-              </MatchPreview>
-              <MatchInfo>
-                {Array.from(new Set(result.matches.map(m => m.field))).map(field => (
-                  <MatchField key={field}>{field}</MatchField>
-                ))}
-              </MatchInfo>
-            </>
-          )}
-        </ResultItem>
-      ))}
+          </ResultItem>
+        );
+      })}
     </ResultsContainer>
   );
 }

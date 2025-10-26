@@ -24,6 +24,7 @@ export class StorageService {
   private descriptionProcessor: DescriptionProcessingService;
   private notifyMeetingsUpdated: () => void;
   private fullRefreshPromise: Promise<void> | null = null;
+  private lastCacheSaveTimestamp = 0;
 
   constructor(settingsService: SettingsService, notifyMeetingsUpdated: () => void) {
     this.settingsService = settingsService;
@@ -37,6 +38,143 @@ export class StorageService {
     this.descriptionProcessor = new DescriptionProcessingService();
     const apiKey = settingsService.getSettings().anthropicApiKey;
     this.descriptionProcessor.initialize(apiKey);
+  }
+
+  private stripUndefinedDeep<T>(value: T): T {
+    if (Array.isArray(value)) {
+      return value
+        .filter((item) => item !== undefined)
+        .map((item) => this.stripUndefinedDeep(item)) as unknown as T;
+    }
+
+    if (value instanceof Date || value instanceof Map || value === null || value === undefined) {
+      return value;
+    }
+
+    if (typeof value === 'object') {
+      const result: Record<string, unknown> = {};
+      Object.entries(value as Record<string, unknown>).forEach(([key, val]) => {
+        if (val === undefined) {
+          return;
+        }
+        const cleaned = this.stripUndefinedDeep(val);
+        if (cleaned !== undefined) {
+          result[key] = cleaned;
+        }
+      });
+      return result as unknown as T;
+    }
+
+    return value;
+  }
+
+  private normalizeDateInput(value: unknown): Date | null {
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+
+    if (typeof value === 'string' || typeof value === 'number') {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    return null;
+  }
+
+  private normalizeAttendees(value: unknown): Meeting['attendees'] {
+    if (!value) {
+      return [];
+    }
+
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .filter((item) => item !== undefined && item !== null)
+      .map((item) => {
+        if (item instanceof Date || item instanceof Map) {
+          return item;
+        }
+        if (typeof item === 'object') {
+          return this.stripUndefinedDeep(item);
+        }
+        return item;
+      }) as Meeting['attendees'];
+  }
+
+  private isValidStatus(status: unknown): status is Meeting['status'] {
+    return typeof status === 'string' && (
+      status === 'scheduled' ||
+      status === 'recording' ||
+      status === 'completed' ||
+      status === 'partial' ||
+      status === 'error' ||
+      status === 'active'
+    );
+  }
+
+  private sanitizeMeetingInput(data?: Partial<Meeting>): Partial<Meeting> {
+    if (!data) {
+      return {};
+    }
+
+    const cleaned = this.stripUndefinedDeep(data) as Partial<Meeting>;
+    const sanitized: Partial<Meeting> = { ...cleaned };
+
+    if ('attendees' in sanitized) {
+      sanitized.attendees = this.normalizeAttendees(sanitized.attendees);
+    }
+
+    const dateFields: (keyof Partial<Meeting>)[] = ['date', 'startTime', 'endTime', 'createdAt', 'updatedAt'];
+    dateFields.forEach((field) => {
+      if (field in sanitized) {
+        const normalized = this.normalizeDateInput(sanitized[field]);
+        if (normalized) {
+          sanitized[field] = normalized as any;
+        } else if (sanitized[field] === null) {
+          // Allow explicit null for optional date fields except primary date
+          if (field === 'date') {
+            delete sanitized[field];
+          }
+        } else {
+          delete sanitized[field];
+        }
+      }
+    });
+
+    if ('notionSharedAt' in sanitized) {
+      if (sanitized.notionSharedAt === null) {
+        sanitized.notionSharedAt = null;
+      } else {
+        const normalized = this.normalizeDateInput(sanitized.notionSharedAt);
+        if (normalized) {
+          sanitized.notionSharedAt = normalized;
+        } else {
+          delete sanitized.notionSharedAt;
+        }
+      }
+    }
+
+    if ('status' in sanitized && !this.isValidStatus(sanitized.status)) {
+      delete sanitized.status;
+    }
+
+    if ('notes' in sanitized && typeof sanitized.notes !== 'string') {
+      sanitized.notes = sanitized.notes == null ? '' : String(sanitized.notes);
+    }
+
+    if ('transcript' in sanitized && typeof sanitized.transcript !== 'string') {
+      sanitized.transcript = sanitized.transcript == null ? '' : String(sanitized.transcript);
+    }
+
+    if ('actionItemSyncStatus' in sanitized && Array.isArray(sanitized.actionItemSyncStatus)) {
+      sanitized.actionItemSyncStatus = sanitized.actionItemSyncStatus
+        .filter((item) => item !== undefined && item !== null)
+        .map((item) => this.stripUndefinedDeep(item)) as Meeting['actionItemSyncStatus'];
+    }
+
+    return sanitized;
   }
 
   private watchMeetingFile(meeting: Meeting): void {
@@ -437,69 +575,106 @@ export class StorageService {
   }
 
   private formatMeetingToMarkdown(meeting: Meeting): string {
-    // Build frontmatter with only defined values
-    const dateStr = typeof meeting.date === 'string'
-      ? meeting.date
-      : meeting.date.toISOString();
+    const sanitized = this.sanitizeMeetingInput(meeting);
+    const merged: Meeting = { ...meeting, ...sanitized } as Meeting;
+    const safeMeeting = this.stripUndefinedDeep(merged) as Meeting;
+
+    const normalizedDate = this.normalizeDateInput(merged.date) ?? new Date();
+    safeMeeting.date = normalizedDate;
+    safeMeeting.attendees = this.normalizeAttendees(merged.attendees ?? safeMeeting.attendees);
+    safeMeeting.status = this.isValidStatus(merged.status) ? merged.status : 'scheduled';
+    safeMeeting.notes = typeof merged.notes === 'string' ? merged.notes : '';
+    safeMeeting.transcript = typeof merged.transcript === 'string' ? merged.transcript : '';
+    safeMeeting.createdAt = this.normalizeDateInput(merged.createdAt) ?? new Date();
+    safeMeeting.updatedAt = this.normalizeDateInput(merged.updatedAt) ?? new Date();
+
+    const normalizedStart = this.normalizeDateInput(merged.startTime);
+    if (normalizedStart) {
+      safeMeeting.startTime = normalizedStart;
+    } else {
+      delete (safeMeeting as any).startTime;
+    }
+
+    const normalizedEnd = this.normalizeDateInput(merged.endTime);
+    if (normalizedEnd) {
+      safeMeeting.endTime = normalizedEnd;
+    } else {
+      delete (safeMeeting as any).endTime;
+    }
+
+    if (merged.notionSharedAt === null) {
+      safeMeeting.notionSharedAt = null;
+    } else {
+      const normalizedNotionSharedAt = this.normalizeDateInput(merged.notionSharedAt);
+      if (normalizedNotionSharedAt) {
+        safeMeeting.notionSharedAt = normalizedNotionSharedAt;
+      } else if (safeMeeting.notionSharedAt !== null) {
+        delete (safeMeeting as any).notionSharedAt;
+      }
+    }
+
+    if (!safeMeeting.attendees) {
+      safeMeeting.attendees = [];
+    }
+
+    const dateStr = safeMeeting.date instanceof Date
+      ? safeMeeting.date.toISOString()
+      : new Date(safeMeeting.date).toISOString();
 
     const frontmatter: any = {
-      id: meeting.id,
-      title: meeting.title,
+      id: safeMeeting.id,
+      title: safeMeeting.title,
       date: dateStr,
-      attendees: meeting.attendees,
-      status: meeting.status,
-      created_at: meeting.createdAt
-        ? (meeting.createdAt instanceof Date ? meeting.createdAt.toISOString() : meeting.createdAt)
-        : new Date().toISOString(),
-      updated_at: meeting.updatedAt
-        ? (meeting.updatedAt instanceof Date ? meeting.updatedAt.toISOString() : meeting.updatedAt)
-        : new Date().toISOString(),
+      attendees: safeMeeting.attendees,
+      status: safeMeeting.status,
+      created_at: safeMeeting.createdAt instanceof Date
+        ? safeMeeting.createdAt.toISOString()
+        : safeMeeting.createdAt,
+      updated_at: safeMeeting.updatedAt instanceof Date
+        ? safeMeeting.updatedAt.toISOString()
+        : safeMeeting.updatedAt,
     };
 
-    // Only add optional fields if they're defined
-    if (meeting.duration !== undefined) frontmatter.duration = meeting.duration;
-    if (meeting.startTime) {
-      const start = meeting.startTime instanceof Date ? meeting.startTime.toISOString() : meeting.startTime;
-      frontmatter.start_time = start;
+    if (safeMeeting.duration !== undefined) frontmatter.duration = safeMeeting.duration;
+    if (safeMeeting.startTime) {
+      frontmatter.start_time = safeMeeting.startTime instanceof Date
+        ? safeMeeting.startTime.toISOString()
+        : safeMeeting.startTime;
     }
-    if (meeting.endTime) {
-      const end = meeting.endTime instanceof Date ? meeting.endTime.toISOString() : meeting.endTime;
-      frontmatter.end_time = end;
+    if (safeMeeting.endTime) {
+      frontmatter.end_time = safeMeeting.endTime instanceof Date
+        ? safeMeeting.endTime.toISOString()
+        : safeMeeting.endTime;
     }
-    if (meeting.recallRecordingId !== undefined) frontmatter.recall_recording_id = meeting.recallRecordingId;
-    if (meeting.recallVideoUrl !== undefined) frontmatter.recall_video_url = meeting.recallVideoUrl;
-    if (meeting.recallAudioUrl !== undefined) frontmatter.recall_audio_url = meeting.recallAudioUrl;
-    if (meeting.calendarEventId !== undefined) frontmatter.calendar_event_id = meeting.calendarEventId;
-    if (meeting.meetingUrl !== undefined) frontmatter.meeting_url = meeting.meetingUrl;
-    if (meeting.calendarInviteUrl !== undefined) frontmatter.calendar_invite_url = meeting.calendarInviteUrl;
-    if (meeting.notionSharedAt) {
-      frontmatter.notion_shared_at = meeting.notionSharedAt instanceof Date
-        ? meeting.notionSharedAt.toISOString()
-        : meeting.notionSharedAt;
+    if (safeMeeting.recallRecordingId !== undefined) frontmatter.recall_recording_id = safeMeeting.recallRecordingId;
+    if (safeMeeting.recallVideoUrl !== undefined) frontmatter.recall_video_url = safeMeeting.recallVideoUrl;
+    if (safeMeeting.recallAudioUrl !== undefined) frontmatter.recall_audio_url = safeMeeting.recallAudioUrl;
+    if (safeMeeting.calendarEventId !== undefined) frontmatter.calendar_event_id = safeMeeting.calendarEventId;
+    if (safeMeeting.meetingUrl !== undefined) frontmatter.meeting_url = safeMeeting.meetingUrl;
+    if (safeMeeting.calendarInviteUrl !== undefined) frontmatter.calendar_invite_url = safeMeeting.calendarInviteUrl;
+    if (safeMeeting.notionSharedAt !== undefined) {
+      frontmatter.notion_shared_at = safeMeeting.notionSharedAt instanceof Date
+        ? safeMeeting.notionSharedAt.toISOString()
+        : safeMeeting.notionSharedAt;
     }
-    if (meeting.notionPageId) frontmatter.notion_page_id = meeting.notionPageId;
-    if (meeting.insightsFilePath) frontmatter.insights_file = meeting.insightsFilePath;
-    if (meeting.actionItemSyncStatus) frontmatter.action_item_sync_status = meeting.actionItemSyncStatus;
+    if (safeMeeting.notionPageId) frontmatter.notion_page_id = safeMeeting.notionPageId;
+    if (safeMeeting.insightsFilePath) frontmatter.insights_file = safeMeeting.insightsFilePath;
+    if (safeMeeting.actionItemSyncStatus) frontmatter.action_item_sync_status = safeMeeting.actionItemSyncStatus;
 
     const content = `# Meeting Notes
 
-${meeting.notes || ''}
+${safeMeeting.notes || ''}
 
 ---
 
 # Transcript
 
-${meeting.transcript || ''}`;
+${safeMeeting.transcript || ''}`;
 
-    // Use yaml library directly to ensure proper quoting of all strings
     const yaml = require('yaml');
-
-    // Create a custom stringifier that quotes all string values
-    // Set global option for yaml v1.10.2 API
     yaml.scalarOptions.str.defaultType = 'QUOTE_DOUBLE';
     const yamlString = yaml.stringify(frontmatter);
 
-    // Manually construct the markdown with frontmatter
     return `---\n${yamlString}---\n${content}`;
   }
 
@@ -510,7 +685,8 @@ ${meeting.transcript || ''}`;
 
   private generateFileName(meeting: Meeting): string {
     // Format: YYYY/MM/YYYY-MM-DD-HH-mm-[eventId]-title-slug.md
-    const date = new Date(meeting.date);
+    const normalizedDate = this.normalizeDateInput(meeting.date) ?? new Date();
+    const date = normalizedDate;
     const year = format(date, 'yyyy');
     const month = format(date, 'MM');
     const dateStr = format(date, 'yyyy-MM-dd-HH-mm');
@@ -550,26 +726,31 @@ ${meeting.transcript || ''}`;
       timestamp: new Date().toISOString()
     });
 
+    const sanitizedInput = this.sanitizeMeetingInput(data);
+    const {
+      title,
+      date,
+      attendees,
+      status,
+      notes,
+      transcript,
+      createdAt,
+      updatedAt,
+      ...rest
+    } = sanitizedInput;
+
     const meeting: Meeting = {
       id: uuidv4(),
-      title: data.title || 'Untitled Meeting',
-      date: data.date || new Date(),
-      attendees: data.attendees || [],
-      status: data.status || 'scheduled',
-      notes: data.notes || '',
-      transcript: data.transcript || '',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      ...data,
+      title: typeof title === 'string' && title.trim() ? title : 'Untitled Meeting',
+      date: date ?? new Date(),
+      attendees: this.normalizeAttendees(attendees),
+      status: this.isValidStatus(status) ? status : 'scheduled',
+      notes: typeof notes === 'string' ? notes : '',
+      transcript: typeof transcript === 'string' ? transcript : '',
+      createdAt: createdAt ?? new Date(),
+      updatedAt: updatedAt ?? new Date(),
+      ...rest,
     };
-
-    if (meeting.startTime && !(meeting.startTime instanceof Date)) {
-      meeting.startTime = new Date(meeting.startTime);
-    }
-
-    if (meeting.endTime && !(meeting.endTime instanceof Date)) {
-      meeting.endTime = new Date(meeting.endTime);
-    }
 
     logger.info('[JOURNEY-STORAGE-2] Meeting object created', {
       id: meeting.id,
@@ -597,10 +778,13 @@ ${meeting.transcript || ''}`;
   }
 
   async updateMeeting(id: string, updates: Partial<Meeting>): Promise<Meeting> {
+    const sanitizedUpdates = this.sanitizeMeetingInput(updates);
+
     logger.info('[JOURNEY-STORAGE-UPDATE-1] Updating meeting', {
       id,
       updates: Object.keys(updates),
-      newStatus: updates.status,
+      sanitizedUpdates: Object.keys(sanitizedUpdates),
+      newStatus: sanitizedUpdates.status,
       timestamp: new Date().toISOString()
     });
 
@@ -615,13 +799,13 @@ ${meeting.transcript || ''}`;
     const originalTranscript = meeting.transcript || '';
     const originalInsightsPath = meeting.insightsFilePath || undefined;
 
-    const incomingInsights = updates.insights ?? undefined;
+    const incomingInsights = sanitizedUpdates.insights ?? undefined;
 
     const updatedMeeting: Meeting = {
       ...meeting,
-      ...updates,
+      ...sanitizedUpdates,
       id: meeting.id, // Ensure ID doesn't change
-      updatedAt: new Date(),
+      updatedAt: sanitizedUpdates.updatedAt ?? new Date(),
     };
 
     if (updatedMeeting.startTime && !(updatedMeeting.startTime instanceof Date)) {
@@ -703,7 +887,7 @@ ${meeting.transcript || ''}`;
     let insightsFilePath = originalInsightsPath;
 
     // If title or date changed AND markdown file exists, rename file (and linked insights file)
-    if ((updates.title || updates.date) && fileExists && meeting.filePath) {
+    if ((sanitizedUpdates.title || sanitizedUpdates.date) && fileExists && meeting.filePath) {
       const oldPath = meeting.filePath;
       const newFileName = this.generateFileName(updatedMeeting);
       const newPath = path.join(storagePath, newFileName);
@@ -785,9 +969,33 @@ ${meeting.transcript || ''}`;
     const notesChanged = updatedMeeting.notes !== originalNotes;
     const transcriptChanged = updatedMeeting.transcript !== originalTranscript;
     const insightsPathChanged = insightsFilePath !== originalInsightsPath;
+    const structuralFieldChanged = Boolean(
+      sanitizedUpdates.status !== undefined ||
+      sanitizedUpdates.title !== undefined ||
+      sanitizedUpdates.date !== undefined ||
+      sanitizedUpdates.duration !== undefined ||
+      sanitizedUpdates.calendarEventId !== undefined ||
+      sanitizedUpdates.meetingUrl !== undefined ||
+      sanitizedUpdates.startTime !== undefined ||
+      sanitizedUpdates.endTime !== undefined ||
+      sanitizedUpdates.attendees !== undefined ||
+      sanitizedUpdates.notes !== undefined ||
+      sanitizedUpdates.insights !== undefined ||
+      sanitizedUpdates.recallRecordingId !== undefined ||
+      sanitizedUpdates.recallVideoUrl !== undefined ||
+      sanitizedUpdates.recallAudioUrl !== undefined
+    );
 
     const shouldCreateFile = !fileExists;
-    const shouldUpdateFile = fileExists && (notesChanged || transcriptChanged || updates.title || updates.date || updates.status || updates.duration || insightsPathChanged);
+    const shouldUpdateFile = fileExists && (
+      notesChanged ||
+      transcriptChanged ||
+      sanitizedUpdates.title ||
+      sanitizedUpdates.date ||
+      sanitizedUpdates.status ||
+      sanitizedUpdates.duration ||
+      insightsPathChanged
+    );
 
     if (shouldCreateFile || shouldUpdateFile) {
       await this.ensureDirectoryExists(updatedMeeting.filePath!);
@@ -818,8 +1026,19 @@ ${meeting.transcript || ''}`;
       status: updatedMeeting.status
     });
 
-    await this.saveCacheToDisk(); // Save cache after updating meeting
-    logger.info('[JOURNEY-STORAGE-UPDATE-3] Updated meeting saved to disk');
+    const now = Date.now();
+    const onlyTranscriptChanged = transcriptChanged && !notesChanged && !insightsPathChanged && !structuralFieldChanged;
+    const shouldSaveCache = !onlyTranscriptChanged || (now - this.lastCacheSaveTimestamp) > 60000;
+
+    if (shouldSaveCache) {
+      await this.saveCacheToDisk();
+      logger.info('[JOURNEY-STORAGE-UPDATE-3] Updated meeting saved to disk');
+    } else {
+      logger.debug('[JOURNEY-STORAGE-UPDATE-THROTTLED] Skipped cache save due to transcript-only change within throttle window', {
+        id,
+        throttleWindowMs: 60000
+      });
+    }
 
     return updatedMeeting;
   }
@@ -972,6 +1191,14 @@ ${meeting.transcript || ''}`;
       for (const event of calendarEvents) {
         try {
           processedCalendarIds.add(event.id);
+          if (!event.start || Number.isNaN(new Date(event.start).getTime()) || !event.end || Number.isNaN(new Date(event.end).getTime())) {
+            logger.warn(`[SMART-SYNC] Skipping event ${event.id} due to invalid start/end time`, {
+              title: event.title,
+              hasStart: !!event.start,
+              hasEnd: !!event.end
+            });
+            continue;
+          }
           const existingMeeting = await this.getMeetingByCalendarId(event.id);
 
           if (existingMeeting) {
@@ -1166,6 +1393,7 @@ ${meeting.transcript || ''}`;
       );
 
       logger.info(`[CACHE-SAVE-3] Successfully saved ${meetings.length} meetings to cache`);
+      this.lastCacheSaveTimestamp = Date.now();
     } catch (error) {
       logger.error('[CACHE-SAVE-ERROR] Failed to save cache:', error);
       logger.error('[CACHE-SAVE-ERROR] Stack trace:', error instanceof Error ? error.stack : 'No stack');

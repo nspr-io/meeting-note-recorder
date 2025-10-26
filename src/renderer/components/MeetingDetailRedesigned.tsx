@@ -452,6 +452,11 @@ function MeetingDetailRedesigned({ meeting, onUpdateMeeting, onDeleteMeeting }: 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
 
+  const meetingDateObj = new Date(meeting.date);
+  const hasValidMeetingDate = !Number.isNaN(meetingDateObj.getTime());
+  const meetingDateLabel = hasValidMeetingDate ? format(meetingDateObj, 'MMM d, yyyy') : 'Date unavailable';
+  const meetingTimeLabel = hasValidMeetingDate ? format(meetingDateObj, 'h:mm a') : '–';
+
   useEffect(() => {
     setNotes(meeting.notes || '');
     setHasChanges(false);
@@ -568,11 +573,11 @@ function MeetingDetailRedesigned({ meeting, onUpdateMeeting, onDeleteMeeting }: 
               <MetaInfo>
                 <MetaItem>
                   <span className="icon">📅</span>
-                  <span>{format(new Date(meeting.date), 'MMM d, yyyy')}</span>
+                  <span>{meetingDateLabel}</span>
                 </MetaItem>
                 <MetaItem>
                   <span className="icon">🕒</span>
-                  <span>{format(new Date(meeting.date), 'h:mm a')}</span>
+                  <span>{meetingTimeLabel}</span>
                 </MetaItem>
                 {meeting.duration && (
                   <MetaItem>

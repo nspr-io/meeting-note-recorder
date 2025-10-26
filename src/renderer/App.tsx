@@ -56,8 +56,8 @@ const SearchContainer = styled.div<{ collapsed: boolean }>`
   border-bottom: 1px solid #e5e5e7;
   transition: all 0.3s ease;
   position: relative;
-  max-height: ${props => props.collapsed ? '0' : '400px'};
-  overflow: hidden;
+  max-height: ${props => props.collapsed ? '0' : 'none'};
+  overflow: ${props => props.collapsed ? 'hidden' : 'visible'};
   opacity: ${props => props.collapsed ? '0' : '1'};
 `;
 

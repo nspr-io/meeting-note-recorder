@@ -1135,7 +1135,7 @@ interface MeetingDetailFinalProps {
   isCoachPopout?: boolean;
 }
 
-type ViewMode = 'notes' | 'transcript' | 'insights' | 'actions' | 'coach';
+type ViewMode = 'context' | 'liveNotes' | 'transcript' | 'insights' | 'actions' | 'coach';
 
 // Module-level transcript cache to persist across component re-renders
 const transcriptCache = new Map<string, any[]>();
@@ -1143,7 +1143,7 @@ const transcriptSequenceCache = new Map<string, Set<string>>();
 
 function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefresh, onShowToast, coachingState, onCoachingStateRefresh, activeCoachingMeeting, isCoachWindowOpen = false, onOpenCoachWindow, onCloseCoachWindow, isCoachPopout = false }: MeetingDetailFinalProps) {
   const initialSections = extractNoteSections(meeting.notes || '');
-  const [viewMode, setViewMode] = useState<ViewMode>(isCoachPopout ? 'coach' : 'notes');
+  const [viewMode, setViewMode] = useState<ViewMode>(isCoachPopout ? 'coach' : 'context');
   const [calendarInfo, setCalendarInfo] = useState(initialSections.calendarInfo);
   const [prepNotes, setPrepNotes] = useState(initialSections.prepNotes);
   const [meetingNotes, setMeetingNotes] = useState(initialSections.meetingNotes);
@@ -1184,6 +1184,12 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [itemErrors, setItemErrors] = useState<Record<number, string>>({});
   const isFirstRender = useRef(true);
   const previousMeetingIdRef = useRef(meeting.id);
+
+  const meetingDateObj = new Date(meeting.date);
+  const hasValidMeetingDate = !Number.isNaN(meetingDateObj.getTime());
+  const meetingFullDateLabel = hasValidMeetingDate ? format(meetingDateObj, 'PPP') : 'Date unavailable';
+  const meetingDateLabel = hasValidMeetingDate ? format(meetingDateObj, 'MMM d, yyyy') : 'Date unavailable';
+  const meetingTimeLabel = hasValidMeetingDate ? format(meetingDateObj, 'h:mm a') : '–';
 
   const formatTodoDueDate = useCallback((iso?: string | null) => {
     if (!iso) {
@@ -1954,7 +1960,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     if (!summary) return '';
 
     let formatted = `# Meeting Summary: ${meeting.title}\n\n`;
-    formatted += `**Date:** ${format(new Date(meeting.date), 'PPP')}\n`;
+    formatted += `**Date:** ${meetingFullDateLabel}\n`;
     formatted += `**Attendees:** ${Array.isArray(meeting.attendees) ? meeting.attendees.join(', ') : meeting.attendees}\n\n`;
 
     if (summary.summary) {
@@ -2419,10 +2425,10 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
           <MetaInfo>
             <MetaItem>
-              📅 {format(new Date(meeting.date), 'MMM d, yyyy')}
+              📅 {meetingDateLabel}
             </MetaItem>
             <MetaItem>
-              🕐 {format(new Date(meeting.date), 'h:mm a')}
+              🕐 {meetingTimeLabel}
             </MetaItem>
             {meeting.duration && (
               <MetaItem>
@@ -2467,10 +2473,16 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginTop: '16px' }}>
             <TabContainer style={{ flex: 1 }}>
               <Tab
-                active={viewMode === 'notes'}
-                onClick={() => setViewMode('notes')}
+                active={viewMode === 'context'}
+                onClick={() => setViewMode('context')}
               >
-                Notes
+                Context
+              </Tab>
+              <Tab
+                active={viewMode === 'liveNotes'}
+                onClick={() => setViewMode('liveNotes')}
+              >
+                Live Notes
               </Tab>
               <Tab
                 active={viewMode === 'transcript'}
@@ -2537,8 +2549,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
         )}
 
         <Content>
-          {/* Notes Panel - Always rendered but hidden when not active */}
-          <TabPanel isActive={viewMode === 'notes'}>
+          {/* Context Panel - Calendar and prep information */}
+          <TabPanel isActive={viewMode === 'context'}>
             <EditorContainer>
               <NotesScrollArea>
                 {(hasCalendarContent || isEditingCalendar || showPrepEditor || hasPrepContent) && (
@@ -2611,13 +2623,33 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                     )}
                   </SectionStack>
                 )}
+                {!hasCalendarContent && !isEditingCalendar && !showPrepEditor && !hasPrepContent && (
+                  <EmptyState>
+                    <div className="icon">🗒️</div>
+                    <h3>No meeting context yet</h3>
+                    <p>Add calendar details or prep notes to keep everyone aligned.</p>
+                  </EmptyState>
+                )}
+              </NotesScrollArea>
+              <EditorToolbar>
+                <SaveStatus>
+                  {isSaving ? '💾 Saving...' : hasChanges ? '⚠️ Unsaved changes' : '✓ Saved'}
+                </SaveStatus>
+                {!hasPrepContent && !showPrepEditor && (
+                  <InlineButton onClick={() => setShowPrepEditor(true)}>＋ Add Prep Notes</InlineButton>
+                )}
+              </EditorToolbar>
+            </EditorContainer>
+          </TabPanel>
+
+          {/* Live Notes Panel - Markdown editor for real-time notes */}
+          <TabPanel isActive={viewMode === 'liveNotes'}>
+            <EditorContainer>
+              <NotesScrollArea>
                 <EditorToolbar>
                   <SaveStatus>
                     {isSaving ? '💾 Saving...' : hasChanges ? '⚠️ Unsaved changes' : '✓ Saved'}
                   </SaveStatus>
-                  {!hasPrepContent && !showPrepEditor && (
-                    <InlineButton onClick={() => setShowPrepEditor(true)}>＋ Add Prep Notes</InlineButton>
-                  )}
                   <EditorModeButton
                     isActive={editorPreviewMode === 'preview'}
                     onClick={() => setEditorPreviewMode('preview')}
@@ -3176,30 +3208,30 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   </CoachTypeSelect>
                 </CoachTypeSelector>
 
-                {!isCoachPopout && (
-                  <CoachButtonGroup>
-                    {!isCoaching ? (
-                      <Button
-                        onClick={handleStartCoaching}
-                        disabled={!isRecording || !selectedCoachingType || isCoachingOnAnotherMeeting}
-                        style={{
-                          background: '#34c759',
-                          borderColor: '#34c759',
-                          color: 'white',
-                          flex: 1
-                        }}
-                      >
-                        {!isRecording ? '⏸ Start Recording First' : '▶️ Start Coaching'}
-                      </Button>
-                    ) : (
-                      <Button
-                        onClick={handleStopCoaching}
-                        variant="danger"
-                        style={{ flex: 1 }}
-                      >
-                        ⏹ Stop Coaching
-                      </Button>
-                    )}
+                <CoachButtonGroup>
+                  {!isCoaching ? (
+                    <Button
+                      onClick={handleStartCoaching}
+                      disabled={!isRecording || !selectedCoachingType || isCoachingOnAnotherMeeting}
+                      style={{
+                        background: '#34c759',
+                        borderColor: '#34c759',
+                        color: 'white',
+                        flex: 1
+                      }}
+                    >
+                      {!isRecording ? '⏸ Start Recording First' : '▶️ Start Coaching'}
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={handleStopCoaching}
+                      variant="danger"
+                      style={{ flex: 1 }}
+                    >
+                      ⏹ Stop Coaching
+                    </Button>
+                  )}
+                  {!isCoachPopout ? (
                     <Button
                       onClick={() => onOpenCoachWindow?.(meeting.id)}
                       disabled={isCoachWindowOpen}
@@ -3212,21 +3244,20 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                     >
                       {isCoachWindowOpen ? '🟦 Coach Window Open' : '🔲 Pop Out Coach'}
                     </Button>
-                  </CoachButtonGroup>
-                )}
-                {isCoachPopout && (
+                  ) : (
                     <Button
-                    onClick={() => onCloseCoachWindow?.()}
-                    style={{
-                      background: '#4b5563',
-                      borderColor: '#4b5563',
-                      color: 'white',
-                      alignSelf: 'flex-start'
-                    }}
-                  >
-                    ⬅️ Return to Main Window
-                  </Button>
-                )}
+                      onClick={() => onCloseCoachWindow?.()}
+                      style={{
+                        flex: 1,
+                        background: '#4b5563',
+                        borderColor: '#4b5563',
+                        color: 'white'
+                      }}
+                    >
+                      ⬅️ Return to Main Window
+                    </Button>
+                  )}
+                </CoachButtonGroup>
                 {!isCoachPopout && isCoachWindowOpen && (
                   <p
                     style={{

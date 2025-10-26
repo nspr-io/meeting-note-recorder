@@ -214,6 +214,12 @@ function MeetingDetail({ meeting, onUpdateMeeting, isRecording }: MeetingDetailP
   const dedupeMapRef = useRef<Map<string, string>>(new Map());
   const saveTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 
+  const meetingDateObj = new Date(meeting.date);
+  const hasValidMeetingDate = !Number.isNaN(meetingDateObj.getTime());
+  const meetingDateLabel = hasValidMeetingDate
+    ? format(meetingDateObj, 'MMMM d, yyyy • h:mm a')
+    : 'Date unavailable';
+
   console.log('[JOURNEY-DETAIL-1] MeetingDetail rendered', {
     meetingId: meeting.id,
     title: meeting.title,
@@ -412,7 +418,7 @@ function MeetingDetail({ meeting, onUpdateMeeting, isRecording }: MeetingDetailP
           placeholder="Meeting Title"
         />
         <MetaInfo>
-          <span>{format(new Date(meeting.date), 'MMMM d, yyyy • h:mm a')}</span>
+          <span>{meetingDateLabel}</span>
           {meeting.duration && <span>• {meeting.duration} minutes</span>}
           {meeting.attendees.length > 0 && (
             <span>• {meeting.attendees.length} attendees</span>

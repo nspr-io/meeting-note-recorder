@@ -6,10 +6,10 @@ import { Meeting, SearchOptions, SearchResult } from '../../shared/types';
 
 const SearchWrapper = styled.div<{ collapsed?: boolean }>`
   position: relative;
-  max-height: ${props => props.collapsed ? '0' : '300px'};
+  max-height: ${props => props.collapsed ? '0' : 'none'};
   opacity: ${props => props.collapsed ? '0' : '1'};
   transition: all 0.3s ease;
-  overflow: hidden;
+  overflow: ${props => props.collapsed ? 'hidden' : 'visible'};
   pointer-events: ${props => props.collapsed ? 'none' : 'auto'};
 `;
 

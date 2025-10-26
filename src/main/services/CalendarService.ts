@@ -1,4 +1,4 @@
-import { google } from 'googleapis';
+import { google, calendar_v3 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 import { CalendarEvent } from '../../shared/types';
 import { BrowserWindow } from 'electron';
@@ -6,6 +6,7 @@ import Store from 'electron-store';
 import { EventEmitter } from 'events';
 
 const SCOPES = ['https://www.googleapis.com/auth/calendar.readonly'];
+const REMINDER_CACHE_TTL_MS = 2 * 60 * 1000;
 
 interface TokenStore {
   access_token?: string;
@@ -15,12 +16,20 @@ interface TokenStore {
   expiry_date?: number;
 }
 
+type NormalizedEvent = {
+  event: calendar_v3.Schema$Event;
+  startDate: Date | null;
+  endDate: Date | null;
+};
+
 export class CalendarService extends EventEmitter {
   private oauth2Client: OAuth2Client;
   private tokenStore: any; // Using any to work around TypeScript issues with electron-store in tests
   private calendar: any;
   private notificationTimer: NodeJS.Timeout | null = null;
   private notifiedMeetings = new Set<string>();
+  private reminderEventsCache: CalendarEvent[] = [];
+  private reminderEventsFetchedAt = 0;
 
   // Common video conference URL patterns
   private conferencePatterns = [
@@ -258,15 +267,42 @@ export class CalendarService extends EventEmitter {
 
       console.log('Calendar API response:', response.data.items?.length || 0, 'events found');
 
-      // Filter to only include meetings that haven't ended yet
-      const events = (response.data.items || []).filter((event: any) => {
-        if (!event.end) return true; // Include if no end time specified
-        const endTime = new Date(event.end.dateTime || event.end.date);
-        return endTime > now; // Only include if meeting hasn't ended yet
+      const normalizedEvents: NormalizedEvent[] = (response.data.items || [])
+        .filter((event: calendar_v3.Schema$Event | null | undefined): event is calendar_v3.Schema$Event => Boolean(event))
+        .map((event: calendar_v3.Schema$Event) => {
+        const startRaw = event?.start?.dateTime || event?.start?.date;
+        const endRaw = event?.end?.dateTime || event?.end?.date;
+        return {
+          event,
+          startDate: startRaw ? new Date(startRaw) : null,
+          endDate: endRaw ? new Date(endRaw) : null,
+        };
       });
 
-      // Filter events to only include those with conference links
-      const eventsWithConference = events.filter((event: any) => {
+      const eventsWithValidTimes = normalizedEvents.filter(({ event, startDate, endDate }: NormalizedEvent) => {
+        if (event.status === 'cancelled') {
+          console.log(`[CALENDAR] Skipping cancelled event ${event.id}`);
+          return false;
+        }
+        if (!startDate || Number.isNaN(startDate.getTime())) {
+          console.warn(`[CALENDAR] Skipping event ${event.id} (${event.summary || 'Untitled Event'}) - missing or invalid start time`);
+          return false;
+        }
+        if (!endDate || Number.isNaN(endDate.getTime())) {
+          console.warn(`[CALENDAR] Skipping event ${event.id} (${event.summary || 'Untitled Event'}) - missing or invalid end time`);
+          return false;
+        }
+        if (!event.id) {
+          console.warn('[CALENDAR] Skipping event without ID');
+          return false;
+        }
+        if (endDate <= now) {
+          return false;
+        }
+        return true;
+      });
+
+      const eventsWithConference = eventsWithValidTimes.filter(({ event }: NormalizedEvent) => {
         const hasLink = this.hasConferenceLink(event);
         if (!hasLink) {
           console.log(`Filtering out event "${event.summary}" - no conference link detected`);
@@ -274,19 +310,19 @@ export class CalendarService extends EventEmitter {
         return hasLink;
       });
 
-      console.log(`Filtered ${events.length} events to ${eventsWithConference.length} with conference links`);
+      console.log(`Filtered ${eventsWithValidTimes.length} events to ${eventsWithConference.length} with conference links`);
 
-      return eventsWithConference.map((event: any) => ({
-        id: event.id,
+      return eventsWithConference.map(({ event, startDate, endDate }: NormalizedEvent) => ({
+        id: event.id!,
         title: event.summary || 'Untitled Event',
-        start: new Date(event.start.dateTime || event.start.date),
-        end: new Date(event.end.dateTime || event.end.date),
-        attendees: (event.attendees || []).map((a: any) => a.email || a.displayName || ''),
-        description: event.description,
-        location: event.location,
+        start: startDate!,
+        end: endDate!,
+        attendees: (event.attendees || []).map((a: calendar_v3.Schema$EventAttendee) => a.email ?? a.displayName ?? ''),
+        description: event.description ?? undefined,
+        location: event.location ?? undefined,
         calendarId: 'primary',
         meetingUrl: this.extractMeetingUrl(event),
-        htmlLink: event.htmlLink,
+        htmlLink: event.htmlLink ?? undefined,
       }));
     } catch (error: any) {
       console.error('Failed to fetch calendar events:', error);
@@ -310,11 +346,25 @@ export class CalendarService extends EventEmitter {
 
       const event = response.data;
       
+      const startRaw = event.start?.dateTime || event.start?.date;
+      const endRaw = event.end?.dateTime || event.end?.date;
+      if (!startRaw || !endRaw) {
+        console.warn(`[CALENDAR] Event ${event.id} missing start or end time`);
+        return null;
+      }
+
+      const startDate = new Date(startRaw);
+      const endDate = new Date(endRaw);
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+        console.warn(`[CALENDAR] Event ${event.id} has invalid start or end time`);
+        return null;
+      }
+
       return {
         id: event.id,
         title: event.summary || 'Untitled Event',
-        start: new Date(event.start.dateTime || event.start.date),
-        end: new Date(event.end.dateTime || event.end.date),
+        start: startDate,
+        end: endDate,
         attendees: (event.attendees || []).map((a: any) => a.email || a.displayName || ''),
         description: event.description,
         location: event.location,
@@ -387,6 +437,24 @@ export class CalendarService extends EventEmitter {
     }
   }
 
+  private async getCachedReminderEvents(): Promise<CalendarEvent[]> {
+    const now = Date.now();
+    const cacheStale = (now - this.reminderEventsFetchedAt) > REMINDER_CACHE_TTL_MS;
+
+    if (!this.reminderEventsCache.length || cacheStale) {
+      try {
+        const events = await this.getUpcomingEvents();
+        this.reminderEventsCache = events;
+        this.reminderEventsFetchedAt = Date.now();
+        console.log(`Reminder events cache refreshed (${events.length} events)`);
+      } catch (error) {
+        console.error('Failed to refresh reminder events cache:', error);
+      }
+    }
+
+    return this.reminderEventsCache;
+  }
+
   // Pre-meeting notification methods
   startMeetingReminders() {
     console.log('Starting meeting reminder service');
@@ -415,8 +483,12 @@ export class CalendarService extends EventEmitter {
     }
 
     try {
-      const events = await this.getUpcomingEvents();
+      const events = await this.getCachedReminderEvents();
       const now = Date.now();
+
+      if (!events.length) {
+        return;
+      }
 
       for (const event of events) {
         const startTime = new Date(event.start).getTime();
@@ -435,6 +507,12 @@ export class CalendarService extends EventEmitter {
 
       // Clean up old notifications (older than 2 hours)
       this.cleanupOldNotifications();
+
+      // Remove ended events from cache to keep it tidy
+      this.reminderEventsCache = events.filter(event => {
+        const endTime = new Date(event.end).getTime();
+        return endTime > now;
+      });
     } catch (error) {
       console.error('Error checking for upcoming meetings:', error);
     }

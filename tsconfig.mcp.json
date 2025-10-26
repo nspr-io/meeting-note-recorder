@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist-mcp",
+    "rootDir": "./src",
+    "module": "commonjs",
+    "target": "ES2020",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": [
+    "src/mcp/**/*",
+    "src/shared/**/*",
+    "src/main/services/SearchService.ts",
+    "src/renderer/components/noteSectionUtils.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-app",
+    "dist-mcp"
+  ]
+}
