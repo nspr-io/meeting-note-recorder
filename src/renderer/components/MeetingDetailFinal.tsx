@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import styled from '@emotion/styled';
 import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback, CoachingState, NotionShareMode, ActionItemSyncStatus, CoachConfig } from '../../shared/types';
 import { format } from 'date-fns';
-import MDEditor from '@uiw/react-md-editor';
+import MDEditor, { ICommand } from '@uiw/react-md-editor';
 import { combineNoteSections, extractNoteSections, hasSectionChanges } from './noteSectionUtils';
 
 const Container = styled.div`
@@ -670,27 +670,11 @@ const EditorToolbar = styled.div`
   position: sticky;
   top: 0;
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 4px;
   padding-top: 8px;
   background: white;
   z-index: 1;
-`;
-
-const EditorModeButton = styled.button<{ isActive?: boolean }>`
-  padding: 6px 12px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s;
-  border: 1px solid ${props => props.isActive ? '#007AFF' : 'rgba(0, 0, 0, 0.1)'};
-  background: ${props => props.isActive ? '#007AFF' : 'white'};
-  color: ${props => props.isActive ? 'white' : '#333'};
-
-  &:hover {
-    background: ${props => props.isActive ? '#0051D5' : '#f0f0f0'};
-  }
 `;
 
 const RecordingBanner = styled.div`
@@ -1151,7 +1135,6 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [baselineNotes, setBaselineNotes] = useState(meeting.notes || '');
   const [showPrepEditor, setShowPrepEditor] = useState(false);
   const [isEditingCalendar, setIsEditingCalendar] = useState(false);
-  const [editorPreviewMode, setEditorPreviewMode] = useState<'edit' | 'live' | 'preview'>('preview');
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
@@ -1300,6 +1283,12 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const isCoaching = isCoachingForCurrentMeeting;
   const hasCalendarContent = calendarInfo.trim().length > 0;
   const hasPrepContent = prepNotes.trim().length > 0;
+  const disablePreviewCommands = useCallback((command: ICommand, isExtra: boolean) => {
+    if (isExtra) {
+      return false;
+    }
+    return command;
+  }, []);
 
   useEffect(() => {
     if (isCoachingForCurrentMeeting) {
@@ -2294,13 +2283,13 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     return groupedSegments;
   };
 
-  // Auto-save after 2 seconds of no changes
+  // Auto-save after 5 seconds of no changes
   useEffect(() => {
     if (!hasChanges) return;
 
     const timer = setTimeout(() => {
       handleSave();
-    }, 2000);
+    }, 5000);
 
     return () => clearTimeout(timer);
   }, [combinedNotes, hasChanges]);
@@ -2650,32 +2639,15 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   <SaveStatus>
                     {isSaving ? '💾 Saving...' : hasChanges ? '⚠️ Unsaved changes' : '✓ Saved'}
                   </SaveStatus>
-                  <EditorModeButton
-                    isActive={editorPreviewMode === 'preview'}
-                    onClick={() => setEditorPreviewMode('preview')}
-                  >
-                    📖 Preview
-                  </EditorModeButton>
-                  <EditorModeButton
-                    isActive={editorPreviewMode === 'live'}
-                    onClick={() => setEditorPreviewMode('live')}
-                  >
-                    ⚡ Split
-                  </EditorModeButton>
-                  <EditorModeButton
-                    isActive={editorPreviewMode === 'edit'}
-                    onClick={() => setEditorPreviewMode('edit')}
-                  >
-                    ✏️ Edit
-                  </EditorModeButton>
                 </EditorToolbar>
                 <MDEditor
                   key={`editor-${meeting.id}-${editorKey}`}
                   value={meetingNotes}
                   onChange={(value) => handleNotesChange(value || '')}
                   height="100%"
-                  preview={editorPreviewMode}
+                  preview="edit"
                   hideToolbar={false}
+                  commandsFilter={disablePreviewCommands}
                   style={{ flex: 1, minHeight: 0 }}
                   previewOptions={{
                     style: {
@@ -2951,8 +2923,9 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                           value={editedTeamContent || formatTeamSummary(teamSummary)}
                           onChange={(value) => setEditedTeamContent(value || '')}
                           height={360}
-                          preview={editorPreviewMode}
+                          preview="edit"
                           hideToolbar={false}
+                          commandsFilter={disablePreviewCommands}
                           previewOptions={{
                             style: {
                               padding: '20px',

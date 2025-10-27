@@ -9,13 +9,14 @@
     "dev:main": "webpack --config webpack.main.config.js --mode development --watch",
     "dev:preload": "webpack --config webpack.preload.config.js --mode development --watch",
     "dev:renderer": "webpack serve --config webpack.renderer.config.js --mode development",
-    "build": "npm run build:main && npm run build:preload && npm run build:renderer",
+    "build": "npm run build:main && npm run build:preload && npm run build:renderer && npm run build:mcp",
     "build:main": "webpack --config webpack.main.config.js --mode production",
     "build:preload": "webpack --config webpack.preload.config.js --mode production",
     "build:renderer": "webpack --config webpack.renderer.config.js --mode production",
     "build:mcp": "tsc --project tsconfig.mcp.json",
     "start": "electron .",
-    "start:mcp": "npm run build:mcp && node dist-mcp/mcp/server.js",
+    "start:mcp": "node dist-mcp/mcp/server.js",
+    "postinstall": "npm run build:mcp",
     "dist": "npm run build && electron-builder",
     "test": "node test-production.js",
     "test:interactive": "node test-interactive.js",
@@ -87,7 +88,7 @@
     "@recallai/desktop-sdk": "^1.2.0",
     "@types/lodash": "^4.17.20",
     "@uiw/react-md-editor": "^4.0.8",
-    "chokidar": "^4.0.3",
+    "chokidar": "^3.6.0",
     "date-fns": "^4.1.0",
     "dotenv": "^17.2.2",
     "electron-store": "^10.1.0",
@@ -147,5 +148,8 @@
     "webpack": "^5.101.3",
     "webpack-cli": "^6.0.1",
     "webpack-dev-server": "^5.2.2"
+  },
+  "optionalDependencies": {
+    "fsevents": "^2.3.3"
   }
 }

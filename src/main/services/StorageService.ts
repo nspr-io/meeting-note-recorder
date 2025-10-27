@@ -1176,6 +1176,22 @@ ${safeMeeting.transcript || ''}`;
     errors: string[];
   }> {
     const result = { added: 0, updated: 0, deleted: 0, errors: [] as string[] };
+    const processedBaseIds = new Set<string>();
+    const MOVE_ASSOCIATION_THRESHOLD_MS = 1000 * 60 * 60 * 24 * 30;
+
+    const getMeetingStartDate = (meeting: Meeting): Date | null => {
+      const candidate = (meeting.startTime ?? meeting.date) as Date | string | undefined;
+      if (!candidate) {
+        return null;
+      }
+
+      if (candidate instanceof Date) {
+        return Number.isNaN(candidate.getTime()) ? null : candidate;
+      }
+
+      const parsed = new Date(candidate);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    };
 
     try {
       // Adoption logic removed - MCP handles prep notes now
@@ -1191,6 +1207,10 @@ ${safeMeeting.transcript || ''}`;
       for (const event of calendarEvents) {
         try {
           processedCalendarIds.add(event.id);
+          const baseId = event.id.split('_')[0];
+          if (baseId) {
+            processedBaseIds.add(baseId);
+          }
           if (!event.start || Number.isNaN(new Date(event.start).getTime()) || !event.end || Number.isNaN(new Date(event.end).getTime())) {
             logger.warn(`[SMART-SYNC] Skipping event ${event.id} due to invalid start/end time`, {
               title: event.title,
@@ -1199,7 +1219,52 @@ ${safeMeeting.transcript || ''}`;
             });
             continue;
           }
-          const existingMeeting = await this.getMeetingByCalendarId(event.id);
+          let existingMeeting = await this.getMeetingByCalendarId(event.id);
+          let matchedByRecurringBase = false;
+
+          if (!existingMeeting && event.id.includes('_')) {
+            const fallbackBaseId = event.id.split('_')[0];
+            const fallbackCandidates = existingMeetings.filter((meeting) => {
+              if (!meeting.calendarEventId) {
+                return false;
+              }
+              const meetingBaseId = meeting.calendarEventId.split('_')[0];
+              return meetingBaseId === fallbackBaseId && this.isMeetingTouched(meeting);
+            });
+
+            if (fallbackCandidates.length > 0) {
+              let bestCandidate: Meeting | null = null;
+              let smallestDiff = Number.POSITIVE_INFINITY;
+              const eventStart = event.start instanceof Date ? event.start : new Date(event.start);
+
+              for (const candidate of fallbackCandidates) {
+                const candidateStart = getMeetingStartDate(candidate);
+                if (!candidateStart) {
+                  continue;
+                }
+
+                const diff = Math.abs(candidateStart.getTime() - eventStart.getTime());
+                if (diff < smallestDiff) {
+                  smallestDiff = diff;
+                  bestCandidate = candidate;
+                }
+              }
+
+              if (bestCandidate && smallestDiff <= MOVE_ASSOCIATION_THRESHOLD_MS) {
+                existingMeeting = bestCandidate;
+                matchedByRecurringBase = true;
+                if (bestCandidate.calendarEventId) {
+                  processedCalendarIds.add(bestCandidate.calendarEventId);
+                }
+                logger.info(`[SMART-SYNC] Matched moved recurring meeting`, {
+                  baseId: fallbackBaseId,
+                  previousId: bestCandidate.calendarEventId,
+                  newId: event.id,
+                  meetingId: bestCandidate.id
+                });
+              }
+            }
+          }
 
           if (existingMeeting) {
             // Meeting exists - check if we should update it
@@ -1236,6 +1301,7 @@ ${safeMeeting.transcript || ''}`;
                 attendees: event.attendees,
                 meetingUrl: event.meetingUrl,
                 calendarInviteUrl: event.htmlLink,
+                calendarEventId: event.id,
                 updatedAt: new Date()
                 // Explicitly NOT updating: notes, transcript, status, filePath
               });
@@ -1250,10 +1316,14 @@ ${safeMeeting.transcript || ''}`;
                 attendees: event.attendees,
                 meetingUrl: event.meetingUrl,
                 calendarInviteUrl: event.htmlLink,
+                calendarEventId: event.id,
                 updatedAt: new Date()
               });
             }
             result.updated++;
+            if (matchedByRecurringBase && existingMeeting.calendarEventId !== event.id) {
+              existingMeeting.calendarEventId = event.id;
+            }
           } else {
             // New meeting
             logger.info(`Adding new meeting: ${event.title}`);
@@ -1312,6 +1382,12 @@ ${safeMeeting.transcript || ''}`;
       for (const meeting of existingMeetings) {
         if (!processedCalendarIds.has(meeting.calendarEventId!) &&
             new Date(meeting.date) > new Date()) { // Only check future meetings
+
+          const meetingBaseId = meeting.calendarEventId?.split('_')[0];
+          if (meetingBaseId && processedBaseIds.has(meetingBaseId) && this.isMeetingTouched(meeting)) {
+            logger.info(`[SMART-SYNC] Skipping deletion for moved meeting: ${meeting.title}`);
+            continue;
+          }
 
           const isTouched = this.isMeetingTouched(meeting);
 

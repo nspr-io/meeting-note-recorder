@@ -301,10 +301,24 @@ ${sanitizedMeeting.transcript || ''}
   }
 
   private composeMeetingFromFrontmatter(data: any, sections: NoteSections, transcript: string, filePath: string): Meeting {
+    let parsedDate: Date | null = null;
+    if (data.date) {
+      const candidate = new Date(data.date);
+      if (!Number.isNaN(candidate.getTime())) {
+        parsedDate = candidate;
+      }
+    }
+
+    const inferredDate =
+      parsedDate ??
+      this.inferDateFromFilename(path.basename(filePath)) ??
+      this.inferDateFromDirectory(filePath) ??
+      new Date();
+
     const meeting: Meeting = {
       id: data.id ?? uuidv4(),
       title: data.title ?? 'Untitled Meeting',
-      date: data.date ? new Date(data.date) : new Date(),
+      date: inferredDate,
       attendees: Array.isArray(data.attendees) ? data.attendees : [],
       duration: data.duration,
       status: data.status ?? 'completed',
@@ -353,8 +367,9 @@ ${sanitizedMeeting.transcript || ''}
 
         const files = await this.collectMarkdownFiles(monthDir);
         for (const file of files) {
-          const inferredDate = this.inferDateFromFilename(path.basename(file));
+          const inferredDate = await this.inferDateForFile(file);
           if (!inferredDate) {
+            results.push(file);
             continue;
           }
 
@@ -404,6 +419,49 @@ ${sanitizedMeeting.transcript || ''}
     const [_, year, month, day, hours, minutes] = match;
     const date = new Date(`${year}-${month}-${day}T${hours}:${minutes}:00Z`);
     return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  private inferDateFromDirectory(filePath: string): Date | null {
+    const parentDir = path.basename(path.dirname(filePath));
+    const weekMatch = parentDir.match(/^Week_(\d{4})-(\d{2})-(\d{2})_to_(\d{4})-(\d{2})-(\d{2})$/);
+    if (weekMatch) {
+      const [_, year, month, day] = weekMatch;
+      const date = new Date(`${year}-${month}-${day}T00:00:00Z`);
+      if (!Number.isNaN(date.getTime())) {
+        return date;
+      }
+    }
+
+    const simpleMatch = parentDir.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (simpleMatch) {
+      const [_, year, month, day] = simpleMatch;
+      const date = new Date(`${year}-${month}-${day}T00:00:00Z`);
+      if (!Number.isNaN(date.getTime())) {
+        return date;
+      }
+    }
+
+    return null;
+  }
+
+  private async inferDateForFile(filePath: string): Promise<Date | null> {
+    const fromFilename = this.inferDateFromFilename(path.basename(filePath));
+    if (fromFilename) {
+      return fromFilename;
+    }
+
+    const fromDirectory = this.inferDateFromDirectory(filePath);
+    if (fromDirectory) {
+      return fromDirectory;
+    }
+
+    try {
+      const stats = await fs.stat(filePath);
+      return stats.mtime;
+    } catch (error) {
+      console.warn(`[MeetingFileRepository] Failed to stat file for date inference: ${filePath}`, error);
+      return null;
+    }
   }
 
   private async listYearDirectories(): Promise<string[]> {

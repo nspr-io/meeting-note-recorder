@@ -5,6 +5,7 @@ process.env.ELECTRON_RUN_AS_NODE = process.env.ELECTRON_RUN_AS_NODE || '1';
 import path from 'path';
 import os from 'os';
 import { existsSync, mkdirSync } from 'fs';
+import chokidar from 'chokidar';
 
 import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -37,12 +38,32 @@ interface ToolResponsePayload {
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResponsePayload>;
 
+function parseDateBoundary(value: unknown, options: { endOfDay?: boolean } = {}): Date | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+
+  if (options.endOfDay) {
+    date.setHours(23, 59, 59, 999);
+  } else {
+    date.setHours(0, 0, 0, 0);
+  }
+
+  return date;
+}
+
 class MeetingNoteRecorderMcpServer {
   private readonly server: McpServer;
   private readonly repository: MeetingFileRepository;
   private readonly searchService: SearchService;
   private readonly indexedMeetings = new Map<string, IndexedMeeting>();
   private indexBuilt = false;
+  private watcher: chokidar.FSWatcher | null = null;
 
   constructor(storagePath: string) {
     log('[INIT] Starting Meeting Note Recorder MCP server');
@@ -288,13 +309,16 @@ class MeetingNoteRecorderMcpServer {
       const status = Array.isArray(args.status) ? args.status.map(String) : undefined;
       const limit = args.limit ? Number(args.limit) : undefined;
 
+      const dateFrom = parseDateBoundary(args.date_from, { endOfDay: false });
+      const dateTo = parseDateBoundary(args.date_to, { endOfDay: true });
+
       const results = this.searchService.search({
         query,
         filters: {
           attendees,
           status: status as Meeting['status'][] | undefined,
-          dateFrom: args.date_from ? new Date(String(args.date_from)) : undefined,
-          dateTo: args.date_to ? new Date(String(args.date_to)) : undefined
+          dateFrom,
+          dateTo
         },
         limit
       });
@@ -322,7 +346,7 @@ class MeetingNoteRecorderMcpServer {
     async list_recent_meetings(this: MeetingNoteRecorderMcpServer, args) {
       const limit = args.limit ? Number(args.limit) : undefined;
       const status = Array.isArray(args.status) ? args.status.map(String) : undefined;
-      const dateFrom = args.date_from ? new Date(String(args.date_from)) : undefined;
+      const dateFrom = parseDateBoundary(args.date_from, { endOfDay: false });
 
       const recent = this.searchService.getRecentMeetings(limit ?? 10);
       const filtered = recent.filter((meeting) => {
@@ -533,9 +557,45 @@ class MeetingNoteRecorderMcpServer {
 
   async run(): Promise<void> {
     await this.buildIndex();
+    this.startWatching();
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     log('Meeting Note Recorder MCP server running');
+  }
+
+  private startWatching(): void {
+    const storagePath = this.repository.getStoragePath();
+    if (!storagePath || !existsSync(storagePath)) {
+      log('[WATCH] Storage path missing, skipping watcher', { storagePath });
+      return;
+    }
+
+    if (this.watcher) {
+      this.watcher.close().catch((error) => log('[WATCH] Failed to close previous watcher', { error: formatError(error) }));
+    }
+
+    this.watcher = chokidar.watch(storagePath, {
+      persistent: true,
+      ignoreInitial: true,
+      ignored: (targetPath) => !targetPath.endsWith('.md') || targetPath.includes('-deleted-')
+    });
+
+    const rebuild = async (event: string, targetPath: string) => {
+      log('[WATCH] Change detected', { event, targetPath });
+      try {
+        await this.buildIndex();
+      } catch (error) {
+        log('[WATCH] Failed to rebuild index after change', { error: formatError(error) });
+      }
+    };
+
+    this.watcher
+      .on('add', (path) => void rebuild('add', path))
+      .on('change', (path) => void rebuild('change', path))
+      .on('unlink', (path) => void rebuild('unlink', path))
+      .on('error', (error) => log('[WATCH] Error', { error: formatError(error) }));
+
+    log('[WATCH] Watching for meeting file changes');
   }
 }
 

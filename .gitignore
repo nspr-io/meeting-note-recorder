@@ -95,6 +95,11 @@ out
 dist
 dist-app
 dist-*
+!dist-mcp/
+dist-mcp/*
+!dist-mcp/mcp/
+dist-mcp/mcp/*
+!dist-mcp/mcp/server.js
 build
 *.dmg
 *.app

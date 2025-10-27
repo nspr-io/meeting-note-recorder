@@ -3,7 +3,7 @@ import '@testing-library/jest-dom';
 // Mock Electron
 jest.mock('electron', () => ({
   app: {
-    getPath: jest.fn(),
+    getPath: jest.fn().mockReturnValue('/tmp/meeting-note-recorder'),
     whenReady: jest.fn(() => Promise.resolve()),
     quit: jest.fn(),
   },
