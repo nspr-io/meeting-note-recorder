@@ -1,7 +1,6 @@
 import { Meeting, TranscriptChunk, CalendarEvent } from '../../shared/types';
 import { SettingsService } from './SettingsService';
 import { v4 as uuidv4 } from 'uuid';
-import matter from 'gray-matter';
 import path from 'path';
 import fs from 'fs/promises';
 import chokidar, { FSWatcher } from 'chokidar';
@@ -11,6 +10,16 @@ import { DescriptionProcessingService } from './DescriptionProcessingService';
 import { detectPlatform } from '../../shared/utils/PlatformDetector';
 import { getLogger } from './LoggingService';
 import { notifyMeetingsUpdated } from '../index';
+import {
+  deserializeMeetingMarkdown,
+  serializeMeetingToMarkdown,
+  generateMeetingFileName
+} from '../../shared/meetings/MeetingFileSerializer';
+import {
+  extractNoteSections,
+  combineNoteSections,
+  NoteSections
+} from '../../renderer/components/noteSectionUtils';
 
 const logger = getLogger();
 
@@ -126,7 +135,7 @@ export class StorageService {
       sanitized.attendees = this.normalizeAttendees(sanitized.attendees);
     }
 
-    const dateFields: (keyof Partial<Meeting>)[] = ['date', 'startTime', 'endTime', 'createdAt', 'updatedAt'];
+    const dateFields: (keyof Partial<Meeting>)[] = ['date', 'startTime', 'endTime', 'createdAt', 'updatedAt', 'firefliesTranscriptFetchedAt'];
     dateFields.forEach((field) => {
       if (field in sanitized) {
         const normalized = this.normalizeDateInput(sanitized[field]);
@@ -166,6 +175,10 @@ export class StorageService {
 
     if ('transcript' in sanitized && typeof sanitized.transcript !== 'string') {
       sanitized.transcript = sanitized.transcript == null ? '' : String(sanitized.transcript);
+    }
+
+    if ('firefliesTranscriptId' in sanitized && sanitized.firefliesTranscriptId != null && typeof sanitized.firefliesTranscriptId !== 'string') {
+      sanitized.firefliesTranscriptId = String(sanitized.firefliesTranscriptId);
     }
 
     if ('actionItemSyncStatus' in sanitized && Array.isArray(sanitized.actionItemSyncStatus)) {
@@ -497,76 +510,21 @@ export class StorageService {
   private async loadMeetingFromFile(filePath: string): Promise<Meeting | null> {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
-      const { data, content: bodyContent } = matter(content);
-
-      // Parse the body content to separate notes and transcript
-      const sections = bodyContent.split('---\n');
-      const notesSection = sections.find(s => s.includes('# Meeting Notes')) || '';
-      const transcriptSection = sections.find(s => s.includes('# Transcript')) || '';
-
-      const notes = notesSection
-        .replace('# Meeting Notes', '')
-        .trim();
-
-      const transcript = transcriptSection
-        .replace('# Transcript', '')
-        .trim();
-
-      let insightsFilePath: string | undefined;
-      let insightsContent: string | undefined;
-
-      if (typeof data.insights_file === 'string' && data.insights_file.trim()) {
-        insightsFilePath = data.insights_file.trim();
-        const storagePath = this.settingsService.getSettings().storagePath;
-        const absolutePath = path.isAbsolute(insightsFilePath)
-          ? insightsFilePath
-          : path.join(storagePath, insightsFilePath);
-
-        try {
-          insightsContent = await fs.readFile(absolutePath, 'utf-8');
-        } catch (error) {
-          logger.warn('[INSIGHTS-FILE] Failed to read insights artifact', {
-            meetingId: data.id,
-            path: absolutePath,
-            error: error instanceof Error ? error.message : error
-          });
-        }
-      }
-
-      if (!insightsContent && typeof data.insights === 'string') {
-        insightsContent = data.insights;
-      }
-
-      const startTime = data.start_time || data.startTime;
-      const endTime = data.end_time || data.endTime;
-
-      const meeting: Meeting = {
-        id: data.id || uuidv4(),
-        title: data.title || 'Untitled Meeting',
-        date: new Date(data.date || Date.now()),
-        attendees: data.attendees || [],
-        duration: data.duration,
-        recallRecordingId: data.recall_recording_id,
-        recallVideoUrl: data.recall_video_url,
-        recallAudioUrl: data.recall_audio_url,
-        calendarEventId: data.calendar_event_id,
-        meetingUrl: data.meeting_url,
-        calendarInviteUrl: data.calendar_invite_url,
-        status: data.status || 'completed',
-        startTime: startTime ? new Date(startTime) : undefined,
-        endTime: endTime ? new Date(endTime) : undefined,
-        notes,
-        transcript,
-        insights: insightsContent,
-        insightsFilePath,
-        actionItemSyncStatus: Array.isArray(data.action_item_sync_status) ? data.action_item_sync_status : undefined,
-        notionSharedAt: data.notion_shared_at ? new Date(data.notion_shared_at) : null,
-        notionPageId: data.notion_page_id || null,
+      const { meeting, insightsLoadError } = await deserializeMeetingMarkdown(content, {
         filePath,
-        createdAt: new Date(data.created_at || Date.now()),
-        updatedAt: new Date(data.updated_at || Date.now()),
-      };
+        storagePath: this.getStoragePath(),
+        loadInsights: true
+      });
 
+      if (insightsLoadError) {
+        logger.warn('[INSIGHTS-FILE] Failed to read insights artifact', {
+          meetingId: meeting.id,
+          filePath,
+          error: insightsLoadError instanceof Error ? insightsLoadError.message : insightsLoadError
+        });
+      }
+
+      meeting.filePath = filePath;
       return meeting;
     } catch (error) {
       logger.error(`Failed to load meeting from ${filePath}:`, error);
@@ -579,103 +537,44 @@ export class StorageService {
     const merged: Meeting = { ...meeting, ...sanitized } as Meeting;
     const safeMeeting = this.stripUndefinedDeep(merged) as Meeting;
 
-    const normalizedDate = this.normalizeDateInput(merged.date) ?? new Date();
-    safeMeeting.date = normalizedDate;
-    safeMeeting.attendees = this.normalizeAttendees(merged.attendees ?? safeMeeting.attendees);
-    safeMeeting.status = this.isValidStatus(merged.status) ? merged.status : 'scheduled';
-    safeMeeting.notes = typeof merged.notes === 'string' ? merged.notes : '';
-    safeMeeting.transcript = typeof merged.transcript === 'string' ? merged.transcript : '';
-    safeMeeting.createdAt = this.normalizeDateInput(merged.createdAt) ?? new Date();
-    safeMeeting.updatedAt = this.normalizeDateInput(merged.updatedAt) ?? new Date();
+    safeMeeting.date = this.normalizeDateInput(safeMeeting.date) ?? new Date();
+    safeMeeting.attendees = this.normalizeAttendees(safeMeeting.attendees ?? []);
+    safeMeeting.status = this.isValidStatus(safeMeeting.status) ? safeMeeting.status : 'scheduled';
+    safeMeeting.notes = typeof safeMeeting.notes === 'string' ? safeMeeting.notes : '';
+    safeMeeting.transcript = typeof safeMeeting.transcript === 'string' ? safeMeeting.transcript : '';
+    safeMeeting.createdAt = this.normalizeDateInput(safeMeeting.createdAt) ?? new Date();
+    safeMeeting.updatedAt = this.normalizeDateInput(safeMeeting.updatedAt) ?? new Date();
 
-    const normalizedStart = this.normalizeDateInput(merged.startTime);
-    if (normalizedStart) {
-      safeMeeting.startTime = normalizedStart;
-    } else {
-      delete (safeMeeting as any).startTime;
-    }
+    const startTime = this.normalizeDateInput(safeMeeting.startTime);
+    safeMeeting.startTime = startTime ?? undefined;
 
-    const normalizedEnd = this.normalizeDateInput(merged.endTime);
-    if (normalizedEnd) {
-      safeMeeting.endTime = normalizedEnd;
-    } else {
-      delete (safeMeeting as any).endTime;
-    }
+    const endTime = this.normalizeDateInput(safeMeeting.endTime);
+    safeMeeting.endTime = endTime ?? undefined;
 
-    if (merged.notionSharedAt === null) {
+    if (meeting.notionSharedAt === null || sanitized.notionSharedAt === null) {
       safeMeeting.notionSharedAt = null;
     } else {
-      const normalizedNotionSharedAt = this.normalizeDateInput(merged.notionSharedAt);
-      if (normalizedNotionSharedAt) {
-        safeMeeting.notionSharedAt = normalizedNotionSharedAt;
-      } else if (safeMeeting.notionSharedAt !== null) {
+      const notionShared = this.normalizeDateInput(safeMeeting.notionSharedAt);
+      if (notionShared) {
+        safeMeeting.notionSharedAt = notionShared;
+      } else if (typeof safeMeeting.notionSharedAt !== 'string') {
         delete (safeMeeting as any).notionSharedAt;
       }
     }
 
-    if (!safeMeeting.attendees) {
-      safeMeeting.attendees = [];
-    }
-
-    const dateStr = safeMeeting.date instanceof Date
-      ? safeMeeting.date.toISOString()
-      : new Date(safeMeeting.date).toISOString();
-
-    const frontmatter: any = {
-      id: safeMeeting.id,
-      title: safeMeeting.title,
-      date: dateStr,
-      attendees: safeMeeting.attendees,
-      status: safeMeeting.status,
-      created_at: safeMeeting.createdAt instanceof Date
-        ? safeMeeting.createdAt.toISOString()
-        : safeMeeting.createdAt,
-      updated_at: safeMeeting.updatedAt instanceof Date
-        ? safeMeeting.updatedAt.toISOString()
-        : safeMeeting.updatedAt,
+    const sections = extractNoteSections(safeMeeting.notes || '');
+    const normalizedSections: NoteSections = {
+      calendarInfo: sections.calendarInfo,
+      prepNotes: sections.prepNotes,
+      meetingNotes: sections.meetingNotes
     };
 
-    if (safeMeeting.duration !== undefined) frontmatter.duration = safeMeeting.duration;
-    if (safeMeeting.startTime) {
-      frontmatter.start_time = safeMeeting.startTime instanceof Date
-        ? safeMeeting.startTime.toISOString()
-        : safeMeeting.startTime;
-    }
-    if (safeMeeting.endTime) {
-      frontmatter.end_time = safeMeeting.endTime instanceof Date
-        ? safeMeeting.endTime.toISOString()
-        : safeMeeting.endTime;
-    }
-    if (safeMeeting.recallRecordingId !== undefined) frontmatter.recall_recording_id = safeMeeting.recallRecordingId;
-    if (safeMeeting.recallVideoUrl !== undefined) frontmatter.recall_video_url = safeMeeting.recallVideoUrl;
-    if (safeMeeting.recallAudioUrl !== undefined) frontmatter.recall_audio_url = safeMeeting.recallAudioUrl;
-    if (safeMeeting.calendarEventId !== undefined) frontmatter.calendar_event_id = safeMeeting.calendarEventId;
-    if (safeMeeting.meetingUrl !== undefined) frontmatter.meeting_url = safeMeeting.meetingUrl;
-    if (safeMeeting.calendarInviteUrl !== undefined) frontmatter.calendar_invite_url = safeMeeting.calendarInviteUrl;
-    if (safeMeeting.notionSharedAt !== undefined) {
-      frontmatter.notion_shared_at = safeMeeting.notionSharedAt instanceof Date
-        ? safeMeeting.notionSharedAt.toISOString()
-        : safeMeeting.notionSharedAt;
-    }
-    if (safeMeeting.notionPageId) frontmatter.notion_page_id = safeMeeting.notionPageId;
-    if (safeMeeting.insightsFilePath) frontmatter.insights_file = safeMeeting.insightsFilePath;
-    if (safeMeeting.actionItemSyncStatus) frontmatter.action_item_sync_status = safeMeeting.actionItemSyncStatus;
+    safeMeeting.notes = combineNoteSections(normalizedSections);
 
-    const content = `# Meeting Notes
+    const updatedAt = this.normalizeDateInput(safeMeeting.updatedAt) ?? new Date();
+    safeMeeting.updatedAt = updatedAt;
 
-${safeMeeting.notes || ''}
-
----
-
-# Transcript
-
-${safeMeeting.transcript || ''}`;
-
-    const yaml = require('yaml');
-    yaml.scalarOptions.str.defaultType = 'QUOTE_DOUBLE';
-    const yamlString = yaml.stringify(frontmatter);
-
-    return `---\n${yamlString}---\n${content}`;
+    return serializeMeetingToMarkdown(safeMeeting, normalizedSections, { updatedAt });
   }
 
   private async ensureDirectoryExists(filePath: string): Promise<void> {
@@ -683,34 +582,11 @@ ${safeMeeting.transcript || ''}`;
     await fs.mkdir(directory, { recursive: true });
   }
 
-  private generateFileName(meeting: Meeting): string {
-    // Format: YYYY/MM/YYYY-MM-DD-HH-mm-[eventId]-title-slug.md
-    const normalizedDate = this.normalizeDateInput(meeting.date) ?? new Date();
-    const date = normalizedDate;
-    const year = format(date, 'yyyy');
-    const month = format(date, 'MM');
-    const dateStr = format(date, 'yyyy-MM-dd-HH-mm');
-
-    // Include calendar event ID if available (sanitized and truncated for filesystem)
-    const eventIdPart = meeting.calendarEventId
-      ? `[${meeting.calendarEventId.replace(/[^a-zA-Z0-9-_]/g, '').substring(0, 50)}]-`
-      : '';
-
-    const titleSlug = meeting.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .substring(0, 100); // Limit length to avoid filesystem issues
-
-    // Return path with year/month subdirectories: YYYY/MM/filename.md
-    return path.join(year, month, `${dateStr}-${eventIdPart}${titleSlug}.md`);
-  }
-
   private computeInsightsPaths(meeting: Meeting): { absolute: string; relative: string } {
     const storagePath = this.settingsService.getSettings().storagePath;
     const baseFilePath = meeting.filePath && meeting.filePath.trim()
       ? meeting.filePath
-      : path.join(storagePath, this.generateFileName(meeting));
+      : path.join(storagePath, generateMeetingFileName(meeting));
 
     const parsed = path.parse(baseFilePath);
     const absolute = path.join(parsed.dir, `${parsed.name}-insights.json`);
@@ -823,7 +699,7 @@ ${safeMeeting.transcript || ''}`;
     const storagePath = this.settingsService.getSettings().storagePath;
 
     if (!updatedMeeting.filePath) {
-      const fileName = this.generateFileName(updatedMeeting);
+      const fileName = generateMeetingFileName(updatedMeeting);
       updatedMeeting.filePath = path.join(storagePath, fileName);
     }
 
@@ -835,17 +711,10 @@ ${safeMeeting.transcript || ''}`;
     if (fileExists && meeting.filePath) {
       try {
         const fileContent = await fs.readFile(meeting.filePath, 'utf-8');
-        const matter = require('gray-matter');
-        const { content: bodyContent } = matter(fileContent);
+        const parsed = await deserializeMeetingMarkdown(fileContent, { filePath: meeting.filePath });
 
-        // Use the same proven parsing logic as loadMeetingFromFile
-        // This prevents capturing duplicate sections that may exist in corrupted files
-        const sections = bodyContent.split('---\n');
-        const notesSection = sections.find((s: string) => s.includes('# Meeting Notes')) || '';
-        const transcriptSection = sections.find((s: string) => s.includes('# Transcript')) || '';
-
-        const fileNotes = notesSection.replace('# Meeting Notes', '').trim();
-        const fileTranscript = transcriptSection.replace('# Transcript', '').trim();
+        const fileNotes = parsed.meeting.notes || '';
+        const fileTranscript = parsed.transcript;
 
         if (fileNotes) {
           const cacheNotes = updatedMeeting.notes || '';
@@ -889,7 +758,7 @@ ${safeMeeting.transcript || ''}`;
     // If title or date changed AND markdown file exists, rename file (and linked insights file)
     if ((sanitizedUpdates.title || sanitizedUpdates.date) && fileExists && meeting.filePath) {
       const oldPath = meeting.filePath;
-      const newFileName = this.generateFileName(updatedMeeting);
+      const newFileName = generateMeetingFileName(updatedMeeting);
       const newPath = path.join(storagePath, newFileName);
 
       if (oldPath !== newPath) {
@@ -1573,7 +1442,7 @@ ${safeMeeting.transcript || ''}`;
         if (meeting) {
           if (!meeting.filePath) {
             // Generate file path if it doesn't exist
-            const fileName = this.generateFileName(meeting);
+            const fileName = generateMeetingFileName(meeting);
             meeting.filePath = path.join(this.storagePath, fileName);
             logger.info(`[AUTO-SAVE] Generated file path for meeting ${meetingId}: ${meeting.filePath}`);
           }
@@ -1634,7 +1503,7 @@ ${safeMeeting.transcript || ''}`;
     // Use existing filePath if available, otherwise generate proper year/month structure
     const filePath = meeting.filePath || path.join(
       this.storagePath,
-      this.generateFileName(meeting)
+      generateMeetingFileName(meeting)
     );
 
     // Save to file

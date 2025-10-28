@@ -35,6 +35,8 @@ export interface Meeting {
   updatedAt?: Date;
   autoRecordApproved?: boolean; // Flag to track if user pre-approved recording
   __transcriptDedupeIndex?: Map<string, string>;
+  firefliesTranscriptId?: string;
+  firefliesTranscriptFetchedAt?: Date | string;
 }
 
 export interface MeetingNotification {
@@ -106,6 +108,7 @@ export interface AppSettings {
   recallApiKey?: string;
   recallApiUrl: string;
   anthropicApiKey?: string;
+  firefliesApiKey?: string;
   storagePath: string;
   googleCalendarConnected: boolean;
   autoStartOnBoot: boolean;
@@ -185,6 +188,7 @@ export enum IpcChannels {
   SHOW_IN_FINDER = 'show-in-finder',
   OPEN_EXTERNAL = 'open-external',
   CORRECT_TRANSCRIPT = 'correct-transcript',
+  FETCH_FIREFLIES_TRANSCRIPT = 'fetch-fireflies-transcript',
   GENERATE_INSIGHTS = 'generate-insights',
   GENERATE_TEAM_SUMMARY = 'generate-team-summary',
   SHARE_TO_SLACK = 'share-to-slack',

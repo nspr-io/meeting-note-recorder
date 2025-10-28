@@ -19,6 +19,7 @@ export class SettingsService {
     selectedCalendars: [],
     recallApiKey: process.env.RECALL_API_KEY || '',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+    firefliesApiKey: process.env.FIREFLIES_API_KEY || '',
     slackWebhookUrl: '',
     notionIntegrationToken: process.env.NOTION_INTEGRATION_TOKEN || '',
     notionDatabaseId: process.env.NOTION_DATABASE_ID || '',
@@ -76,6 +77,7 @@ export class SettingsService {
       selectedCalendars: this.store.get('selectedCalendars') || [],
       recallApiKey: this.getApiKey(),
       anthropicApiKey: this.getAnthropicApiKey(),
+      firefliesApiKey: this.getFirefliesApiKey(),
       slackWebhookUrl: this.store.get('slackWebhookUrl') || '',
       notionIntegrationToken: this.getNotionIntegrationToken(),
       notionDatabaseId: this.getNotionDatabaseId(),
@@ -88,6 +90,7 @@ export class SettingsService {
       ...settings,
       recallApiKey: this.getApiKey(),
       anthropicApiKey: this.getAnthropicApiKey(),
+      firefliesApiKey: this.getFirefliesApiKey(),
       slackWebhookUrl: this.store.get ? this.store.get('slackWebhookUrl') || '' : this.store.store?.slackWebhookUrl || '',
       notionIntegrationToken: this.getNotionIntegrationToken(),
       notionDatabaseId: this.getNotionDatabaseId(),
@@ -198,6 +201,9 @@ export class SettingsService {
     if (updates.anthropicApiKey !== undefined) {
       this.setAnthropicApiKey(updates.anthropicApiKey);
     }
+    if (updates.firefliesApiKey !== undefined) {
+      this.setFirefliesApiKey(updates.firefliesApiKey);
+    }
     if (updates.notionIntegrationToken !== undefined) {
       this.setNotionIntegrationToken(updates.notionIntegrationToken);
     }
@@ -213,20 +219,19 @@ export class SettingsService {
 
     // Don't store API keys in the main settings object
     const {
-      recallApiKey,
-      anthropicApiKey,
-      notionIntegrationToken,
-      notionDatabaseId,
-      notionTodoIntegrationToken,
-      notionTodoDatabaseId,
+      recallApiKey: _recallApiKey,
+      anthropicApiKey: _anthropicApiKey,
+      notionIntegrationToken: _notionIntegrationToken,
+      notionDatabaseId: _notionDatabaseId,
+      notionTodoIntegrationToken: _notionTodoIntegrationToken,
+      notionTodoDatabaseId: _notionTodoDatabaseId,
+      firefliesApiKey: _firefliesApiKey,
       coaches,
       ...settingsToStore
     } = updates;
     const settingsWithCoaches = coaches
       ? { ...settingsToStore, coaches: this.ensureCoachesSchema(coaches).map(coach => ({ ...coach })) }
       : settingsToStore;
-
-    const newSettings = { ...currentSettings, ...settingsWithCoaches };
 
     // If storage path changed, create new directory
     if (updates.storagePath && updates.storagePath !== currentSettings.storagePath) {
@@ -391,6 +396,30 @@ export class SettingsService {
       this.store.delete('recallApiKey');
     } else if (this.store.store) {
       delete this.store.store.recallApiKey;
+    }
+  }
+
+  getFirefliesApiKey(): string | undefined {
+    const envApiKey = process.env.FIREFLIES_API_KEY;
+    if (envApiKey) {
+      return envApiKey;
+    }
+    return this.store.get ? this.store.get('firefliesApiKey') : this.store.store?.firefliesApiKey;
+  }
+
+  setFirefliesApiKey(apiKey: string): void {
+    if (this.store.set) {
+      this.store.set('firefliesApiKey', apiKey);
+    } else {
+      this.store.store = { ...this.store.store, firefliesApiKey: apiKey };
+    }
+  }
+
+  clearFirefliesApiKey(): void {
+    if (this.store.delete) {
+      this.store.delete('firefliesApiKey');
+    } else if (this.store.store) {
+      delete this.store.store.firefliesApiKey;
     }
   }
 

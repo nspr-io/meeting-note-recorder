@@ -4,7 +4,7 @@ import Split from 'react-split';
 import { Meeting, AppSettings, IpcChannels, CoachingFeedback, CoachingState } from '../shared/types';
 import MeetingList from './components/MeetingList';
 import MeetingDetailFinal from './components/MeetingDetailFinal';
-import Settings from './components/Settings';
+import { SettingsProvider, SettingsNavigation, SettingsContent } from './components/Settings';
 import Profile from './components/Profile';
 import Search from './components/Search';
 import { SystemPromptsList, SystemPromptEditor } from './components/SystemPromptsEditor';
@@ -851,6 +851,161 @@ function App() {
     }
   }, []);
 
+  const renderMainSplit = () => (
+    <Split
+      className="split"
+      sizes={sidebarCollapsed ? [0, 100] : [25, 75]}
+      minSize={sidebarCollapsed ? [0, 400] : [200, 400]}
+      expandToMin={false}
+      gutterSize={sidebarCollapsed ? 0 : 6}
+      gutterAlign="center"
+      snapOffset={30}
+      dragInterval={1}
+      direction="horizontal"
+      cursor="col-resize"
+    >
+      <SidebarWrapper collapsed={sidebarCollapsed}>
+        <SidebarToggle
+          collapsed={sidebarCollapsed}
+          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+        >
+          {sidebarCollapsed ? '▶' : '◀'}
+        </SidebarToggle>
+        <Sidebar collapsed={sidebarCollapsed}>
+          <SidebarContent>
+            {viewMode === 'meetings' && (
+              <>
+                <TabBar>
+                  <Tab
+                    active={tabMode === 'upcoming'}
+                    onClick={() => setTabMode('upcoming')}
+                  >
+                    Upcoming
+                  </Tab>
+                  <Tab
+                    active={tabMode === 'past'}
+                    onClick={() => setTabMode('past')}
+                  >
+                    Past
+                  </Tab>
+                </TabBar>
+
+                <MeetingList
+                  meetings={filterMeetings(meetings)}
+                  selectedMeeting={selectedMeeting}
+                  onSelectMeeting={setSelectedMeeting}
+                  onSyncCalendar={handleSyncCalendar}
+                  readyToRecordMeetings={readyToRecordMeetings}
+                  isLoading={isLoadingMeetings}
+                />
+              </>
+            )}
+
+            {viewMode === 'settings' && <SettingsNavigation />}
+
+            {viewMode === 'profile' && <Profile />}
+
+            {viewMode === 'prompts' && (
+              <SystemPromptsList
+                onSelectPrompt={setSelectedPromptId}
+                selectedPromptId={selectedPromptId}
+                onManageCoaches={() => setViewMode('settings')}
+              />
+            )}
+          </SidebarContent>
+
+          <BottomNav>
+            <NavButton
+              active={viewMode === 'meetings'}
+              onClick={() => setViewMode('meetings')}
+              title="Meetings"
+            >
+              📅
+              <span>Meetings</span>
+            </NavButton>
+            <NavButton
+              active={viewMode === 'profile'}
+              onClick={() => setViewMode('profile')}
+              title="Profile"
+            >
+              👤
+              <span>Profile</span>
+            </NavButton>
+            <NavButton
+              active={viewMode === 'prompts'}
+              onClick={() => setViewMode('prompts')}
+              title="Prompts"
+            >
+              📝
+              <span>Prompts</span>
+            </NavButton>
+            <NavButton
+              active={viewMode === 'settings'}
+              onClick={() => setViewMode('settings')}
+              title="Settings"
+            >
+              ⚙️
+              <span>Settings</span>
+            </NavButton>
+          </BottomNav>
+        </Sidebar>
+      </SidebarWrapper>
+
+      <ContentArea>
+        {viewMode === 'settings' && <SettingsContent />}
+
+        {viewMode === 'meetings' && (
+          selectedMeeting ? (
+            <MeetingDetailFinal
+              key={selectedMeeting.id}
+              meeting={selectedMeeting}
+              onUpdateMeeting={async (updates) => {
+                await window.electronAPI.updateMeeting(selectedMeeting.id, updates);
+                await loadMeetings();
+              }}
+              onDeleteMeeting={async (meetingId) => {
+                await window.electronAPI.deleteMeeting(meetingId);
+                setSelectedMeeting(null);
+                await loadMeetings();
+              }}
+              onRefresh={async () => {
+                await loadMeetings();
+                const updatedMeetings = await window.electronAPI.getMeetings();
+                const updatedMeeting = updatedMeetings.find((m: Meeting) => m.id === selectedMeeting.id);
+                if (updatedMeeting) {
+                  setSelectedMeeting(updatedMeeting);
+                }
+              }}
+              onShowToast={showToastHelper}
+              coachingState={coachingState}
+              onCoachingStateRefresh={refreshCoachingState}
+              activeCoachingMeeting={coachingMeeting || null}
+              isCoachWindowOpen={isCoachWindowOpen}
+              onOpenCoachWindow={handleOpenCoachWindow}
+              onCloseCoachWindow={handleCloseCoachWindow}
+            />
+          ) : (
+            <div style={{ padding: 50, textAlign: 'center', color: '#86868b' }}>
+              <h2>No meeting selected</h2>
+              <p>Select a meeting from the list or start a new recording</p>
+            </div>
+          )
+        )}
+
+        {viewMode === 'prompts' && (
+          selectedPromptId ? (
+            <SystemPromptEditor promptId={selectedPromptId} />
+          ) : (
+            <div style={{ padding: 50, textAlign: 'center', color: '#86868b' }}>
+              <h2>No prompt selected</h2>
+              <p>Select a prompt from the list to edit it</p>
+            </div>
+          )
+        )}
+      </ContentArea>
+    </Split>
+  );
+
   // Show error if electronAPI is not available
   if (typeof window.electronAPI === 'undefined') {
     return (
@@ -939,167 +1094,19 @@ function App() {
       )}
 
       <MainContent>
-        <Split
-          className="split"
-          sizes={sidebarCollapsed ? [0, 100] : [25, 75]}
-          minSize={sidebarCollapsed ? [0, 400] : [200, 400]}
-          expandToMin={false}
-          gutterSize={sidebarCollapsed ? 0 : 6}
-          gutterAlign="center"
-          snapOffset={30}
-          dragInterval={1}
-          direction="horizontal"
-          cursor="col-resize"
-        >
-          <SidebarWrapper collapsed={sidebarCollapsed}>
-            <SidebarToggle
-              collapsed={sidebarCollapsed}
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            >
-              {sidebarCollapsed ? '▶' : '◀'}
-            </SidebarToggle>
-            <Sidebar collapsed={sidebarCollapsed}>
-              <SidebarContent>
-              {viewMode === 'meetings' && (
-                <>
-                  <TabBar>
-                    <Tab
-                      active={tabMode === 'upcoming'}
-                      onClick={() => setTabMode('upcoming')}
-                    >
-                      Upcoming
-                    </Tab>
-                    <Tab
-                      active={tabMode === 'past'}
-                      onClick={() => setTabMode('past')}
-                    >
-                      Past
-                    </Tab>
-                  </TabBar>
-
-                  <MeetingList
-                    meetings={filterMeetings(meetings)}
-                    selectedMeeting={selectedMeeting}
-                    onSelectMeeting={setSelectedMeeting}
-                    onSyncCalendar={handleSyncCalendar}
-                    readyToRecordMeetings={readyToRecordMeetings}
-                    isLoading={isLoadingMeetings}
-                  />
-                </>
-              )}
-
-              {viewMode === 'settings' && (
-                <Settings
-                  settings={settings}
-                  onUpdateSettings={async (updates) => {
-                    await window.electronAPI.updateSettings(updates);
-                    await loadSettings();
-                  }}
-                />
-              )}
-
-              {viewMode === 'profile' && (
-                <Profile />
-              )}
-
-              {viewMode === 'prompts' && (
-                <SystemPromptsList
-                  onSelectPrompt={setSelectedPromptId}
-                  selectedPromptId={selectedPromptId}
-                  onManageCoaches={() => setViewMode('settings')}
-                />
-              )}
-            </SidebarContent>
-
-            <BottomNav>
-              <NavButton
-                active={viewMode === 'meetings'}
-                onClick={() => setViewMode('meetings')}
-                title="Meetings"
-              >
-                📅
-                <span>Meetings</span>
-              </NavButton>
-              <NavButton
-                active={viewMode === 'profile'}
-                onClick={() => setViewMode('profile')}
-                title="Profile"
-              >
-                👤
-                <span>Profile</span>
-              </NavButton>
-              <NavButton
-                active={viewMode === 'prompts'}
-                onClick={() => setViewMode('prompts')}
-                title="Prompts"
-              >
-                📝
-                <span>Prompts</span>
-              </NavButton>
-              <NavButton
-                active={viewMode === 'settings'}
-                onClick={() => setViewMode('settings')}
-                title="Settings"
-              >
-                ⚙️
-                <span>Settings</span>
-              </NavButton>
-            </BottomNav>
-            </Sidebar>
-          </SidebarWrapper>
-
-          <ContentArea>
-          {viewMode === 'meetings' && (
-            selectedMeeting ? (
-              <MeetingDetailFinal
-                key={selectedMeeting.id}
-                meeting={selectedMeeting}
-                onUpdateMeeting={async (updates) => {
-                  await window.electronAPI.updateMeeting(selectedMeeting.id, updates);
-                  await loadMeetings();
-                }}
-                onDeleteMeeting={async (meetingId) => {
-                  await window.electronAPI.deleteMeeting(meetingId);
-                  setSelectedMeeting(null);
-                  await loadMeetings();
-                }}
-                onRefresh={async () => {
-                  await loadMeetings();
-                  // Update selected meeting with refreshed data
-                  const updatedMeetings = await window.electronAPI.getMeetings();
-                  const updatedMeeting = updatedMeetings.find((m: Meeting) => m.id === selectedMeeting.id);
-                  if (updatedMeeting) {
-                    setSelectedMeeting(updatedMeeting);
-                  }
-                }}
-                onShowToast={showToastHelper}
-                coachingState={coachingState}
-                onCoachingStateRefresh={refreshCoachingState}
-                activeCoachingMeeting={coachingMeeting || null}
-                isCoachWindowOpen={isCoachWindowOpen}
-                onOpenCoachWindow={handleOpenCoachWindow}
-                onCloseCoachWindow={handleCloseCoachWindow}
-              />
-            ) : (
-              <div style={{ padding: 50, textAlign: 'center', color: '#86868b' }}>
-                <h2>No meeting selected</h2>
-                <p>Select a meeting from the list or start a new recording</p>
-              </div>
-            )
-          )}
-
-          {viewMode === 'prompts' && (
-            selectedPromptId ? (
-              <SystemPromptEditor promptId={selectedPromptId} />
-            ) : (
-              <div style={{ padding: 50, textAlign: 'center', color: '#86868b' }}>
-                <h2>No prompt selected</h2>
-                <p>Select a prompt from the list to edit it</p>
-              </div>
-            )
-          )}
-        </ContentArea>
-        </Split>
+        {viewMode === 'settings' ? (
+          <SettingsProvider
+            settings={settings}
+            onUpdateSettings={async (updates) => {
+              await window.electronAPI.updateSettings(updates);
+              await loadSettings();
+            }}
+          >
+            {renderMainSplit()}
+          </SettingsProvider>
+        ) : (
+          renderMainSplit()
+        )}
       </MainContent>
       
       <StatusBar>

@@ -36,6 +36,12 @@ export class ConfigValidator {
       }
     }
 
+    if (settings.firefliesApiKey) {
+      if (!this.isValidGenericKey(settings.firefliesApiKey)) {
+        errors.push('Invalid Fireflies API key format');
+      }
+    }
+
     if (settings.notionIntegrationToken) {
       if (typeof settings.notionIntegrationToken !== 'string' || !settings.notionIntegrationToken.trim()) {
         errors.push('Notion integration token must be a non-empty string');
@@ -103,6 +109,10 @@ export class ConfigValidator {
   static isValidAnthropicKey(key: string): boolean {
     // Anthropic keys typically start with 'sk-ant-'
     return key.startsWith('sk-ant-') || key.length > 20;
+  }
+
+  static isValidGenericKey(key: string): boolean {
+    return typeof key === 'string' && key.trim().length >= 20;
   }
 
   /**
@@ -196,6 +206,10 @@ export class ConfigValidator {
 
     if (sanitized.notionIntegrationToken) {
       sanitized.notionIntegrationToken = sanitized.notionIntegrationToken.trim();
+    }
+
+    if (sanitized.firefliesApiKey) {
+      sanitized.firefliesApiKey = sanitized.firefliesApiKey.trim();
     }
 
     if (sanitized.notionTodoIntegrationToken) {

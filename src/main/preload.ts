@@ -30,6 +30,8 @@ const api = {
     ipcRenderer.invoke(IpcChannels.STOP_RECORDING, meetingId),
   correctTranscript: (meetingId: string) =>
     ipcRenderer.invoke(IpcChannels.CORRECT_TRANSCRIPT, meetingId),
+  fetchFirefliesTranscript: (meetingId: string) =>
+    ipcRenderer.invoke(IpcChannels.FETCH_FIREFLIES_TRANSCRIPT, meetingId),
   generateInsights: (meetingId: string) =>
     ipcRenderer.invoke(IpcChannels.GENERATE_INSIGHTS, meetingId),
   generateTeamSummary: (meetingId: string) =>
@@ -134,6 +136,7 @@ const api = {
       IpcChannels.COACHING_FEEDBACK,
       IpcChannels.COACHING_ERROR,
       IpcChannels.COACH_WINDOW_STATUS,
+      IpcChannels.FETCH_FIREFLIES_TRANSCRIPT,
       'correction-progress',
       'correction-completed',
       'transcript-correction-started',

@@ -1119,6 +1119,13 @@ interface MeetingDetailFinalProps {
   isCoachPopout?: boolean;
 }
 
+type FirefliesErrorState = {
+  message: string;
+  code?: string;
+  retryable?: boolean;
+  details?: unknown;
+};
+
 type ViewMode = 'context' | 'liveNotes' | 'transcript' | 'insights' | 'actions' | 'coach';
 
 // Module-level transcript cache to persist across component re-renders
@@ -1141,6 +1148,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [transcriptSegments, setTranscriptSegments] = useState<any[]>(
     transcriptCache.get(meeting.id) || []
   );
+  const [isFetchingFireflies, setIsFetchingFireflies] = useState(false);
+  const [firefliesFetchError, setFirefliesFetchError] = useState<FirefliesErrorState | null>(null);
   const [isRecording, setIsRecording] = useState(meeting.status === 'recording');
   const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
   const [elapsedTime, setElapsedTime] = useState('00:00:00');
@@ -1436,10 +1445,12 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
         setTranscriptSegments(parsed);
         // Clear the cache when we parse from stored transcript to avoid duplicates
         transcriptCache.set(meeting.id, parsed);
+        setFirefliesFetchError(null);
       } else {
         console.log('[MEETING-CHANGE] No transcript, clearing segments');
         setTranscriptSegments([]);
         transcriptCache.set(meeting.id, []);
+        setFirefliesFetchError(null);
       }
     } else if (meeting.status === 'recording' && !isRecording) {
       // Just started recording - clear old segments
@@ -1856,6 +1867,54 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     } finally {
       setIsCorrecting(false);
       setCorrectionProgress(null);
+    }
+  };
+
+  const buildFirefliesErrorState = useCallback((payload: any): FirefliesErrorState => {
+    if (!payload) {
+      return {
+        message: 'Failed to fetch transcript from Fireflies.'
+      };
+    }
+
+    return {
+      message: payload.error || 'Failed to fetch transcript from Fireflies.',
+      code: payload.code,
+      retryable: payload.retryable,
+      details: payload.details
+    };
+  }, []);
+
+  const handleFetchFirefliesTranscript = async () => {
+    if (isFetchingFireflies) {
+      return;
+    }
+
+    setIsFetchingFireflies(true);
+    setFirefliesFetchError(null);
+
+    try {
+      const result = await (window as any).electronAPI?.fetchFirefliesTranscript?.(meeting.id);
+      if (result?.success && result.transcript) {
+        setTranscriptSegments(parseTranscript(result.transcript));
+        if (onRefresh) {
+          await onRefresh();
+        }
+        onShowToast?.('Transcript fetched from Fireflies', 'success');
+        setFirefliesFetchError(null);
+      } else {
+        const errorState = buildFirefliesErrorState(result);
+        setFirefliesFetchError(errorState);
+        onShowToast?.(errorState.message, 'error');
+      }
+    } catch (error) {
+      const errorState = buildFirefliesErrorState(
+        error instanceof Error ? { error: error.message } : error
+      );
+      setFirefliesFetchError(errorState);
+      onShowToast?.(errorState.message, 'error');
+    } finally {
+      setIsFetchingFireflies(false);
     }
   };
 
@@ -2751,6 +2810,23 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   <span className="icon">🎙️</span>
                   <h3>No transcript available</h3>
                   <p>Transcript will appear here once the meeting is recorded</p>
+                  <Button
+                    onClick={handleFetchFirefliesTranscript}
+                    disabled={isFetchingFireflies}
+                    style={{ marginTop: '16px' }}
+                  >
+                    {isFetchingFireflies ? 'Fetching from Fireflies...' : 'Fetch from Fireflies'}
+                  </Button>
+                  {firefliesFetchError && (
+                    <div style={{ color: '#d93025', marginTop: '8px', fontSize: '13px' }}>
+                      <div>{firefliesFetchError.message}</div>
+                      {firefliesFetchError.code && (
+                        <div style={{ marginTop: '4px', opacity: 0.8 }}>
+                          Error code: {firefliesFetchError.code}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </EmptyState>
               )}
             </TranscriptContainer>

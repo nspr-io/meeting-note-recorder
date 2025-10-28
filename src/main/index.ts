@@ -15,6 +15,8 @@ import { SearchService } from './services/SearchService';
 import { PromptService } from './services/PromptService';
 import { RealtimeCoachingService } from './services/RealtimeCoachingService';
 import { NotionTodoService } from './services/NotionTodoService';
+import FirefliesTranscriptService from './services/FirefliesTranscriptService';
+import { ServiceError } from './services/ServiceError';
 import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode, ActionItemSyncStatus, CoachConfig, CoachWindowStatus } from '../shared/types';
 import { generateNotificationHTML, NotificationType } from './utils/notificationTemplate';
 
@@ -68,6 +70,7 @@ let searchService: SearchService;
 let promptService: PromptService | null = null;
 let coachingService: RealtimeCoachingService | null = null;
 let notionTodoService: NotionTodoService;
+let firefliesTranscriptService: FirefliesTranscriptService | null = null;
 let currentRecordingMeetingId: string | null = null;
 let autoRecordNextMeeting = false;
 const autoInsightsInFlight = new Set<string>();
@@ -98,6 +101,67 @@ function notifyRecordingStopped() {
 
 function notifySettingsUpdated(settings: any) {
   notifyUI(IpcChannels.SETTINGS_UPDATED, settings);
+}
+
+type FirefliesErrorResponse = {
+  success: false;
+  error: string;
+  code?: string;
+  retryable?: boolean;
+  details?: unknown;
+};
+
+function mapFirefliesErrorResponse(error: unknown): FirefliesErrorResponse {
+  if (error instanceof ServiceError) {
+    const response: FirefliesErrorResponse = {
+      success: false,
+      error: error.message,
+      code: error.code,
+      retryable: error.isRetryable,
+      details: error.context
+    };
+
+    switch (error.code) {
+      case 'FIREFLIES_NO_CANDIDATES':
+        response.error = 'Fireflies did not return any transcripts for this meeting. Confirm Fireflies joined the call and that the meeting time is correct.';
+        break;
+      case 'FIREFLIES_LOW_SCORE':
+        response.error = 'Fireflies transcripts were found but none matched confidently. Check the attendee list, meeting link, or title.';
+        break;
+      case 'FIREFLIES_EMPTY_TRANSCRIPT':
+        response.error = 'Fireflies returned a transcript with no content. Try fetching again later or verify the recording exists.';
+        break;
+      case 'FIREFLIES_GRAPHQL_ERROR':
+        response.error = 'Fireflies API returned an error. Please review your Fireflies configuration or try again later.';
+        break;
+      case 'FIREFLIES_NO_KEY':
+      case 'AUTH_ERROR':
+        response.error = 'Fireflies API key not configured. Please add it in settings.';
+        break;
+      case 'NETWORK_ERROR':
+        response.error = 'Network error while contacting Fireflies. Check your connection and try again.';
+        break;
+      default:
+        if (error.code?.startsWith('API_ERROR_')) {
+          const status = error.statusCode ?? error.code.replace('API_ERROR_', '');
+          response.error = `Fireflies API request failed (status ${status}). Please verify your API key and retry.`;
+        } else if (error.code === 'FIREFLIES_UNKNOWN') {
+          response.error = 'An unexpected Fireflies error occurred. See logs for more details.';
+        }
+        break;
+    }
+
+    return response;
+  }
+
+  const fallbackMessage = error instanceof Error
+    ? error.message
+    : 'Failed to fetch Fireflies transcript';
+
+  return {
+    success: false,
+    error: fallbackMessage
+  };
 }
 
 function scheduleNotificationCleanup(notificationId: string, delayMs: number = 30000) {
@@ -347,6 +411,11 @@ function setupIpcHandlers() {
 
   ipcMain.handle(IpcChannels.UPDATE_SETTINGS, async (_, settings) => {
     const updated = await settingsService.updateSettings(settings);
+    if (firefliesTranscriptService) {
+      firefliesTranscriptService.setApiKey(updated.firefliesApiKey);
+    } else {
+      firefliesTranscriptService = new FirefliesTranscriptService(updated.firefliesApiKey);
+    }
     notifySettingsUpdated(updated);
     return { success: true };
   });
@@ -569,6 +638,50 @@ function setupIpcHandlers() {
     } catch (error: any) {
       logger.error('Failed to correct transcript:', error);
       return { success: false, error: error.message || 'Failed to correct transcript' };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.FETCH_FIREFLIES_TRANSCRIPT, async (_, meetingId: string) => {
+    if (!firefliesTranscriptService || !firefliesTranscriptService.isConfigured()) {
+      return {
+        success: false,
+        error: 'Fireflies integration not configured. Please add your API key in settings.',
+        code: 'FIREFLIES_NO_KEY',
+        retryable: false
+      };
+    }
+
+    try {
+      const meeting = await storageService.getMeeting(meetingId);
+      if (!meeting) {
+        return { success: false, error: 'Meeting not found' };
+      }
+
+      const result = await firefliesTranscriptService.fetchTranscriptForMeeting(meeting);
+
+      const updatedMeeting = await storageService.updateMeeting(meetingId, {
+        transcript: result.transcript,
+        firefliesTranscriptId: result.transcriptId,
+        firefliesTranscriptFetchedAt: new Date(),
+        status: meeting.status === 'completed' ? meeting.status : 'completed'
+      });
+
+      const allMeetings = await storageService.getAllMeetings();
+      searchService.updateIndex(allMeetings);
+      notifyMeetingsUpdated();
+
+      return { success: true, transcript: result.transcript, meeting: updatedMeeting };
+    } catch (error) {
+      const response = mapFirefliesErrorResponse(error);
+      const logMethod = error instanceof ServiceError ? 'warn' : 'error';
+      logger[logMethod]('[FIREFLIES] Failed to fetch transcript', {
+        meetingId,
+        error: error instanceof Error ? error.message : error,
+        code: response.code,
+        retryable: response.retryable,
+        details: response.details
+      });
+      return response;
     }
   });
 
@@ -2411,6 +2524,7 @@ app.whenReady().then(async () => {
 
     settingsService = new SettingsService();
     await settingsService.initialize();
+    firefliesTranscriptService = new FirefliesTranscriptService(settingsService.getSettings().firefliesApiKey);
 
   try {
     logger.info('[MAIN-INIT] Creating PromptService instance...');
