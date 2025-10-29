@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import styled from '@emotion/styled';
 import { Meeting, Attendee, IpcChannels, CoachingType, CoachingFeedback, CoachingState, NotionShareMode, ActionItemSyncStatus, CoachConfig } from '../../shared/types';
+import { parseTranscript as parseTranscriptUtility } from '../../shared/utils/transcriptParser';
 import { format } from 'date-fns';
 import MDEditor, { ICommand } from '@uiw/react-md-editor';
 import { combineNoteSections, extractNoteSections, hasSectionChanges } from './noteSectionUtils';
@@ -2232,115 +2233,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     return [];
   };
 
-  const parseTranscript = (transcript: string) => {
-    const segments: { time: string; speaker: string; text: string }[] = [];
-    const lines = transcript.split('\n');
-
-    let currentSegment: { time: string; speaker: string; text: string } | null = null;
-    let lastSpeaker = '';
-    let segmentCounter = 0;
-
-    lines.forEach((line, index) => {
-      const trimmedLine = line.trim();
-      if (!trimmedLine) return;
-
-      // Check for timestamp pattern [HH:MM:SS] or (HH:MM:SS)
-      const timeMatch = trimmedLine.match(/^[\[(]?(\d{1,2}:\d{2}(?::\d{2})?)[\])]?\s*(.*)/) ||
-                        trimmedLine.match(/^(\d{1,2}:\d{2}(?::\d{2})?)\s+(.*)/);
-
-      if (timeMatch) {
-        // Save previous segment if exists
-        if (currentSegment && currentSegment.text) {
-          segments.push(currentSegment);
-        }
-
-        const time = timeMatch[1];
-        const restOfLine = timeMatch[2] || '';
-
-        // Check for speaker in the rest of the line
-        const speakerMatch = restOfLine.match(/^([A-Z][^:]+):\s*(.*)/);
-
-        if (speakerMatch) {
-          lastSpeaker = speakerMatch[1].trim();
-          currentSegment = {
-            time,
-            speaker: lastSpeaker,
-            text: speakerMatch[2].trim()
-          };
-        } else {
-          currentSegment = {
-            time,
-            speaker: lastSpeaker || 'Speaker',
-            text: restOfLine.trim()
-          };
-        }
-      } else {
-        // Check for speaker pattern without timestamp
-        const speakerMatch = trimmedLine.match(/^([A-Z][^:]+):\s*(.*)/);
-
-        if (speakerMatch) {
-          // Save previous segment if exists
-          if (currentSegment && currentSegment.text) {
-            segments.push(currentSegment);
-          }
-
-          lastSpeaker = speakerMatch[1].trim();
-          segmentCounter++;
-
-          currentSegment = {
-            time: `00:${String(Math.floor(segmentCounter / 2)).padStart(2, '0')}:${String((segmentCounter % 2) * 30).padStart(2, '0')}`,
-            speaker: lastSpeaker,
-            text: speakerMatch[2].trim()
-          };
-        } else if (currentSegment) {
-          // Continue current segment
-          currentSegment.text += ' ' + trimmedLine;
-        } else {
-          // Create new segment without explicit speaker
-          segmentCounter++;
-          currentSegment = {
-            time: `00:${String(Math.floor(segmentCounter / 2)).padStart(2, '0')}:${String((segmentCounter % 2) * 30).padStart(2, '0')}`,
-            speaker: lastSpeaker || 'Speaker',
-            text: trimmedLine
-          };
-        }
-      }
-    });
-
-    // Add the last segment
-    if (currentSegment && (currentSegment as any).text) {
-      segments.push(currentSegment);
-    }
-
-    // If no structured segments found, create simple segments
-    if (segments.length === 0 && transcript.trim()) {
-      const simpleLines = transcript.split(/\n+/).filter(l => l.trim());
-      simpleLines.forEach((line, i) => {
-        segments.push({
-          time: `00:${String(Math.floor(i / 2)).padStart(2, '0')}:${String((i % 2) * 30).padStart(2, '0')}`,
-          speaker: 'Speaker',
-          text: line.trim()
-        });
-      });
-    }
-
-    // Group consecutive segments from the same speaker
-    const groupedSegments: { time: string; speaker: string; text: string }[] = [];
-
-    segments.forEach((segment, index) => {
-      const lastGrouped = groupedSegments[groupedSegments.length - 1];
-
-      // If same speaker as previous segment, combine them
-      if (lastGrouped && lastGrouped.speaker === segment.speaker) {
-        lastGrouped.text += ' ' + segment.text;
-      } else {
-        // Different speaker or first segment, add new one
-        groupedSegments.push({ ...segment });
-      }
-    });
-
-    return groupedSegments;
-  };
+  const parseTranscript = (transcript: string) => parseTranscriptUtility(transcript);
 
   // Auto-save after 5 seconds of no changes
   useEffect(() => {

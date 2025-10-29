@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import styled from '@emotion/styled';
 import { Meeting } from '../../shared/types';
+import { parseTranscript as parseTranscriptUtility } from '../../shared/utils/transcriptParser';
 import { format, formatDistanceToNow } from 'date-fns';
 import MDEditor from '@uiw/react-md-editor';
 import ReactMarkdown from 'react-markdown';
@@ -486,82 +487,7 @@ function MeetingDetailRedesigned({ meeting, onUpdateMeeting, onDeleteMeeting }: 
     }
   };
 
-  const parseTranscript = (transcript: string) => {
-    // Parse transcript with timestamps
-    const segments: { time: string; speaker: string; text: string }[] = [];
-    const lines = transcript.split('\n');
-
-    let currentTime = '';
-    let currentSpeaker = '';
-    let currentText = '';
-
-    lines.forEach(line => {
-      // Check for timestamp pattern [HH:MM:SS]
-      const timeMatch = line.match(/^\[(\d{1,2}:\d{2}:\d{2})\]/);
-      if (timeMatch) {
-        // Save previous segment if exists
-        if (currentText) {
-          segments.push({
-            time: currentTime || '00:00:00',
-            speaker: currentSpeaker || 'Speaker',
-            text: currentText
-          });
-        }
-        currentTime = timeMatch[1];
-
-        // Check for speaker after timestamp
-        const remainingLine = line.substring(timeMatch[0].length).trim();
-        const speakerMatch = remainingLine.match(/^(\w+):\s*(.*)/);
-        if (speakerMatch) {
-          currentSpeaker = speakerMatch[1];
-          currentText = speakerMatch[2];
-        } else {
-          currentText = remainingLine;
-        }
-      } else {
-        // Check for speaker without timestamp
-        const speakerMatch = line.match(/^(\w+):\s*(.*)/);
-        if (speakerMatch) {
-          if (currentText) {
-            segments.push({
-              time: currentTime || '00:00:00',
-              speaker: currentSpeaker || 'Speaker',
-              text: currentText
-            });
-          }
-          currentSpeaker = speakerMatch[1];
-          currentText = speakerMatch[2];
-          if (!currentTime) currentTime = '00:00:00';
-        } else if (line.trim()) {
-          // Continue previous segment
-          currentText += ' ' + line.trim();
-        }
-      }
-    });
-
-    // Add the last segment
-    if (currentText) {
-      segments.push({
-        time: currentTime || '00:00:00',
-        speaker: currentSpeaker || 'Speaker',
-        text: currentText
-      });
-    }
-
-    // If no segments were created, create simple segments from the text
-    if (segments.length === 0 && transcript.trim()) {
-      const simpleLines = transcript.split('\n').filter(l => l.trim());
-      simpleLines.forEach((line, i) => {
-        segments.push({
-          time: `00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`,
-          speaker: 'Speaker',
-          text: line
-        });
-      });
-    }
-
-    return segments;
-  };
+  const parseTranscript = (transcript: string) => parseTranscriptUtility(transcript);
 
   return (
     <>

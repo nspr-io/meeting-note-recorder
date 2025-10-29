@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import styled from '@emotion/styled';
 import { Meeting } from '../../shared/types';
+import { parseTranscript as parseTranscriptUtility } from '../../shared/utils/transcriptParser';
 import { format } from 'date-fns';
 import MDEditor from '@uiw/react-md-editor';
 
@@ -350,31 +351,7 @@ function MeetingDetailEnhanced({ meeting, onUpdateMeeting, onDeleteMeeting }: Me
     }
   };
 
-  const parseTranscript = (transcript: string) => {
-    const lines = transcript.split('\n');
-    const parsed: { speaker: string; text: string }[] = [];
-    let currentSpeaker = '';
-    let currentText = '';
-
-    lines.forEach(line => {
-      const speakerMatch = line.match(/^(\w+):\s*(.*)/);
-      if (speakerMatch) {
-        if (currentText) {
-          parsed.push({ speaker: currentSpeaker, text: currentText });
-        }
-        currentSpeaker = speakerMatch[1];
-        currentText = speakerMatch[2];
-      } else if (line.trim()) {
-        currentText += ' ' + line.trim();
-      }
-    });
-
-    if (currentText) {
-      parsed.push({ speaker: currentSpeaker, text: currentText });
-    }
-
-    return parsed;
-  };
+  const parseTranscript = (transcript: string) => parseTranscriptUtility(transcript);
 
   return (
     <>
