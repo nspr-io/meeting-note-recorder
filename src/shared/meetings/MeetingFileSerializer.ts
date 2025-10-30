@@ -224,6 +224,9 @@ function composeMeetingFromFrontmatter(
     actionItemSyncStatus: Array.isArray((data as any).action_item_sync_status)
       ? ((data as any).action_item_sync_status as Meeting['actionItemSyncStatus'])
       : undefined,
+    tags: Array.isArray((data as any).tags)
+      ? (data as any).tags.filter((tag: unknown): tag is string => typeof tag === 'string' && tag.trim().length > 0)
+      : undefined,
     teamSummary: typeof (data as any).team_summary === 'string' ? (data as any).team_summary : undefined,
     slackSharedAt: normalizeDateInput((data as any).slack_shared_at) ?? undefined,
     notionSharedAt:
@@ -321,6 +324,10 @@ function buildFrontmatter(meeting: Meeting): string {
     frontmatter.action_item_sync_status = meeting.actionItemSyncStatus;
   }
 
+  if (meeting.tags && meeting.tags.length > 0) {
+    frontmatter.tags = meeting.tags;
+  }
+
   Object.keys(frontmatter).forEach((key) => {
     if (frontmatter[key] === undefined) {
       delete frontmatter[key];
@@ -381,6 +388,18 @@ function sanitizeMeetingForFrontmatter(meeting: Meeting): Meeting {
   if (meeting.firefliesTranscriptFetchedAt) {
     const fetchedAt = normalizeDateInput(meeting.firefliesTranscriptFetchedAt);
     normalized.firefliesTranscriptFetchedAt = fetchedAt ?? meeting.firefliesTranscriptFetchedAt;
+  }
+
+  if (Array.isArray(meeting.tags)) {
+    normalized.tags = meeting.tags
+      .filter((tag) => typeof tag === 'string')
+      .map((tag) => tag.trim())
+      .filter((tag) => tag.length > 0);
+    if (normalized.tags.length === 0) {
+      delete normalized.tags;
+    }
+  } else {
+    delete (normalized as any).tags;
   }
 
   return normalized;

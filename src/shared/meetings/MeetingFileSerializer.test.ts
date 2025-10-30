@@ -29,6 +29,7 @@ describe('MeetingFileSerializer', () => {
     status: 'completed',
     notes: combineNoteSections(baseSections),
     transcript: 'Hello team, welcome to the sync.',
+    tags: ['sales', 'internal'],
     createdAt: new Date('2025-10-01T09:45:00Z'),
     updatedAt: new Date('2025-10-01T10:30:00Z'),
     calendarEventId: 'event-123',
@@ -59,6 +60,7 @@ describe('MeetingFileSerializer', () => {
       ? meeting.firefliesTranscriptFetchedAt.toISOString()
       : new Date(meeting.firefliesTranscriptFetchedAt as string).toISOString();
     expect(fetchedAt).toBe((baseMeeting.firefliesTranscriptFetchedAt as Date).toISOString());
+    expect(meeting.tags).toEqual(baseMeeting.tags);
   });
 
   it('loads insights content via provided reader when requested', async () => {

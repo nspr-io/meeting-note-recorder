@@ -45,6 +45,7 @@ export class SearchService {
         { name: 'attendees.name', weight: 1.5 },
         { name: 'attendees.email', weight: 1.5 },
         { name: 'platform', weight: 0.5 },
+        { name: 'tags', weight: 1 },
       ],
       threshold: 0.3,
       includeScore: true,

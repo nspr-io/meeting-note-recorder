@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import { SDKDebugger } from './SDKDebugger';
 import { TranscriptCorrectionService } from './TranscriptCorrectionService';
 import { InsightsGenerationService } from './InsightsGenerationService';
+import { MeetingTaggingService } from './MeetingTaggingService';
 import { PromptService } from './PromptService';
 import { PermissionService } from './PermissionService';
 import { createServiceLogger } from './ServiceLogger';
@@ -17,6 +18,7 @@ export class RecordingService extends EventEmitter {
   private recallApiService: RecallApiService | null = null;
   private transcriptCorrectionService: TranscriptCorrectionService;
   private insightsGenerationService: InsightsGenerationService;
+  private meetingTaggingService: MeetingTaggingService;
   private recordingState: RecordingState = {
     isRecording: false,
     connectionStatus: 'connected',
@@ -50,6 +52,13 @@ export class RecordingService extends EventEmitter {
       hasPromptService: promptService !== null
     });
     this.insightsGenerationService = new InsightsGenerationService(promptService);
+
+    logger.info('[RECORDING-SERVICE-CONSTRUCTOR] Creating MeetingTaggingService', {
+      hasPromptService: promptService !== null
+    });
+    this.meetingTaggingService = new MeetingTaggingService(promptService);
+
+    this.meetingTaggingService = new MeetingTaggingService(promptService);
 
     // Forward correction events
     this.transcriptCorrectionService.on('correction-started', (data) => {
@@ -282,6 +291,9 @@ export class RecordingService extends EventEmitter {
 
       // Initialize insights generation service if API key provided
       this.insightsGenerationService.initialize(anthropicApiKey);
+
+      // Initialize meeting tagging service if API key provided
+      this.meetingTaggingService.initialize(anthropicApiKey);
 
       logger.info('RecallAI SDK and API service initialized successfully');
     } catch (error) {
@@ -1416,18 +1428,57 @@ export class RecordingService extends EventEmitter {
           });
         }
 
-        if (meeting && meeting.transcript && this.transcriptCorrectionService.isAvailable()) {
-          logger.info('Starting transcript correction for meeting', { meetingId });
-          try {
-            const correctedTranscript = await this.transcriptCorrectionService.correctTranscript(meeting);
-            await this.storageService.updateMeeting(meetingId, {
-              transcript: correctedTranscript
-            });
-            logger.info('Transcript correction completed', { meetingId });
-          } catch (error) {
-            logger.error('Failed to correct transcript', { meetingId, error });
+        let latestMeeting = meeting;
+
+        const correctionPromise: Promise<string | null> = (meeting && meeting.transcript && this.transcriptCorrectionService.isAvailable())
+          ? (async () => {
+              logger.info('Starting transcript correction for meeting', { meetingId });
+              try {
+                const correctedTranscript = await this.transcriptCorrectionService.correctTranscript(meeting);
+                await this.storageService.updateMeeting(meetingId, { transcript: correctedTranscript });
+                latestMeeting = await this.storageService.getMeeting(meetingId) ?? latestMeeting;
+                logger.info('Transcript correction completed', { meetingId });
+                return correctedTranscript;
+              } catch (error) {
+                logger.error('Failed to correct transcript', { meetingId, error });
+                return null;
+              }
+            })()
+          : Promise.resolve(null);
+
+        const taggingPromise: Promise<string[] | null> = (meeting && this.meetingTaggingService.isAvailable())
+          ? (async () => {
+              const tags = await this.meetingTaggingService.generateTags(meeting);
+              return tags.length > 0 ? tags : null;
+            })()
+          : Promise.resolve(null);
+
+        const [, generatedTags] = await Promise.all([correctionPromise, taggingPromise]);
+
+        if (generatedTags && generatedTags.length > 0 && latestMeeting) {
+          const existing = Array.isArray(latestMeeting.tags) ? latestMeeting.tags : [];
+          const merged = Array.from(new Set([...existing, ...generatedTags]));
+
+          const hasChanged = merged.length !== existing.length || merged.some((tag, index) => tag !== existing[index]);
+
+          if (hasChanged) {
+            try {
+              await this.storageService.updateMeeting(meetingId, {
+                tags: merged,
+                updatedAt: new Date()
+              });
+              latestMeeting = await this.storageService.getMeeting(meetingId) ?? latestMeeting;
+              logger.info('[TAGGING] Tags updated for meeting', { meetingId, tags: merged });
+            } catch (error) {
+              logger.error('[TAGGING] Failed to persist meeting tags', {
+                meetingId,
+                error: error instanceof Error ? error.message : error
+              });
+            }
           }
         }
+
+        meeting = latestMeeting;
 
         if (meeting && meeting.recallRecordingId && this.recallApiService) {
           logger.info('[RECORDING-FINALIZE] Starting background final transcript fetch', {

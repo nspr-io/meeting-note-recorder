@@ -187,6 +187,15 @@ export class StorageService {
         .map((item) => this.stripUndefinedDeep(item)) as Meeting['actionItemSyncStatus'];
     }
 
+    if ('tags' in sanitized) {
+      sanitized.tags = Array.isArray(sanitized.tags)
+        ? sanitized.tags
+            .filter((tag) => typeof tag === 'string')
+            .map((tag) => tag.trim())
+            .filter((tag) => tag.length > 0)
+        : undefined;
+    }
+
     return sanitized;
   }
 

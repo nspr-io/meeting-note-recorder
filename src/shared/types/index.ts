@@ -23,6 +23,7 @@ export interface Meeting {
   status: 'scheduled' | 'recording' | 'completed' | 'partial' | 'error' | 'active';
   notes: string;
   transcript: string;
+  tags?: string[];
   insights?: string; // JSON string containing summary, action items, decisions
   insightsFilePath?: string | null; // Relative path to persisted insights JSON
   actionItemSyncStatus?: ActionItemSyncStatus[];

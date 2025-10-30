@@ -1177,6 +1177,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [itemErrors, setItemErrors] = useState<Record<number, string>>({});
   const isFirstRender = useRef(true);
   const previousMeetingIdRef = useRef(meeting.id);
+  const meetingsRefreshInFlightRef = useRef(false);
 
   const meetingDateObj = new Date(meeting.date);
   const hasValidMeetingDate = !Number.isNaN(meetingDateObj.getTime());
@@ -1346,6 +1347,33 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     };
     refreshFromDisk();
   }, [meeting.id]);
+
+  useEffect(() => {
+    if (typeof window.electronAPI === 'undefined' || !onRefresh) {
+      return;
+    }
+
+    const handleMeetingsUpdated = async () => {
+      if (meetingsRefreshInFlightRef.current) {
+        return;
+      }
+
+      meetingsRefreshInFlightRef.current = true;
+      try {
+        await onRefresh();
+      } catch (error) {
+        console.error('[MEETING-DETAIL] Failed to refresh meeting after update:', error);
+      } finally {
+        meetingsRefreshInFlightRef.current = false;
+      }
+    };
+
+    window.electronAPI.on?.(IpcChannels.MEETINGS_UPDATED, handleMeetingsUpdated);
+
+    return () => {
+      window.electronAPI.removeListener?.(IpcChannels.MEETINGS_UPDATED, handleMeetingsUpdated);
+    };
+  }, [meeting.id, onRefresh]);
 
   useEffect(() => {
     console.log('[MEETING-CHANGE] Effect triggered', {
