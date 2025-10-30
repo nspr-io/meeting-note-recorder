@@ -73,12 +73,20 @@ export interface UserProfile {
   preferences: string;
 }
 
+export interface CoachVariable {
+  id: string;
+  label: string;
+  key: string;
+  filePath: string;
+}
+
 export interface CoachConfig {
   id: string;
   name: string;
   description: string;
   enabled: boolean;
   isCustom?: boolean;
+  variables?: CoachVariable[];
 }
 
 export const DEFAULT_COACH_CONFIGS: CoachConfig[] = [
@@ -88,6 +96,7 @@ export const DEFAULT_COACH_CONFIGS: CoachConfig[] = [
     description: 'Real-time coaching for sales calls',
     enabled: true,
     isCustom: false,
+    variables: [],
   },
   {
     id: 'coach-interview',
@@ -95,6 +104,7 @@ export const DEFAULT_COACH_CONFIGS: CoachConfig[] = [
     description: 'Real-time coaching for job interviews',
     enabled: true,
     isCustom: false,
+    variables: [],
   },
   {
     id: 'coach-facilitator',
@@ -102,6 +112,7 @@ export const DEFAULT_COACH_CONFIGS: CoachConfig[] = [
     description: 'Real-time coaching for meeting facilitation',
     enabled: true,
     isCustom: false,
+    variables: [],
   },
 ];
 
@@ -185,6 +196,7 @@ export enum IpcChannels {
   DISCONNECT_CALENDAR = 'disconnect-calendar',
   SYNC_CALENDAR = 'sync-calendar',
   SELECT_STORAGE_PATH = 'select-storage-path',
+  SELECT_FILE_PATH = 'select-file-path',
   OPEN_MEETING_FILE = 'open-meeting-file',
   SHOW_IN_FINDER = 'show-in-finder',
   OPEN_EXTERNAL = 'open-external',

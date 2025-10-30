@@ -477,6 +477,7 @@ function setupIpcHandlers() {
       description: coach.description,
       enabled: coach.enabled,
       isCustom: coach.isCustom ?? true,
+      variables: coach.variables,
     };
     const updated = settingsService.setCoaches([...prev, updatedCoach]);
 
@@ -1382,6 +1383,19 @@ function setupIpcHandlers() {
       await settingsService.updateSettings({ storagePath: result.filePaths[0] });
       return { path: result.filePaths[0] };
     }
+    return { path: null };
+  });
+
+  ipcMain.handle(IpcChannels.SELECT_FILE_PATH, async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      title: 'Select File'
+    });
+
+    if (!result.canceled && result.filePaths[0]) {
+      return { path: result.filePaths[0] };
+    }
+
     return { path: null };
   });
 

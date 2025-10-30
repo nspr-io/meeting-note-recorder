@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import styled from '@emotion/styled';
-import { CoachConfig, IpcChannels } from '../../shared/types';
+import { CoachConfig, CoachVariable } from '../../shared/types';
 import { extractVariables, validatePromptTemplate } from '../../shared/utils/promptUtils';
 
 const PromptItem = styled.div<{ active: boolean }>`
@@ -143,6 +143,73 @@ const ErrorMessage = styled.div`
   color: #ff3b30;
   font-size: 11px;
   margin-top: 4px;
+`;
+
+const CoachVariablesContainer = styled.div`
+  border-top: 1px solid #e5e5e7;
+  background: #f9fbff;
+  padding: 18px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+`;
+
+const CoachVariablesHeader = styled.div`
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+`;
+
+const CoachVariableList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+`;
+
+const CoachVariableRow = styled.div`
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) minmax(220px, 2fr) auto;
+  gap: 12px;
+  align-items: center;
+`;
+
+const CoachVariableInput = styled.input`
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+
+  &:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  }
+`;
+
+const CoachVariableActions = styled.div`
+  display: flex;
+  gap: 8px;
+`;
+
+const CoachVariableError = styled.div`
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: #dc2626;
+`;
+
+const CoachVariableStatus = styled.div<{ type: 'success' | 'error' | 'info' }>`
+  font-size: 12px;
+  font-weight: 500;
+  color: ${props => {
+    switch (props.type) {
+      case 'success':
+        return '#047857';
+      case 'error':
+        return '#b91c1c';
+      default:
+        return '#1d4ed8';
+    }
+  }};
 `;
 
 interface PromptInfo {
@@ -486,7 +553,12 @@ export function SystemPromptEditor({ promptId }: SystemPromptEditorProps) {
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const [coachMeta, setCoachMeta] = useState<{ name: string; description: string } | null>(null);
+  const [coachConfig, setCoachConfig] = useState<CoachConfig | null>(null);
+  const [coachVariables, setCoachVariables] = useState<CoachVariable[]>([]);
+  const [variableErrors, setVariableErrors] = useState<Record<string, string>>({});
+  const [variablesDirty, setVariablesDirty] = useState(false);
+  const [variableStatus, setVariableStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [isSavingVariables, setIsSavingVariables] = useState(false);
   const isCoachPrompt = promptId.startsWith('coach-');
 
   useEffect(() => {
@@ -506,13 +578,16 @@ export function SystemPromptEditor({ promptId }: SystemPromptEditorProps) {
   useEffect(() => {
     if (editedContent !== prompt?.content) {
       setHasUnsavedChanges(true);
-      const validation = validatePromptTemplate(editedContent);
+      const extraVars = coachVariables.map(variable => variable.key).filter(key => !!key);
+      const validation = validatePromptTemplate(editedContent, {
+        extraVariables: extraVars
+      });
       setValidationErrors(validation.errors);
     } else {
       setHasUnsavedChanges(false);
       setValidationErrors([]);
     }
-  }, [editedContent, prompt]);
+  }, [editedContent, prompt, coachVariables]);
 
   const loadPrompt = async () => {
     try {
@@ -524,21 +599,126 @@ export function SystemPromptEditor({ promptId }: SystemPromptEditorProps) {
           const coaches = await window.electronAPI.getCoaches?.();
           const coach = Array.isArray(coaches) ? coaches.find((c: CoachConfig) => c.id === promptId) : null;
           if (coach) {
-            setCoachMeta({ name: coach.name, description: coach.description });
+            setCoachConfig(coach);
+            setCoachVariables(Array.isArray(coach.variables) ? coach.variables : []);
+            setVariablesDirty(false);
+            setVariableErrors({});
+            setVariableStatus(null);
           } else {
-            setCoachMeta(null);
+            setCoachConfig(null);
+            setCoachVariables([]);
+            setVariablesDirty(false);
+            setVariableErrors({});
+            setVariableStatus(null);
           }
         } catch (error) {
           console.error('Failed to load coach metadata:', error);
-          setCoachMeta(null);
+          setCoachConfig(null);
+          setCoachVariables([]);
+          setVariablesDirty(false);
+          setVariableErrors({});
+          setVariableStatus({ type: 'error', message: 'Failed to load coach configuration' });
         }
       } else {
-        setCoachMeta(null);
+        setCoachConfig(null);
+        setCoachVariables([]);
+        setVariablesDirty(false);
+        setVariableErrors({});
+        setVariableStatus(null);
       }
     } catch (error) {
       console.error('Failed to load prompt:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const generateVariableId = () => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return `coach-var-${Math.random().toString(36).slice(2, 10)}`;
+  };
+
+  const handleAddVariable = () => {
+    setCoachVariables(prev => [
+      ...prev,
+      {
+        id: generateVariableId(),
+        label: '',
+        key: '',
+        filePath: '',
+      }
+    ]);
+    setVariablesDirty(true);
+    setVariableStatus(null);
+  };
+
+  const handleUpdateVariable = (id: string, field: keyof Omit<CoachVariable, 'id'>, value: string) => {
+    setCoachVariables(prev => prev.map(variable => (
+      variable.id === id ? { ...variable, [field]: value } : variable
+    )));
+    setVariablesDirty(true);
+    setVariableStatus(null);
+  };
+
+  const handleRemoveVariable = (id: string) => {
+    setCoachVariables(prev => prev.filter(variable => variable.id !== id));
+    setVariablesDirty(true);
+    setVariableStatus(null);
+  };
+
+  const handleBrowseVariable = async (id: string) => {
+    try {
+      const result = await window.electronAPI.selectFilePath?.();
+      if (result?.path) {
+        handleUpdateVariable(id, 'filePath', result.path);
+      }
+    } catch (error) {
+      console.error('Failed to select file for coach variable:', error);
+      setVariableStatus({ type: 'error', message: 'Failed to open file picker.' });
+    }
+  };
+
+  const handleSaveVariables = async () => {
+    if (!coachConfig) {
+      return;
+    }
+
+    const hasErrors = Object.keys(variableErrors).length > 0;
+    if (hasErrors) {
+      setVariableStatus({ type: 'error', message: 'Fix variable validation errors before saving.' });
+      return;
+    }
+
+    setIsSavingVariables(true);
+    try {
+      const normalizedVariables = coachVariables.map(variable => {
+        const trimmedKey = variable.key.trim();
+        const trimmedLabel = variable.label.trim();
+        return {
+          ...variable,
+          key: trimmedKey,
+          label: trimmedLabel || trimmedKey,
+          filePath: variable.filePath.trim(),
+        };
+      });
+
+      const payload: CoachConfig = {
+        ...coachConfig,
+        variables: normalizedVariables,
+      };
+
+      await window.electronAPI.upsertCoach(payload);
+      setCoachConfig(payload);
+      setCoachVariables(normalizedVariables);
+      setVariablesDirty(false);
+      setVariableStatus({ type: 'success', message: 'Coach variables saved.' });
+    } catch (error) {
+      console.error('Failed to save coach variables:', error);
+      setVariableStatus({ type: 'error', message: 'Failed to save coach variables.' });
+    } finally {
+      setIsSavingVariables(false);
     }
   };
 
@@ -580,6 +760,47 @@ export function SystemPromptEditor({ promptId }: SystemPromptEditorProps) {
     }
   };
 
+  useEffect(() => {
+    if (!coachVariables.length) {
+      setVariableErrors({});
+      return;
+    }
+
+    const errors: Record<string, string> = {};
+    const keyCounts = new Map<string, number>();
+
+    coachVariables.forEach(variable => {
+      const key = variable.key.trim();
+      if (key) {
+        keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+      }
+    });
+
+    coachVariables.forEach(variable => {
+      const messages: string[] = [];
+      const key = variable.key.trim();
+      const filePath = variable.filePath.trim();
+
+      if (!key) {
+        messages.push('Variable key is required');
+      } else if (!/^[A-Za-z0-9_]+$/.test(key)) {
+        messages.push('Use only letters, numbers, or underscores for variable keys');
+      } else if ((keyCounts.get(key) ?? 0) > 1) {
+        messages.push('Variable key must be unique');
+      }
+
+      if (!filePath) {
+        messages.push('File path is required');
+      }
+
+      if (messages.length > 0) {
+        errors[variable.id] = messages.join(' • ');
+      }
+    });
+
+    setVariableErrors(errors);
+  }, [coachVariables]);
+
   const variables = extractVariables(editedContent);
 
   if (isLoading) {
@@ -614,6 +835,75 @@ export function SystemPromptEditor({ promptId }: SystemPromptEditorProps) {
         onChange={(e) => setEditedContent(e.target.value)}
         placeholder="Enter your system prompt here..."
       />
+
+      {isCoachPrompt && coachConfig && (
+        <CoachVariablesContainer>
+          <CoachVariablesHeader>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: '15px', color: '#111827' }}>Coach variables</div>
+              <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                Add reusable file references and use them inside the prompt as <code>{'{{variableName}}'}</code>.
+              </div>
+            </div>
+            <HeaderButton onClick={handleAddVariable}>Add variable</HeaderButton>
+          </CoachVariablesHeader>
+
+          {coachVariables.length > 0 ? (
+            <CoachVariableList>
+              {coachVariables.map(variable => (
+                <React.Fragment key={variable.id}>
+                  <CoachVariableRow>
+                    <CoachVariableInput
+                      value={variable.label}
+                      onChange={event => handleUpdateVariable(variable.id, 'label', event.target.value)}
+                      placeholder="Display label (optional)"
+                    />
+                    <CoachVariableInput
+                      value={variable.key}
+                      onChange={event => handleUpdateVariable(variable.id, 'key', event.target.value)}
+                      placeholder="Template variable (e.g. salesPlaybook)"
+                    />
+                    <CoachVariableInput
+                      value={variable.filePath}
+                      onChange={event => handleUpdateVariable(variable.id, 'filePath', event.target.value)}
+                      placeholder="/path/to/file.txt"
+                    />
+                    <CoachVariableActions>
+                      <HeaderButton onClick={() => handleBrowseVariable(variable.id)}>Browse</HeaderButton>
+                      <HeaderButton variant="danger" onClick={() => handleRemoveVariable(variable.id)}>
+                        Remove
+                      </HeaderButton>
+                    </CoachVariableActions>
+                  </CoachVariableRow>
+                  {variableErrors[variable.id] && (
+                    <CoachVariableError>{variableErrors[variable.id]}</CoachVariableError>
+                  )}
+                </React.Fragment>
+              ))}
+            </CoachVariableList>
+          ) : (
+            <div style={{ fontSize: '12px', color: '#6b7280' }}>
+              No variables yet. Add one to link playbooks or notes from your filesystem.
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            {variableStatus && (
+              <CoachVariableStatus type={variableStatus.type}>
+                {variableStatus.message}
+              </CoachVariableStatus>
+            )}
+            <ButtonGroup>
+              <Button
+                onClick={handleSaveVariables}
+                disabled={!coachConfig || !variablesDirty || isSavingVariables || Object.keys(variableErrors).length > 0}
+              >
+                {isSavingVariables ? 'Saving...' : 'Save Coach Variables'}
+              </Button>
+            </ButtonGroup>
+          </div>
+        </CoachVariablesContainer>
+      )}
 
       <EditorFooter>
         <VariablesInfo>

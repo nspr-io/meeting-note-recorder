@@ -2,7 +2,7 @@ import Store from 'electron-store';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { app } from 'electron';
-import { AppSettings, CoachConfig, DEFAULT_COACH_CONFIGS, UserProfile } from '../../shared/types';
+import { AppSettings, CoachConfig, CoachVariable, DEFAULT_COACH_CONFIGS, UserProfile } from '../../shared/types';
 import { ConfigValidator } from './ConfigValidator';
 import { createServiceLogger } from './ServiceLogger';
 
@@ -107,22 +107,55 @@ export class SettingsService {
     const merged = new Map<string, CoachConfig>();
     for (const coach of existing) {
       const base = defaultsById.get(coach.id);
+      const sanitizedVariables = this.sanitizeCoachVariables((coach as any).variables);
       merged.set(coach.id, {
         id: coach.id,
         name: typeof (coach as any).name === 'string' ? (coach as any).name : base?.name || coach.id,
         description: typeof (coach as any).description === 'string' ? (coach as any).description : base?.description || '',
         enabled: typeof coach.enabled === 'boolean' ? coach.enabled : base?.enabled ?? true,
         isCustom: coach.isCustom ?? !defaultsById.has(coach.id),
+        variables: sanitizedVariables,
       });
     }
 
     for (const def of DEFAULT_COACH_CONFIGS) {
       if (!merged.has(def.id)) {
-        merged.set(def.id, { ...def });
+        merged.set(def.id, { ...def, variables: this.sanitizeCoachVariables(def.variables) });
       }
     }
 
     return Array.from(merged.values());
+  }
+
+  private sanitizeCoachVariables(variablesCandidate: unknown): CoachVariable[] {
+    if (!Array.isArray(variablesCandidate)) {
+      return [];
+    }
+
+    const sanitized: CoachVariable[] = [];
+    for (const candidate of variablesCandidate) {
+      if (!candidate || typeof candidate !== 'object') {
+        continue;
+      }
+
+      const id = typeof (candidate as any).id === 'string' && (candidate as any).id.trim() ? (candidate as any).id.trim() : null;
+      const label = typeof (candidate as any).label === 'string' ? (candidate as any).label.trim() : '';
+      const key = typeof (candidate as any).key === 'string' ? (candidate as any).key.trim() : '';
+      const filePath = typeof (candidate as any).filePath === 'string' ? (candidate as any).filePath.trim() : '';
+
+      if (!id || !key || !filePath) {
+        continue;
+      }
+
+      sanitized.push({
+        id,
+        label: label || key,
+        key,
+        filePath,
+      });
+    }
+
+    return sanitized;
   }
 
   private async syncCustomCoachesFromPrompts(): Promise<void> {
@@ -155,6 +188,7 @@ export class SettingsService {
             description: '',
             enabled: true,
             isCustom: true,
+            variables: [],
           });
           mutated = true;
         }
@@ -230,7 +264,7 @@ export class SettingsService {
       ...settingsToStore
     } = updates;
     const settingsWithCoaches = coaches
-      ? { ...settingsToStore, coaches: this.ensureCoachesSchema(coaches).map(coach => ({ ...coach })) }
+      ? { ...settingsToStore, coaches: this.ensureCoachesSchema(coaches).map(coach => ({ ...coach, variables: this.sanitizeCoachVariables(coach.variables) })) }
       : settingsToStore;
 
     // If storage path changed, create new directory

@@ -56,6 +56,8 @@ const api = {
   // Storage
   selectStoragePath: () =>
     ipcRenderer.invoke(IpcChannels.SELECT_STORAGE_PATH),
+  selectFilePath: () =>
+    ipcRenderer.invoke(IpcChannels.SELECT_FILE_PATH),
   openMeetingFile: (meetingId: string) =>
     ipcRenderer.invoke(IpcChannels.OPEN_MEETING_FILE, meetingId),
   showInFinder: (filePath: string) =>

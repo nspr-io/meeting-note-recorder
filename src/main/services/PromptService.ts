@@ -1,4 +1,4 @@
-const COACH_VARIABLES = ['previousFeedback', 'recentTranscript'];
+const BASE_COACH_VARIABLES = ['previousFeedback', 'recentTranscript'];
 import fs from 'fs/promises';
 import path from 'path';
 import { app } from 'electron';
@@ -161,12 +161,19 @@ export class PromptService {
     };
 
     additionalCoaches.forEach(coach => {
+      const extraVariables = Array.isArray(coach.variables)
+        ? coach.variables.map(variable => variable.key).filter(key => !!key)
+        : [];
+
       if (!allConfigs[coach.id]) {
         allConfigs[coach.id] = {
           name: coach.name,
           description: coach.description,
-          variables: COACH_VARIABLES,
+          variables: [...BASE_COACH_VARIABLES, ...extraVariables],
         };
+      } else if (allConfigs[coach.id].variables) {
+        const merged = new Set([...allConfigs[coach.id].variables!, ...extraVariables]);
+        allConfigs[coach.id].variables = Array.from(merged);
       }
     });
 

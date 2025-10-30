@@ -8,6 +8,7 @@ export interface PromptVariables {
   meetingNotes?: string;
   previousFeedback?: string;
   recentTranscript?: string;
+  coachVariables?: Record<string, string>;
 }
 
 /**
@@ -38,11 +39,20 @@ export function interpolatePrompt(template: string, variables: PromptVariables):
   }
 
   // Handle transcript and notes
-  result = result.replace(/\{\{transcript\}\}/g, variables.transcript || '');
-  result = result.replace(/\{\{notes\}\}/g, variables.notes || '');
-  result = result.replace(/\{\{meetingNotes\}\}/g, variables.meetingNotes || '');
-  result = result.replace(/\{\{previousFeedback\}\}/g, variables.previousFeedback || '');
-  result = result.replace(/\{\{recentTranscript\}\}/g, variables.recentTranscript || '');
+  result = result.replace(/\{\{\s*transcript\s*\}\}/g, variables.transcript || '');
+  result = result.replace(/\{\{\s*notes\s*\}\}/g, variables.notes || '');
+  result = result.replace(/\{\{\s*meetingNotes\s*\}\}/g, variables.meetingNotes || '');
+  result = result.replace(/\{\{\s*previousFeedback\s*\}\}/g, variables.previousFeedback || '');
+  result = result.replace(/\{\{\s*recentTranscript\s*\}\}/g, variables.recentTranscript || '');
+
+  if (variables.coachVariables) {
+    for (const [key, value] of Object.entries(variables.coachVariables)) {
+      if (!key) continue;
+      const escaped = escapeRegExp(key);
+      const pattern = new RegExp(`\\{\\{\\s*${escaped}\\s*\\}}`, 'g');
+      result = result.replace(pattern, value ?? '');
+    }
+  }
 
   // Handle conditional blocks for userProfile
   if (variables.userProfile) {
@@ -78,7 +88,10 @@ export function extractVariables(template: string): string[] {
 /**
  * Validates that a prompt template has valid syntax
  */
-export function validatePromptTemplate(template: string): { isValid: boolean; errors: string[] } {
+export function validatePromptTemplate(
+  template: string,
+  options?: { allowUnknownVariables?: boolean; extraVariables?: string[] }
+): { isValid: boolean; errors: string[] } {
   const errors: string[] = [];
 
   // Define valid variables
@@ -98,6 +111,14 @@ export function validatePromptTemplate(template: string): { isValid: boolean; er
     'recentTranscript'
   ]);
 
+  if (options?.extraVariables) {
+    for (const extra of options.extraVariables) {
+      if (extra && typeof extra === 'string') {
+        validVariables.add(extra.trim());
+      }
+    }
+  }
+
   // Check for unclosed conditional blocks
   const ifBlocks = (template.match(/\{\{#if/g) || []).length;
   const endifBlocks = (template.match(/\{\{\/if\}\}/g) || []).length;
@@ -110,7 +131,7 @@ export function validatePromptTemplate(template: string): { isValid: boolean; er
   const variables = extractVariables(template);
   const invalidVariables = variables.filter(variable => !validVariables.has(variable));
 
-  if (invalidVariables.length > 0) {
+  if (!options?.allowUnknownVariables && invalidVariables.length > 0) {
     errors.push(`Unknown variables: ${invalidVariables.join(', ')}`);
   }
 
@@ -124,4 +145,8 @@ export function validatePromptTemplate(template: string): { isValid: boolean; er
     isValid: errors.length === 0,
     errors
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

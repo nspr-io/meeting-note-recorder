@@ -1,4 +1,5 @@
 import type { Message, Tool, ToolUseBlock } from '@anthropic-ai/sdk/resources/messages';
+import fs from 'fs/promises';
 import { CoachConfig, CoachingType, CoachingFeedback, CoachingState, TranscriptChunk } from '../../shared/types';
 import { PromptService } from './PromptService';
 import { BaseAnthropicService } from './BaseAnthropicService';
@@ -17,6 +18,7 @@ export class RealtimeCoachingService extends BaseAnthropicService {
   private feedbackHistory: CoachingFeedback[] = [];
   private currentMeetingNotes: string = '';
   private settingsService: SettingsService;
+  private coachVariableValues: Record<string, string> = {};
 
   constructor(promptService: PromptService | null, settingsService: SettingsService) {
     super('RealtimeCoachingService');
@@ -50,6 +52,12 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     this.transcriptHistory = [];
     this.feedbackHistory = [];
     this.currentMeetingNotes = '';
+    try {
+      this.coachVariableValues = await this.loadCoachVariableValues(coachConfig);
+    } catch (error) {
+      this.logger.error('Failed to load coach variables:', error);
+      this.coachVariableValues = {};
+    }
 
     // Start periodic analysis
     this.intervalId = setInterval(() => {
@@ -85,6 +93,7 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     this.transcriptHistory = [];
     this.feedbackHistory = [];
     this.currentMeetingNotes = '';
+    this.coachVariableValues = {};
   }
 
   /**
@@ -154,14 +163,12 @@ export class RealtimeCoachingService extends BaseAnthropicService {
       // Build context from previous feedback
       const previousFeedback = this.buildPreviousFeedbackContext();
 
-      // Get the coaching prompt template
-      const promptTemplate = await this.promptService.getPrompt(this.coachingType);
-
-      // Interpolate variables
-      const prompt = promptTemplate
-        .replace('{{previousFeedback}}', previousFeedback)
-        .replace('{{recentTranscript}}', recentTranscript)
-        .replace('{{meetingNotes}}', this.currentMeetingNotes || 'No notes yet');
+      const prompt = await this.promptService.getInterpolatedPrompt(this.coachingType, {
+        previousFeedback,
+        recentTranscript,
+        meetingNotes: this.currentMeetingNotes || 'No notes yet',
+        coachVariables: this.coachVariableValues,
+      });
 
       const coachingTool = this.buildCoachingTool();
 
@@ -352,5 +359,44 @@ export class RealtimeCoachingService extends BaseAnthropicService {
       observations: safeObservations,
       suggestions: safeSuggestions
     };
+  }
+
+  private async loadCoachVariableValues(coachConfig: CoachConfig): Promise<Record<string, string>> {
+    if (!coachConfig.variables || coachConfig.variables.length === 0) {
+      return {};
+    }
+
+    const results = await Promise.all(
+      coachConfig.variables.map(async variable => {
+        const key = variable.key?.trim();
+        const filePath = variable.filePath;
+
+        if (!key || !filePath) {
+          return null;
+        }
+
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          return [key, content] as const;
+        } catch (error) {
+          this.logger.warn('Failed to read coach variable file', {
+            coachId: coachConfig.id,
+            variableKey: key,
+            filePath,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return [key, ''] as const;
+        }
+      })
+    );
+
+    return results.reduce<Record<string, string>>((acc, entry) => {
+      if (!entry) {
+        return acc;
+      }
+      const [key, content] = entry;
+      acc[key] = content;
+      return acc;
+    }, {});
   }
 }
