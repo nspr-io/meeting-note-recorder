@@ -1,16 +1,9 @@
 import { systemPreferences, dialog, shell } from 'electron';
 import RecallAiSdk from '@recallai/desktop-sdk';
 import { getLogger } from './LoggingService';
+import { PermissionStatus, PermissionType } from '../../shared/types';
 
 const logger = getLogger();
-
-export type PermissionType = 'screen-capture' | 'microphone' | 'accessibility';
-
-export interface PermissionStatus {
-  'screen-capture': boolean;
-  microphone: boolean;
-  accessibility: boolean;
-}
 
 export class PermissionService {
   private permissionStatus: PermissionStatus = {
@@ -236,6 +229,26 @@ export class PermissionService {
         app.relaunch();
         app.exit(0);
       }
+    }
+  }
+
+  openPermissionSettings(permission: PermissionType): void {
+    if (process.platform !== 'darwin') {
+      return;
+    }
+
+    switch (permission) {
+      case 'screen-capture':
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+        break;
+      case 'microphone':
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+        break;
+      case 'accessibility':
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+        break;
+      default:
+        break;
     }
   }
 

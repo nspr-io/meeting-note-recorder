@@ -1,18 +1,14 @@
 {
   "passed": [
     {
-      "test": "App killed",
-      "timestamp": "2025-10-28T09:29:16.549Z"
-    },
-    {
       "test": "App started",
       "details": {
         "pids": [
-          "93999"
+          "71420"
         ],
-        "startupTimeMs": 1038
+        "startupTimeMs": 1041
       },
-      "timestamp": "2025-10-28T09:29:17.593Z"
+      "timestamp": "2025-11-01T17:33:19.941Z"
     }
   ],
   "failed": [],
@@ -27,7 +23,7 @@
           "/var/folders/g1/fpr63r6j06x0k813kk8ydbch0000gn/T/meeting-recorder-test/logs"
         ]
       },
-      "timestamp": "2025-10-28T09:29:20.594Z"
+      "timestamp": "2025-11-01T17:33:22.943Z"
     },
     {
       "test": "Initialization",
@@ -38,32 +34,32 @@
           "Window detection service initialized"
         ]
       },
-      "timestamp": "2025-10-28T09:29:20.595Z"
+      "timestamp": "2025-11-01T17:33:22.944Z"
     },
     {
       "test": "System permissions",
       "warning": "Skipped (non-interactive environment)",
-      "timestamp": "2025-10-28T09:29:20.595Z"
+      "timestamp": "2025-11-01T17:33:22.944Z"
     },
     {
       "test": "Manual recording test",
       "warning": "Skipped (non-interactive environment)",
-      "timestamp": "2025-10-28T09:29:20.595Z"
+      "timestamp": "2025-11-01T17:33:22.945Z"
     },
     {
       "test": "Meeting detection test",
       "warning": "Skipped (non-interactive environment)",
-      "timestamp": "2025-10-28T09:29:20.595Z"
+      "timestamp": "2025-11-01T17:33:22.946Z"
     },
     {
       "test": "Toast recording test",
       "warning": "Skipped (non-interactive environment)",
-      "timestamp": "2025-10-28T09:29:20.596Z"
+      "timestamp": "2025-11-01T17:33:22.946Z"
     },
     {
       "test": "Multiple meeting test",
       "warning": "Skipped (non-interactive environment)",
-      "timestamp": "2025-10-28T09:29:20.596Z"
+      "timestamp": "2025-11-01T17:33:22.947Z"
     },
     {
       "test": "Log file",
@@ -75,7 +71,7 @@
           "/var/folders/g1/fpr63r6j06x0k813kk8ydbch0000gn/T/meeting-recorder-test/logs"
         ]
       },
-      "timestamp": "2025-10-28T09:29:20.598Z"
+      "timestamp": "2025-11-01T17:33:22.949Z"
     }
   ]
 }

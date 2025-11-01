@@ -2,7 +2,17 @@ import Store from 'electron-store';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { app } from 'electron';
-import { AppSettings, CoachConfig, CoachVariable, DEFAULT_COACH_CONFIGS, UserProfile } from '../../shared/types';
+import {
+  AppSettings,
+  CoachConfig,
+  CoachVariable,
+  DEFAULT_COACH_CONFIGS,
+  Meeting,
+  PermissionOnboardingState,
+  SavedSearchDefinition,
+  SearchOptions,
+  UserProfile
+} from '../../shared/types';
 import { ConfigValidator } from './ConfigValidator';
 import { createServiceLogger } from './ServiceLogger';
 
@@ -26,6 +36,12 @@ export class SettingsService {
     notionTodoIntegrationToken: process.env.NOTION_TODO_INTEGRATION_TOKEN || '',
     notionTodoDatabaseId: process.env.NOTION_TODO_DATABASE_ID || '',
     coaches: DEFAULT_COACH_CONFIGS.map(coach => ({ ...coach })),
+    permissionOnboarding: {
+      completedAt: null,
+      dismissedAt: null,
+      lastPromptAt: null,
+    },
+    savedSearches: [],
   };
 
   constructor() {
@@ -69,35 +85,53 @@ export class SettingsService {
   }
 
   getSettings(): AppSettings {
-    const settings = this.store.get ? {
-      recallApiUrl: this.store.get('recallApiUrl') || this.defaultSettings.recallApiUrl,
-      storagePath: this.store.get('storagePath') || this.defaultSettings.storagePath,
-      googleCalendarConnected: this.store.get('googleCalendarConnected') || false,
-      autoStartOnBoot: this.store.get('autoStartOnBoot') || false,
-      selectedCalendars: this.store.get('selectedCalendars') || [],
+    const base: Partial<AppSettings> = this.store.get
+      ? {
+          recallApiUrl: this.store.get('recallApiUrl') || this.defaultSettings.recallApiUrl,
+          storagePath: this.store.get('storagePath') || this.defaultSettings.storagePath,
+          googleCalendarConnected: this.store.get('googleCalendarConnected') || false,
+          autoStartOnBoot: this.store.get('autoStartOnBoot') || false,
+          selectedCalendars: this.store.get('selectedCalendars') || [],
+          slackWebhookUrl: this.store.get('slackWebhookUrl') || '',
+          coaches: this.ensureCoachesSchema(this.store.get('coaches')),
+        }
+      : {
+          ...this.defaultSettings,
+          ...(this.store.store || {}),
+          coaches: this.ensureCoachesSchema(this.store.store?.coaches),
+        };
+
+    const settings: AppSettings = {
+      recallApiUrl:
+        typeof base.recallApiUrl === 'string' && base.recallApiUrl.trim()
+          ? base.recallApiUrl
+          : this.defaultSettings.recallApiUrl,
+      storagePath:
+        typeof base.storagePath === 'string' && base.storagePath.trim()
+          ? base.storagePath
+          : this.defaultSettings.storagePath,
+      googleCalendarConnected: Boolean(base.googleCalendarConnected),
+      autoStartOnBoot: Boolean(base.autoStartOnBoot),
+      selectedCalendars: Array.isArray(base.selectedCalendars) ? base.selectedCalendars : [],
       recallApiKey: this.getApiKey(),
       anthropicApiKey: this.getAnthropicApiKey(),
       firefliesApiKey: this.getFirefliesApiKey(),
-      slackWebhookUrl: this.store.get('slackWebhookUrl') || '',
+      slackWebhookUrl:
+        typeof base.slackWebhookUrl === 'string'
+          ? base.slackWebhookUrl
+          : this.store.get
+            ? this.store.get('slackWebhookUrl') || ''
+            : this.store.store?.slackWebhookUrl || '',
       notionIntegrationToken: this.getNotionIntegrationToken(),
       notionDatabaseId: this.getNotionDatabaseId(),
       notionTodoIntegrationToken: this.getNotionTodoIntegrationToken(),
       notionTodoDatabaseId: this.getNotionTodoDatabaseId(),
-      coaches: this.ensureCoachesSchema(this.store.get('coaches')),
-    } : this.store.store;
-    // Include the API keys from environment or store
-    return {
-      ...settings,
-      recallApiKey: this.getApiKey(),
-      anthropicApiKey: this.getAnthropicApiKey(),
-      firefliesApiKey: this.getFirefliesApiKey(),
-      slackWebhookUrl: this.store.get ? this.store.get('slackWebhookUrl') || '' : this.store.store?.slackWebhookUrl || '',
-      notionIntegrationToken: this.getNotionIntegrationToken(),
-      notionDatabaseId: this.getNotionDatabaseId(),
-      notionTodoIntegrationToken: this.getNotionTodoIntegrationToken(),
-      notionTodoDatabaseId: this.getNotionTodoDatabaseId(),
-      coaches: this.ensureCoachesSchema(settings?.coaches),
+      coaches: this.ensureCoachesSchema(base?.coaches),
+      permissionOnboarding: this.getPermissionOnboardingState(),
+      savedSearches: this.getSavedSearches(),
     };
+
+    return settings;
   }
 
   private ensureCoachesSchema(coachesCandidate: unknown): CoachConfig[] {
@@ -156,6 +190,163 @@ export class SettingsService {
     }
 
     return sanitized;
+  }
+
+  private sanitizePermissionOnboardingState(candidate: unknown): PermissionOnboardingState {
+    const fallback: PermissionOnboardingState = {
+      completedAt: null,
+      dismissedAt: null,
+      lastPromptAt: null,
+    };
+
+    if (!candidate || typeof candidate !== 'object') {
+      return fallback;
+    }
+
+    const state = candidate as Record<string, unknown>;
+    return {
+      completedAt: typeof state.completedAt === 'string' ? state.completedAt : null,
+      dismissedAt: typeof state.dismissedAt === 'string' ? state.dismissedAt : null,
+      lastPromptAt: typeof state.lastPromptAt === 'string' ? state.lastPromptAt : null,
+    };
+  }
+
+  private getPermissionOnboardingState(): PermissionOnboardingState {
+    if (this.store.get) {
+      return this.sanitizePermissionOnboardingState(this.store.get('permissionOnboarding'));
+    }
+    return this.sanitizePermissionOnboardingState(this.store.store?.permissionOnboarding);
+  }
+
+  private setPermissionOnboardingState(state: PermissionOnboardingState): void {
+    const sanitized = this.sanitizePermissionOnboardingState(state);
+    if (this.store.set) {
+      this.store.set('permissionOnboarding', sanitized);
+    } else {
+      this.store.store = { ...this.store.store, permissionOnboarding: sanitized };
+    }
+  }
+
+  private sanitizeSearchOptions(candidate: unknown): SearchOptions | null {
+    if (!candidate || typeof candidate !== 'object') {
+      return null;
+    }
+
+    const raw = candidate as Record<string, any>;
+    const query = typeof raw.query === 'string' ? raw.query : '';
+    const limit = typeof raw.limit === 'number' && Number.isFinite(raw.limit) ? raw.limit : undefined;
+
+    let filters: SearchOptions['filters'] | undefined;
+    if (raw.filters && typeof raw.filters === 'object') {
+      const filterRaw = raw.filters as Record<string, any>;
+      const parsed: NonNullable<SearchOptions['filters']> = {};
+
+      if (filterRaw.dateFrom) {
+        parsed.dateFrom = typeof filterRaw.dateFrom === 'string' || filterRaw.dateFrom instanceof Date
+          ? filterRaw.dateFrom
+          : undefined;
+      }
+
+      if (filterRaw.dateTo) {
+        parsed.dateTo = typeof filterRaw.dateTo === 'string' || filterRaw.dateTo instanceof Date
+          ? filterRaw.dateTo
+          : undefined;
+      }
+
+      if (Array.isArray(filterRaw.attendees)) {
+        const attendees = filterRaw.attendees
+          .map((value: unknown) => (typeof value === 'string' ? value.trim() : String(value)))
+          .filter((value: string) => value.length > 0);
+        if (attendees.length > 0) {
+          parsed.attendees = attendees;
+        }
+      }
+
+      if (Array.isArray(filterRaw.status)) {
+        const statuses = filterRaw.status
+          .filter((value: unknown): value is Meeting['status'] => typeof value === 'string' && value.length > 0);
+        if (statuses.length > 0) {
+          parsed.status = statuses;
+        }
+      }
+
+      if (Array.isArray(filterRaw.platforms)) {
+        const platforms = filterRaw.platforms
+          .map((value: unknown) => (typeof value === 'string' ? value.trim() : String(value)))
+          .filter((value: string) => value.length > 0);
+        if (platforms.length > 0) {
+          parsed.platforms = platforms;
+        }
+      }
+
+      if (typeof filterRaw.hasPrep === 'boolean') {
+        parsed.hasPrep = filterRaw.hasPrep;
+      }
+
+      if (typeof filterRaw.hasTranscript === 'boolean') {
+        parsed.hasTranscript = filterRaw.hasTranscript;
+      }
+
+      if (Object.keys(parsed).length > 0) {
+        filters = parsed;
+      }
+    }
+
+    return {
+      query,
+      filters,
+      limit,
+    };
+  }
+
+  private sanitizeSavedSearches(candidate: unknown): SavedSearchDefinition[] {
+    if (!Array.isArray(candidate)) {
+      return [];
+    }
+
+    const sanitized: SavedSearchDefinition[] = [];
+    for (const entry of candidate) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+
+      const record = entry as Record<string, any>;
+      const id = typeof record.id === 'string' && record.id.trim() ? record.id.trim() : null;
+      const name = typeof record.name === 'string' ? record.name.trim() : '';
+      const options = this.sanitizeSearchOptions(record.options);
+      const createdAt = typeof record.createdAt === 'string' ? record.createdAt : new Date().toISOString();
+      const updatedAt = typeof record.updatedAt === 'string' ? record.updatedAt : undefined;
+
+      if (!id || !name || !options) {
+        continue;
+      }
+
+      sanitized.push({
+        id,
+        name,
+        options,
+        createdAt,
+        updatedAt,
+      });
+    }
+
+    return sanitized;
+  }
+
+  private getSavedSearches(): SavedSearchDefinition[] {
+    if (this.store.get) {
+      return this.sanitizeSavedSearches(this.store.get('savedSearches'));
+    }
+    return this.sanitizeSavedSearches(this.store.store?.savedSearches);
+  }
+
+  private setSavedSearches(saves: SavedSearchDefinition[]): void {
+    const sanitized = this.sanitizeSavedSearches(saves);
+    if (this.store.set) {
+      this.store.set('savedSearches', sanitized);
+    } else {
+      this.store.store = { ...this.store.store, savedSearches: sanitized };
+    }
   }
 
   private async syncCustomCoachesFromPrompts(): Promise<void> {
@@ -261,11 +452,21 @@ export class SettingsService {
       notionTodoDatabaseId: _notionTodoDatabaseId,
       firefliesApiKey: _firefliesApiKey,
       coaches,
+      permissionOnboarding,
+      savedSearches,
       ...settingsToStore
     } = updates;
     const settingsWithCoaches = coaches
       ? { ...settingsToStore, coaches: this.ensureCoachesSchema(coaches).map(coach => ({ ...coach, variables: this.sanitizeCoachVariables(coach.variables) })) }
       : settingsToStore;
+
+    if (permissionOnboarding !== undefined) {
+      this.setPermissionOnboardingState(permissionOnboarding);
+    }
+
+    if (savedSearches !== undefined) {
+      this.setSavedSearches(Array.isArray(savedSearches) ? savedSearches : []);
+    }
 
     // If storage path changed, create new directory
     if (updates.storagePath && updates.storagePath !== currentSettings.storagePath) {

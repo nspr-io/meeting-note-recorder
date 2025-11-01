@@ -1,29 +1,5 @@
 import Fuse, { IFuseOptions, FuseResult } from 'fuse.js';
-import { Meeting } from '../../shared/types';
-
-export interface SearchOptions {
-  query: string;
-  filters?: {
-    dateFrom?: Date;
-    dateTo?: Date;
-    attendees?: string[];
-    status?: Meeting['status'][];
-    platforms?: string[];
-  };
-  limit?: number;
-}
-
-export interface SearchResult {
-  meeting: Meeting;
-  score: number;
-  matches: SearchMatch[];
-}
-
-export interface SearchMatch {
-  field: string;
-  value: string;
-  indices: [number, number][];
-}
+import { Meeting, SearchOptions, SearchResult, SearchMatch } from '../../shared/types';
 
 export class SearchService {
   private fuse: Fuse<Meeting> | null = null;
@@ -89,12 +65,14 @@ export class SearchService {
       matches: this.extractMatches(result.matches || []),
     }));
 
-    // Apply filters
     if (options.filters) {
       results = this.applyFilters(results, options.filters);
     }
 
-    // Apply limit
+    if (options.mostRecent) {
+      results.sort((a, b) => this.getMeetingTimestamp(b.meeting) - this.getMeetingTimestamp(a.meeting));
+    }
+
     if (options.limit) {
       results = results.slice(0, options.limit);
     }
@@ -109,19 +87,12 @@ export class SearchService {
       matches: [],
     }));
 
-    // Apply filters
     if (options.filters) {
       results = this.applyFilters(results, options.filters);
     }
 
-    // Sort by date (newest first)
-    results.sort((a, b) => {
-      const dateA = new Date(a.meeting.date).getTime();
-      const dateB = new Date(b.meeting.date).getTime();
-      return dateB - dateA;
-    });
+    results.sort((a, b) => this.getMeetingTimestamp(b.meeting) - this.getMeetingTimestamp(a.meeting));
 
-    // Apply limit
     if (options.limit) {
       results = results.slice(0, options.limit);
     }
@@ -177,6 +148,20 @@ export class SearchService {
           )
         );
         if (!hasMatchingAttendee) {
+          return false;
+        }
+      }
+
+      if (typeof filters.hasPrep === 'boolean') {
+        const hasPrep = typeof meeting.notes === 'string' && meeting.notes.includes('<!-- PREP_NOTES -->');
+        if (filters.hasPrep !== hasPrep) {
+          return false;
+        }
+      }
+
+      if (typeof filters.hasTranscript === 'boolean') {
+        const hasTranscript = typeof meeting.transcript === 'string' && meeting.transcript.trim().length > 0;
+        if (filters.hasTranscript !== hasTranscript) {
           return false;
         }
       }
@@ -252,9 +237,7 @@ export class SearchService {
   public getRecentMeetings(limit: number = 10): Meeting[] {
     return [...this.meetings]
       .sort((a, b) => {
-        const dateA = new Date(a.date).getTime();
-        const dateB = new Date(b.date).getTime();
-        return dateB - dateA;
+        return this.getMeetingTimestamp(b) - this.getMeetingTimestamp(a);
       })
       .slice(0, limit);
   }
@@ -281,5 +264,19 @@ export class SearchService {
     });
 
     return stats;
+  }
+
+  private getMeetingTimestamp(meeting: Meeting): number {
+    const candidates = [meeting.date, meeting.updatedAt, meeting.createdAt];
+    for (const value of candidates) {
+      if (!value) {
+        continue;
+      }
+      const timestamp = new Date(value).getTime();
+      if (!Number.isNaN(timestamp)) {
+        return timestamp;
+      }
+    }
+    return 0;
   }
 }

@@ -1,7 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IpcChannels, Meeting, AppSettings, UserProfile, SearchOptions, CoachingType, NotionShareMode, CoachConfig } from '../shared/types';
+import { IpcChannels, Meeting, AppSettings, UserProfile, SearchOptions, CoachingType, NotionShareMode, CoachConfig, PermissionType } from '../shared/types';
 
 const api = {
+  platform: process.platform,
+  isMac: process.platform === 'darwin',
+  versions: process.versions,
   // Settings
   getSettings: () => ipcRenderer.invoke(IpcChannels.GET_SETTINGS),
   updateSettings: (settings: Partial<AppSettings>) =>
@@ -22,6 +25,12 @@ const api = {
     ipcRenderer.invoke(IpcChannels.UPDATE_MEETING, id, updates),
   deleteMeeting: (id: string) => 
     ipcRenderer.invoke(IpcChannels.DELETE_MEETING, id),
+  getMeetingChatHistory: (meetingId: string) =>
+    ipcRenderer.invoke(IpcChannels.GET_CHAT_HISTORY, meetingId),
+  sendMeetingChatMessage: (data: { meetingId: string; message: string }) =>
+    ipcRenderer.invoke(IpcChannels.SEND_CHAT_MESSAGE, data),
+  clearMeetingChatHistory: (meetingId: string) =>
+    ipcRenderer.invoke(IpcChannels.CLEAR_CHAT_HISTORY, meetingId),
   
   // Recording
   startRecording: (meetingId: string) =>
@@ -122,6 +131,8 @@ const api = {
     ipcRenderer.invoke('check-permissions'),
   requestPermissions: () =>
     ipcRenderer.invoke('request-permissions'),
+  openPermissionSettings: (permission: PermissionType) =>
+    ipcRenderer.invoke('open-permission-settings', permission),
   
   // Event listeners - Fixed to properly handle listener removal
   on: (channel: string, callback: Function) => {
@@ -165,6 +176,68 @@ const api = {
     }
   },
 };
+
+const forwardRendererLog = (level: 'log' | 'warn' | 'error', message: string, context?: unknown) => {
+  try {
+    ipcRenderer.send(IpcChannels.RENDERER_LOG, {
+      level,
+      message,
+      context,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn('[PRELOAD] Failed to forward renderer log', error);
+  }
+};
+
+const forwardRendererError = (type: string, error: unknown, context?: unknown) => {
+  try {
+    ipcRenderer.send(IpcChannels.RENDERER_ERROR, {
+      type,
+      error: error instanceof Error ? { message: error.message, stack: error.stack } : error,
+      context,
+      timestamp: new Date().toISOString()
+    });
+  } catch (forwardError) {
+    // eslint-disable-next-line no-console
+    console.warn('[PRELOAD] Failed to forward renderer error', forwardError);
+  }
+};
+
+window.addEventListener('error', (event) => {
+  forwardRendererError('window-error', {
+    message: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno
+  });
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  forwardRendererError('unhandled-rejection', event.reason);
+});
+
+const consoleProxy = console as unknown as Record<string, (...args: unknown[]) => void>;
+['log', 'warn', 'error'].forEach((level) => {
+  const original = consoleProxy[level]?.bind(console) ?? (() => {});
+  consoleProxy[level] = (...args: unknown[]) => {
+    forwardRendererLog(level as 'log' | 'warn' | 'error', args.map((arg) => {
+      if (arg instanceof Error) {
+        return `${arg.message}\n${arg.stack || ''}`;
+      }
+      if (typeof arg === 'object') {
+        try {
+          return JSON.stringify(arg);
+        } catch (jsonError) {
+          return String(arg);
+        }
+      }
+      return String(arg);
+    }).join(' '));
+    original(...args);
+  };
+});
 
 contextBridge.exposeInMainWorld('electronAPI', api);
 

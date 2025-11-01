@@ -1,8 +1,7 @@
 import { BaseAnthropicService } from './BaseAnthropicService';
 import { PromptService } from './PromptService';
 import { Meeting, UserProfile } from '../../shared/types';
-
-const MAX_TRANSCRIPT_CHARS = 8000;
+import { STANDARD_MEETING_TAGS } from '../../shared/constants/meetingTags';
 
 export class MeetingTaggingService extends BaseAnthropicService {
   private promptService: PromptService | null;
@@ -59,7 +58,7 @@ export class MeetingTaggingService extends BaseAnthropicService {
 
   private async getSystemPrompt(meeting: Meeting, userProfile?: UserProfile | null): Promise<string> {
     if (!this.promptService) {
-      return 'You are an assistant that classifies meetings. Return a concise JSON payload with a "tags" array describing the meeting type (e.g., "sales", "existing-client", "internal", "support"). Use lowercase kebab-case tags. Limit to 3 tags. Never include explanations.';
+      return `You are an assistant that classifies meetings. Prioritize using the following standard tags when applicable: ${STANDARD_MEETING_TAGS.join(', ')}. You may introduce new lowercase kebab-case tags when necessary. Return a concise JSON payload with a "tags" array describing the meeting type. Limit to 3 tags. Never include explanations.`;
     }
 
     try {
@@ -72,7 +71,7 @@ export class MeetingTaggingService extends BaseAnthropicService {
         meetingId: meeting.id,
         error: error instanceof Error ? error.message : error
       });
-      return 'You are an assistant that classifies meetings. Return a concise JSON payload with a "tags" array describing the meeting type (e.g., "sales", "existing-client", "internal", "support"). Use lowercase kebab-case tags. Limit to 3 tags. Never include explanations.';
+      return `You are an assistant that classifies meetings. Prioritize using the following standard tags when applicable: ${STANDARD_MEETING_TAGS.join(', ')}. You may introduce new lowercase kebab-case tags when necessary. Return a concise JSON payload with a "tags" array describing the meeting type. Limit to 3 tags. Never include explanations.`;
     }
   }
 
@@ -82,9 +81,6 @@ export class MeetingTaggingService extends BaseAnthropicService {
       : [];
 
     const transcript = typeof meeting.transcript === 'string' ? meeting.transcript : '';
-    const truncatedTranscript = transcript.length > MAX_TRANSCRIPT_CHARS
-      ? `${transcript.slice(0, MAX_TRANSCRIPT_CHARS)}\n[trimmed]`
-      : transcript;
 
     const notes = typeof meeting.notes === 'string' ? meeting.notes : '';
 
@@ -101,13 +97,15 @@ Status: ${meeting.status}
 Meeting URL: ${meeting.meetingUrl || 'N/A'}
 Existing Tags: ${(Array.isArray(meeting.tags) && meeting.tags.length > 0) ? meeting.tags.join(', ') : 'None'}
 
+Suggested Tags: ${STANDARD_MEETING_TAGS.join(', ')}
+
 ${profileSummary}
 
 Notes:
 ${notes || 'None'}
 
 Transcript:
-${truncatedTranscript || 'No transcript available'}
+${transcript || 'No transcript available'}
 
 Return JSON: {"tags": ["tag-one", "tag-two"]}`;
   }
@@ -127,8 +125,8 @@ Return JSON: {"tags": ["tag-one", "tag-two"]}`;
 
     return payload.tags
       .filter((tag: unknown): tag is string => typeof tag === 'string')
-      .map((tag) => tag.trim().toLowerCase())
-      .filter((tag) => tag.length > 0);
+      .map((tag: string) => tag.trim().toLowerCase())
+      .filter((tag: string) => tag.length > 0);
   }
 
   private parseJsonBlock(text: string): any | null {

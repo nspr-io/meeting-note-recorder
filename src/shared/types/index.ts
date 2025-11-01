@@ -5,6 +5,20 @@ export interface Attendee {
 
 export type NotionShareMode = 'full' | 'insights';
 
+export type PermissionType = 'screen-capture' | 'microphone' | 'accessibility';
+
+export interface PermissionStatus {
+  'screen-capture': boolean;
+  microphone: boolean;
+  accessibility: boolean;
+}
+
+export interface PermissionOnboardingState {
+  completedAt?: string | null;
+  dismissedAt?: string | null;
+  lastPromptAt?: string | null;
+}
+
 export interface Meeting {
   id: string;
   title: string;
@@ -63,6 +77,15 @@ export interface TranscriptChunk {
   persisted?: boolean;
   hash?: string;
   meetingId?: string;
+}
+
+export type MeetingChatRole = 'user' | 'assistant';
+
+export interface MeetingChatMessage {
+  id: string;
+  role: MeetingChatRole;
+  content: string;
+  createdAt: string;
 }
 
 export interface UserProfile {
@@ -131,6 +154,8 @@ export interface AppSettings {
   notionTodoIntegrationToken?: string;
   notionTodoDatabaseId?: string;
   coaches: CoachConfig[];
+  permissionOnboarding?: PermissionOnboardingState;
+  savedSearches?: SavedSearchDefinition[];
 }
 
 export interface ActionItemSyncStatus {
@@ -239,24 +264,42 @@ export enum IpcChannels {
   COACHING_FEEDBACK = 'coaching-feedback',
   COACHING_ERROR = 'coaching-error',
   COACH_WINDOW_STATUS = 'coach-window-status',
+  RENDERER_LOG = 'renderer-log',
+  RENDERER_ERROR = 'renderer-error',
+
+  // Meeting chat
+  GET_CHAT_HISTORY = 'get-chat-history',
+  SEND_CHAT_MESSAGE = 'send-chat-message',
+  CLEAR_CHAT_HISTORY = 'clear-chat-history',
 }
 
 export interface SearchOptions {
   query: string;
   filters?: {
-    dateFrom?: Date;
-    dateTo?: Date;
+    dateFrom?: Date | string;
+    dateTo?: Date | string;
     attendees?: string[];
     status?: Meeting['status'][];
     platforms?: string[];
+    hasPrep?: boolean;
+    hasTranscript?: boolean;
   };
   limit?: number;
+  mostRecent?: boolean;
 }
 
 export interface SearchResult {
   meeting: Meeting;
   score: number;
   matches: SearchMatch[];
+}
+
+export interface SavedSearchDefinition {
+  id: string;
+  name: string;
+  options: SearchOptions;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface SearchMatch {

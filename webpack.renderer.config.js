@@ -34,6 +34,16 @@ module.exports = {
       directory: path.join(__dirname, 'dist/renderer'),
     },
     port: 9000,
+    watchFiles: {
+      options: {
+        usePolling: true,
+        interval: 300,
+      },
+    },
+  },
+  watchOptions: {
+    poll: 300,
+    followSymlinks: true,
   },
   // Memory optimizations for dev mode
   cache: {

@@ -1,7 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import styled from '@emotion/styled';
-import { SearchOptions } from '../../shared/types';
-import { debounce } from 'lodash';
 
 const SearchContainer = styled.div`
   position: relative;
@@ -136,57 +134,47 @@ const HistoryItem = styled.div`
   }
 `;
 
+export type SearchQuickFilters = {
+  status: string[];
+  platforms: string[];
+};
+
 interface SearchBarProps {
-  onSearch: (options: SearchOptions) => void;
+  query: string;
+  onQueryChange: (value: string) => void;
+  quickFilters: SearchQuickFilters;
+  onQuickFiltersChange: (filters: SearchQuickFilters) => void;
   onClear?: () => void;
+  onRequestAdvanced?: () => void;
+  advancedActive?: boolean;
   searchHistory?: string[];
+  onHistorySelect?: (query: string) => void;
   placeholder?: string;
 }
 
-export default function SearchBar({ onSearch, onClear, searchHistory = [], placeholder = "Search meetings, transcripts, notes..." }: SearchBarProps) {
-  const [searchQuery, setSearchQuery] = useState('');
+export default function SearchBar({
+  query,
+  onQueryChange,
+  quickFilters,
+  onQuickFiltersChange,
+  onClear,
+  onRequestAdvanced,
+  advancedActive,
+  searchHistory = [],
+  onHistorySelect,
+  placeholder = 'Search meetings, transcripts, notes...'
+}: SearchBarProps) {
   const [showHistory, setShowHistory] = useState(false);
-  const [activeFilters, setActiveFilters] = useState({
-    status: [] as string[],
-    platforms: [] as string[],
-  });
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Create debounced search function - memoized properly
-  const debouncedSearch = useMemo(
-    () => debounce((query: string, filters: typeof activeFilters) => {
-      const options: SearchOptions = {
-        query,
-        filters: {
-          status: filters.status.length > 0 ? filters.status as any : undefined,
-          platforms: filters.platforms.length > 0 ? filters.platforms : undefined,
-        },
-      };
-      onSearch(options);
-    }, 300),
-    [onSearch]
-  );
-
   useEffect(() => {
-    // Only search if there's a query or active filters
-    if (searchQuery || activeFilters.status.length > 0 || activeFilters.platforms.length > 0) {
-      debouncedSearch(searchQuery, activeFilters);
-    }
-
-    // Cleanup function to cancel pending debounced calls
-    return () => {
-      debouncedSearch.cancel();
-    };
-  }, [searchQuery, activeFilters, debouncedSearch]);
-
-  // Setup keyboard shortcut (Cmd+K or Ctrl+K)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'k') {
+        event.preventDefault();
         searchInputRef.current?.focus();
       }
-      if (e.key === 'Escape' && document.activeElement === searchInputRef.current) {
+
+      if (event.key === 'Escape' && document.activeElement === searchInputRef.current) {
         searchInputRef.current?.blur();
         setShowHistory(false);
       }
@@ -196,26 +184,31 @@ export default function SearchBar({ onSearch, onClear, searchHistory = [], place
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const handleClear = () => {
-    setSearchQuery('');
-    setActiveFilters({ status: [], platforms: [] });
+  const handleClear = useCallback(() => {
+    onQueryChange('');
     onClear?.();
-  };
-
-  const handleHistoryClick = (query: string) => {
-    setSearchQuery(query);
     setShowHistory(false);
     searchInputRef.current?.focus();
-  };
+  }, [onClear, onQueryChange]);
 
-  const toggleFilter = (type: 'status' | 'platforms', value: string) => {
-    setActiveFilters(prev => ({
-      ...prev,
-      [type]: prev[type].includes(value)
-        ? prev[type].filter(v => v !== value)
-        : [...prev[type], value],
-    }));
-  };
+  const handleHistoryClick = useCallback((value: string) => {
+    onQueryChange(value);
+    onHistorySelect?.(value);
+    setShowHistory(false);
+    searchInputRef.current?.focus();
+  }, [onHistorySelect, onQueryChange]);
+
+  const toggleFilter = useCallback((type: keyof SearchQuickFilters, value: string) => {
+    const currentValues = quickFilters[type];
+    const nextValues = currentValues.includes(value)
+      ? currentValues.filter(item => item !== value)
+      : [...currentValues, value];
+
+    onQuickFiltersChange({
+      ...quickFilters,
+      [type]: nextValues,
+    });
+  }, [onQuickFiltersChange, quickFilters]);
 
   return (
     <SearchContainer>
@@ -224,13 +217,13 @@ export default function SearchBar({ onSearch, onClear, searchHistory = [], place
         <SearchInput
           ref={searchInputRef}
           type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
           onFocus={() => setShowHistory(true)}
           onBlur={() => setTimeout(() => setShowHistory(false), 200)}
           placeholder={placeholder}
         />
-        {searchQuery && (
+        {query && (
           <ClearButton onClick={handleClear}>
             ✕
           </ClearButton>
@@ -240,49 +233,54 @@ export default function SearchBar({ onSearch, onClear, searchHistory = [], place
 
       <FilterBar>
         <FilterChip
-          active={activeFilters.status.includes('completed')}
+          active={quickFilters.status.includes('completed')}
           onClick={() => toggleFilter('status', 'completed')}
         >
           ✅ Completed
         </FilterChip>
         <FilterChip
-          active={activeFilters.status.includes('recording')}
+          active={quickFilters.status.includes('recording')}
           onClick={() => toggleFilter('status', 'recording')}
         >
           🔴 Recording
         </FilterChip>
         <FilterChip
-          active={activeFilters.status.includes('scheduled')}
+          active={quickFilters.status.includes('scheduled')}
           onClick={() => toggleFilter('status', 'scheduled')}
         >
           📅 Scheduled
         </FilterChip>
         <FilterChip
-          active={activeFilters.platforms.includes('zoom')}
+          active={quickFilters.platforms.includes('zoom')}
           onClick={() => toggleFilter('platforms', 'zoom')}
         >
           Zoom
         </FilterChip>
         <FilterChip
-          active={activeFilters.platforms.includes('googlemeet')}
+          active={quickFilters.platforms.includes('googlemeet')}
           onClick={() => toggleFilter('platforms', 'googlemeet')}
         >
           Google Meet
         </FilterChip>
         <FilterChip
-          active={activeFilters.platforms.includes('teams')}
+          active={quickFilters.platforms.includes('teams')}
           onClick={() => toggleFilter('platforms', 'teams')}
         >
           Teams
         </FilterChip>
+        {onRequestAdvanced && (
+          <FilterChip active={!!advancedActive} onClick={onRequestAdvanced}>
+            ⚙️ Advanced
+          </FilterChip>
+        )}
       </FilterBar>
 
-      {showHistory && searchHistory.length > 0 && !searchQuery && (
+      {showHistory && searchHistory.length > 0 && !query && (
         <SearchHistory>
-          {searchHistory.map((query, index) => (
-            <HistoryItem key={index} onClick={() => handleHistoryClick(query)}>
+          {searchHistory.map((value, index) => (
+            <HistoryItem key={index} onClick={() => handleHistoryClick(value)}>
               <SearchIcon>🔍</SearchIcon>
-              {query}
+              {value}
               <span>recent</span>
             </HistoryItem>
           ))}

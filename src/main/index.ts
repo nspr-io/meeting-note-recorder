@@ -16,8 +16,9 @@ import { PromptService } from './services/PromptService';
 import { RealtimeCoachingService } from './services/RealtimeCoachingService';
 import { NotionTodoService } from './services/NotionTodoService';
 import FirefliesTranscriptService from './services/FirefliesTranscriptService';
+import { MeetingChatService } from './services/MeetingChatService';
 import { ServiceError } from './services/ServiceError';
-import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode, ActionItemSyncStatus, CoachConfig, CoachWindowStatus } from '../shared/types';
+import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode, ActionItemSyncStatus, CoachConfig, CoachWindowStatus, PermissionType } from '../shared/types';
 import { generateNotificationHTML, NotificationType } from './utils/notificationTemplate';
 
 const logger = getLogger();
@@ -71,9 +72,28 @@ let promptService: PromptService | null = null;
 let coachingService: RealtimeCoachingService | null = null;
 let notionTodoService: NotionTodoService;
 let firefliesTranscriptService: FirefliesTranscriptService | null = null;
+let meetingChatService: MeetingChatService | null = null;
 let currentRecordingMeetingId: string | null = null;
 let autoRecordNextMeeting = false;
 const autoInsightsInFlight = new Set<string>();
+
+let rendererDiagnosticsSetup = false;
+
+function setupRendererDiagnostics() {
+  if (rendererDiagnosticsSetup) {
+    return;
+  }
+
+  rendererDiagnosticsSetup = true;
+
+  ipcMain.on(IpcChannels.RENDERER_LOG, (_event, payload) => {
+    logger.info('[RENDERER-LOG]', payload);
+  });
+
+  ipcMain.on(IpcChannels.RENDERER_ERROR, (_event, payload) => {
+    logger.error('[RENDERER-ERROR]', payload);
+  });
+}
 
 // UI Notification Helper Functions
 function notifyUI(channel: IpcChannels, data?: any) {
@@ -270,6 +290,11 @@ function createApplicationMenu() {
 }
 
 function createWindow() {
+  logger.info('[MAIN-WINDOW] Creating main BrowserWindow', {
+    timestamp: new Date().toISOString(),
+    env: process.env.NODE_ENV,
+  });
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -288,37 +313,110 @@ function createWindow() {
   });
 
   if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL('http://localhost:9000');
-    // mainWindow.webContents.openDevTools(); // Commented out - open manually with Cmd+Option+I if needed
+    const devUrl = 'http://localhost:9000';
+    logger.info('[MAIN-WINDOW] Loading development URL', { url: devUrl });
+    mainWindow.loadURL(devUrl).catch((error) => {
+      logger.error('[MAIN-WINDOW] Failed to load development URL', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   } else {
     const indexPath = path.join(__dirname, '../renderer/index.html');
-    console.log('Loading index.html from:', indexPath);
-    mainWindow.loadFile(indexPath).catch((err) => {
-      console.error('Failed to load index.html:', err);
+    logger.info('[MAIN-WINDOW] Loading production index file', { indexPath });
+    mainWindow.loadFile(indexPath).catch((error) => {
+      logger.error('[MAIN-WINDOW] Failed to load production index file', {
+        indexPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
   }
 
-  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-    console.error('Failed to load:', errorCode, errorDescription);
+  const contents = mainWindow.webContents;
+
+  contents.on('did-start-loading', () => {
+    logger.info('[MAIN-WINDOW] did-start-loading');
   });
 
-  mainWindow.webContents.on('dom-ready', () => {
-    console.log('DOM is ready');
+  contents.on('did-finish-load', () => {
+    logger.info('[MAIN-WINDOW] did-finish-load', {
+      url: contents.getURL(),
+    });
   });
 
-  mainWindow.on('close', (e) => {
+  contents.on('dom-ready', () => {
+    logger.info('[MAIN-WINDOW] dom-ready');
+  });
+
+  contents.on('did-frame-finish-load', (_event, isMainFrame) => {
+    logger.info('[MAIN-WINDOW] did-frame-finish-load', {
+      isMainFrame,
+    });
+  });
+
+  contents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    logger.error('[MAIN-WINDOW] did-fail-load', {
+      errorCode,
+      errorDescription,
+      validatedURL,
+      isMainFrame,
+    });
+  });
+
+  contents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame, frameProcessId, frameRoutingId) => {
+    logger.info('[MAIN-WINDOW] did-start-navigation', {
+      url,
+      isInPlace,
+      isMainFrame,
+      frameProcessId,
+      frameRoutingId,
+    });
+  });
+
+  contents.on('render-process-gone', (_event, details) => {
+    logger.error('[MAIN-WINDOW] render-process-gone', details);
+  });
+
+  contents.on('preload-error', (_event, preloadPath, error) => {
+    logger.error('[MAIN-WINDOW] preload-error', {
+      preloadPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
+  contents.on('console-message', (_event, level, message, line, sourceId) => {
+    logger.info('[RENDERER-CONSOLE]', {
+      level,
+      message,
+      line,
+      sourceId,
+    });
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    logger.info('[MAIN-WINDOW] ready-to-show', {
+      windowId: mainWindow?.id,
+    });
+  });
+
+  mainWindow.on('unresponsive', () => {
+    logger.warn('[MAIN-WINDOW] Main window became unresponsive');
+  });
+
+  mainWindow.on('responsive', () => {
+    logger.info('[MAIN-WINDOW] Main window responsive again');
+  });
+
+  mainWindow.on('close', () => {
     logger.error('[MAIN-WINDOW] Main window "close" event fired!', {
       timestamp: new Date().toISOString(),
       stack: new Error().stack
     });
-    console.error('[MAIN-WINDOW] Main window CLOSE event - this should not happen during normal operation!');
   });
 
   mainWindow.on('closed', () => {
     logger.error('[MAIN-WINDOW] Main window "closed" event fired!', {
       timestamp: new Date().toISOString()
     });
-    console.error('[MAIN-WINDOW] Main window CLOSED event');
     mainWindow = null;
   });
 
@@ -327,14 +425,12 @@ function createWindow() {
       timestamp: new Date().toISOString(),
       stack: new Error().stack
     });
-    console.warn('[MAIN-WINDOW] Main window HIDE event');
   });
 
   mainWindow.on('minimize', () => {
     logger.info('[MAIN-WINDOW] Main window "minimize" event fired!', {
       timestamp: new Date().toISOString()
     });
-    console.log('[MAIN-WINDOW] Main window MINIMIZE event');
   });
 }
 
@@ -415,6 +511,12 @@ function setupIpcHandlers() {
       firefliesTranscriptService.setApiKey(updated.firefliesApiKey);
     } else {
       firefliesTranscriptService = new FirefliesTranscriptService(updated.firefliesApiKey);
+    }
+    if (coachingService) {
+      coachingService.initialize(updated.anthropicApiKey);
+    }
+    if (meetingChatService) {
+      meetingChatService.initialize(updated.anthropicApiKey);
     }
     notifySettingsUpdated(updated);
     return { success: true };
@@ -540,6 +642,61 @@ function setupIpcHandlers() {
       sampleTitles: recentMeetings.slice(0, 5).map(m => ({ id: m.id, title: m.title }))
     });
     return recentMeetings;
+  });
+
+  ipcMain.handle(IpcChannels.GET_CHAT_HISTORY, async (_event, meetingId: string) => {
+    if (!meetingChatService) {
+      return { success: false, error: 'Meeting chat service not initialized' };
+    }
+
+    try {
+      const history = await meetingChatService.getHistory(meetingId);
+      return { success: true, history };
+    } catch (error: any) {
+      logger.error('[CHAT] Failed to load chat history', {
+        meetingId,
+        error: error instanceof Error ? error.message : error
+      });
+      return { success: false, error: error?.message || 'Failed to load chat history' };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.SEND_CHAT_MESSAGE, async (_event, payload: { meetingId: string; message: string }) => {
+    if (!meetingChatService) {
+      return { success: false, error: 'Meeting chat service not initialized' };
+    }
+
+    if (!meetingChatService.isAvailable()) {
+      return { success: false, error: 'Meeting chat service not available. Please check your Anthropic API key in settings.' };
+    }
+
+    try {
+      const { userMessage, assistantMessage, history } = await meetingChatService.sendMessage(payload.meetingId, payload.message);
+      return { success: true, userMessage, assistantMessage, history };
+    } catch (error: any) {
+      logger.error('[CHAT] Failed to send chat message', {
+        meetingId: payload?.meetingId,
+        error: error instanceof Error ? error.message : error
+      });
+      return { success: false, error: error?.message || 'Failed to send chat message' };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.CLEAR_CHAT_HISTORY, async (_event, meetingId: string) => {
+    if (!meetingChatService) {
+      return { success: false, error: 'Meeting chat service not initialized' };
+    }
+
+    try {
+      await meetingChatService.clearHistory(meetingId);
+      return { success: true };
+    } catch (error: any) {
+      logger.error('[CHAT] Failed to clear chat history', {
+        meetingId,
+        error: error instanceof Error ? error.message : error
+      });
+      return { success: false, error: error?.message || 'Failed to clear chat history' };
+    }
   });
 
   ipcMain.handle(IpcChannels.REFRESH_MEETING, async (_, meetingId) => {
@@ -1476,6 +1633,16 @@ function setupIpcHandlers() {
     return { success: true };
   });
 
+  ipcMain.handle('open-permission-settings', async (_event, permission: PermissionType) => {
+    try {
+      permissionService.openPermissionSettings(permission);
+      return { success: true };
+    } catch (error) {
+      logger.error('[IPC] Failed to open permission settings', { permission, error });
+      return { success: false };
+    }
+  });
+
   // Search handlers
   ipcMain.handle(IpcChannels.SEARCH_MEETINGS, async (_, options: SearchOptions) => {
     const results = searchService.search(options);
@@ -1624,6 +1791,52 @@ async function findMatchingScheduledMeeting(detectedTitle?: string): Promise<Mee
 // Store active notifications to prevent garbage collection
 const activeNotifications = new Map<string, Notification | BrowserWindow>();
 
+async function suppressAppFocusWhileInactive(callback: () => void | Promise<void>): Promise<void> {
+  if (process.platform !== 'darwin') {
+    await callback();
+    return;
+  }
+
+  const candidateWindows = [mainWindow, coachWindow].filter((win): win is BrowserWindow => !!win && !win.isDestroyed());
+  const windowsToSuppress = candidateWindows.filter((win) => !win.isFocused());
+
+  if (windowsToSuppress.length === 0) {
+    await callback();
+    return;
+  }
+
+  windowsToSuppress.forEach((win) => {
+    try {
+      win.setFocusable(false);
+    } catch (error) {
+      logger.warn('[NOTIFICATION] Failed to set window focusable=false during suppression', {
+        windowId: win.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  try {
+    await callback();
+  } finally {
+    setTimeout(() => {
+      windowsToSuppress.forEach((win) => {
+        if (win.isDestroyed()) {
+          return;
+        }
+        try {
+          win.setFocusable(true);
+        } catch (error) {
+          logger.warn('[NOTIFICATION] Failed to restore window focusable state after suppression', {
+            windowId: win.id,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      });
+    }, 250);
+  }
+}
+
 // Helper function to create custom notification windows
 function createCustomNotification(config: {
   title: string;
@@ -1724,11 +1937,38 @@ function createCustomNotification(config: {
       });
     });
 
-  // Auto-close timer
-  const autoCloseTimer = setTimeout(() => {
-    if (!notificationWindow.isDestroyed()) {
-      notificationWindow.close();
+  let autoCloseTimer: NodeJS.Timeout | null = null;
+
+  const closeNotificationWindow = async (suppressFocus: boolean) => {
+    if (autoCloseTimer) {
+      clearTimeout(autoCloseTimer);
+      autoCloseTimer = null;
     }
+
+    if (notificationWindow.isDestroyed()) {
+      return;
+    }
+
+    const closeAction = () => {
+      if (!notificationWindow.isDestroyed()) {
+        notificationWindow.close();
+      }
+    };
+
+    if (suppressFocus) {
+      await suppressAppFocusWhileInactive(closeAction);
+    } else {
+      closeAction();
+    }
+  };
+
+  // Auto-close timer
+  autoCloseTimer = setTimeout(() => {
+    closeNotificationWindow(true).catch((error) => {
+      logger.warn('[NOTIFICATION] Failed to close notification window on auto-close timer', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
   }, autoCloseMs);
 
   // No need to inject JavaScript - it's now embedded in the HTML
@@ -1746,10 +1986,7 @@ function createCustomNotification(config: {
         hasOnClick: !!onClick,
         timestamp: new Date().toISOString()
       });
-      clearTimeout(autoCloseTimer);
-      if (!notificationWindow.isDestroyed()) {
-        notificationWindow.close();
-      }
+      await closeNotificationWindow(false);
       if (onClick) {
         try {
           logger.info('[NOTIFICATION] About to call onClick handler', {
@@ -1770,10 +2007,7 @@ function createCustomNotification(config: {
       logger.info('[NOTIFICATION] Notification closed button clicked', {
         timestamp: new Date().toISOString()
       });
-      clearTimeout(autoCloseTimer);
-      if (!notificationWindow.isDestroyed()) {
-        notificationWindow.close();
-      }
+      await closeNotificationWindow(true);
       if (onClose) {
         try {
           onClose();
@@ -2516,6 +2750,12 @@ async function syncCalendarSilently(daysAhead: number = 7) {
 
 app.whenReady().then(async () => {
   try {
+    logger.info('[APP] Electron app is ready', {
+      platform: process.platform,
+      versions: process.versions,
+      env: process.env.NODE_ENV,
+    });
+
     // Force app to show in dock (macOS)
     if (process.platform === 'darwin' && app.dock) {
       app.dock.show();
@@ -2523,6 +2763,8 @@ app.whenReady().then(async () => {
 
     // Create application menu
     createApplicationMenu();
+
+    setupRendererDiagnostics();
 
     // Create window first so UI appears immediately
     createWindow();
@@ -2586,9 +2828,11 @@ app.whenReady().then(async () => {
   // Initialize coaching service
   logger.info('[MAIN-INIT] Creating RealtimeCoachingService with PromptService:', { hasPromptService: promptService !== null });
   coachingService = new RealtimeCoachingService(promptService, settingsService);
+  meetingChatService = new MeetingChatService(storageService);
   const settings = settingsService.getSettings();
   if (settings.anthropicApiKey) {
     coachingService.initialize(settings.anthropicApiKey);
+    meetingChatService.initialize(settings.anthropicApiKey);
   }
 
   // Setup coaching service event handlers

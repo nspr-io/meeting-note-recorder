@@ -391,10 +391,21 @@ function sanitizeMeetingForFrontmatter(meeting: Meeting): Meeting {
   }
 
   if (Array.isArray(meeting.tags)) {
-    normalized.tags = meeting.tags
+    const cleanedTags = meeting.tags
       .filter((tag) => typeof tag === 'string')
       .map((tag) => tag.trim())
       .filter((tag) => tag.length > 0);
+
+    const seen = new Set<string>();
+    const uniqueTags = cleanedTags.filter((tag) => {
+      if (seen.has(tag)) {
+        return false;
+      }
+      seen.add(tag);
+      return true;
+    });
+
+    normalized.tags = uniqueTags;
     if (normalized.tags.length === 0) {
       delete normalized.tags;
     }

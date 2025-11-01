@@ -12,13 +12,14 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import ElectronStore from 'electron-store';
 
-import { Meeting } from '../shared/types';
-import { SearchService, SearchResult } from '../main/services/SearchService';
+import { Meeting, SearchResult } from '../shared/types';
+import { SearchService } from '../main/services/SearchService';
 import {
   MeetingFileRepository,
   MeetingFileData,
   PrepSectionSaveOptions
 } from '../shared/meetings/MeetingFileRepository';
+import { STANDARD_MEETING_TAGS } from '../shared/constants/meetingTags';
 
 interface IndexedMeeting {
   meeting: Meeting;
@@ -166,7 +167,11 @@ class MeetingNoteRecorderMcpServer {
               },
               has_prep: { type: 'boolean' },
               has_transcript: { type: 'boolean' },
-              limit: { type: 'number' }
+              limit: { type: 'number' },
+              most_recent: {
+                type: 'boolean',
+                description: 'Sort matching results by newest meeting date first.'
+              }
             }
           }
         },
@@ -181,7 +186,11 @@ class MeetingNoteRecorderMcpServer {
                 type: 'array',
                 items: { type: 'string' }
               },
-              date_from: { type: 'string' }
+              date_from: { type: 'string' },
+              include_future: {
+                type: 'boolean',
+                description: 'Set to true to include meetings scheduled in the future.'
+              }
             }
           }
         },
@@ -308,6 +317,7 @@ class MeetingNoteRecorderMcpServer {
       const attendees = Array.isArray(args.attendees) ? args.attendees.map(String) : [];
       const status = Array.isArray(args.status) ? args.status.map(String) : undefined;
       const limit = args.limit ? Number(args.limit) : undefined;
+      const mostRecent = typeof args.most_recent === 'boolean' ? args.most_recent : false;
 
       const dateFrom = parseDateBoundary(args.date_from, { endOfDay: false });
       const dateTo = parseDateBoundary(args.date_to, { endOfDay: true });
@@ -320,7 +330,8 @@ class MeetingNoteRecorderMcpServer {
           dateFrom,
           dateTo
         },
-        limit
+        limit,
+        mostRecent
       });
 
       const filtered = this.applyResultFilters(results, {
@@ -338,7 +349,8 @@ class MeetingNoteRecorderMcpServer {
           date_to: args.date_to || null,
           status,
           has_prep: args.has_prep ?? null,
-          has_transcript: args.has_transcript ?? null
+          has_transcript: args.has_transcript ?? null,
+          most_recent: mostRecent
         }
       });
     },
@@ -347,26 +359,37 @@ class MeetingNoteRecorderMcpServer {
       const limit = args.limit ? Number(args.limit) : undefined;
       const status = Array.isArray(args.status) ? args.status.map(String) : undefined;
       const dateFrom = parseDateBoundary(args.date_from, { endOfDay: false });
+      const includeFuture = Boolean(args.include_future);
 
-      const recent = this.searchService.getRecentMeetings(limit ?? 10);
+      const effectiveLimit = limit ?? 10;
+      const fetchAmount = Math.max(this.indexedMeetings.size, effectiveLimit);
+      const recent = this.searchService.getRecentMeetings(fetchAmount || effectiveLimit);
+      const now = new Date();
+
       const filtered = recent.filter((meeting) => {
         if (status && status.length > 0 && !status.includes(meeting.status)) {
           return false;
         }
 
-        if (dateFrom) {
-          const meetingDate = new Date(meeting.date);
-          if (meetingDate < dateFrom) {
-            return false;
-          }
+        const meetingDate = new Date(meeting.date);
+        const hasValidDate = !Number.isNaN(meetingDate.getTime());
+
+        if (!includeFuture && hasValidDate && meetingDate > now) {
+          return false;
+        }
+
+        if (dateFrom && hasValidDate && meetingDate < dateFrom) {
+          return false;
         }
 
         return true;
       });
 
+      const limited = filtered.slice(0, effectiveLimit);
+
       return this.textResponse({
-        results: filtered.map((meeting) => this.toMeetingSummaryPayload(meeting)),
-        total: filtered.length
+        results: limited.map((meeting) => this.toMeetingSummaryPayload(meeting)),
+        total: limited.length
       });
     },
 
@@ -407,6 +430,7 @@ class MeetingNoteRecorderMcpServer {
           file_name: indexed.fileName,
           has_prep: indexed.hasPrep,
           has_transcript: indexed.hasTranscript,
+          tags: indexed.meeting.tags ?? [],
           prep_notes: includeFullContent ? indexed.sections.prepNotes : indexed.prepSnippet,
           transcript: includeFullContent ? indexed.meeting.transcript : indexed.transcriptSnippet
         }
@@ -453,6 +477,7 @@ class MeetingNoteRecorderMcpServer {
       has_transcript: indexed?.hasTranscript ?? false,
       score: result.score,
       matched_fields: result.matches.map((match) => match.field),
+      tags: result.meeting.tags ?? [],
       prep_snippet: indexed?.prepSnippet,
       calendar_event_id: result.meeting.calendarEventId ?? null
     };
@@ -470,6 +495,7 @@ class MeetingNoteRecorderMcpServer {
       file_name: indexed?.fileName ?? null,
       has_prep: indexed?.hasPrep ?? false,
       has_transcript: indexed?.hasTranscript ?? false,
+      tags: meeting.tags ?? [],
       calendar_event_id: meeting.calendarEventId ?? null,
       meeting_url: meeting.meetingUrl ?? null,
       duration: meeting.duration ?? null
@@ -545,11 +571,20 @@ class MeetingNoteRecorderMcpServer {
   }
 
   private textResponse(payload: unknown): ToolResponsePayload {
+    const enriched: Record<string, unknown> =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? { ...(payload as Record<string, unknown>) }
+        : { data: payload };
+
+    if (!('suggested_tags' in enriched)) {
+      enriched.suggested_tags = STANDARD_MEETING_TAGS;
+    }
+
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(payload, null, 2)
+          text: JSON.stringify(enriched, null, 2)
         }
       ]
     } as any;

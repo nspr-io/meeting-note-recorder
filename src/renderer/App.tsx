@@ -1,7 +1,18 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import styled from '@emotion/styled';
 import Split from 'react-split';
-import { Meeting, AppSettings, IpcChannels, CoachingFeedback, CoachingState } from '../shared/types';
+import {
+  Meeting,
+  AppSettings,
+  IpcChannels,
+  CoachingFeedback,
+  CoachingState,
+  PermissionStatus,
+  PermissionType,
+  SavedSearchDefinition,
+  SearchOptions,
+  PermissionOnboardingState
+} from '../shared/types';
 import MeetingList from './components/MeetingList';
 import MeetingDetailFinal from './components/MeetingDetailFinal';
 import { SettingsProvider, SettingsNavigation, SettingsContent } from './components/Settings';
@@ -9,6 +20,8 @@ import Profile from './components/Profile';
 import Search from './components/Search';
 import { SystemPromptsList, SystemPromptEditor } from './components/SystemPromptsEditor';
 import { ElectronAPI } from '../main/preload';
+import PermissionOnboardingModal from './components/PermissionOnboardingModal';
+import { v4 as uuidv4 } from 'uuid';
 
 declare global {
   interface Window {
@@ -390,6 +403,8 @@ function App() {
   const searchParams = new URLSearchParams(window.location.search);
   const isCoachPopout = searchParams.get('mode') === 'coach-popout';
   const focusMeetingIdFromUrl = searchParams.get('meetingId') || undefined;
+  const platform = window.electronAPI?.platform ?? 'browser';
+  const isMac = window.electronAPI?.isMac ?? platform === 'darwin';
   const [viewMode, setViewMode] = useState<ViewMode>('meetings');
   const [tabMode, setTabMode] = useState<TabMode>('upcoming');
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -410,6 +425,16 @@ function App() {
     feedbackHistory: [],
   });
   const [isCoachWindowOpen, setIsCoachWindowOpen] = useState(false);
+  const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null);
+  const [permissionLoading, setPermissionLoading] = useState(false);
+  const [showPermissionModal, setShowPermissionModal] = useState(false);
+  const allPermissionsGranted = useMemo(
+    () =>
+      permissionStatus
+        ? permissionStatus['screen-capture'] && permissionStatus.microphone && permissionStatus.accessibility
+        : false,
+    [permissionStatus]
+  );
 
   const refreshCoachingState = useCallback(async () => {
     if (typeof window.electronAPI === 'undefined') {
@@ -436,6 +461,45 @@ function App() {
     }
   }, []);
 
+  const refreshPermissionStatus = useCallback(async () => {
+    if (typeof window.electronAPI === 'undefined') {
+      return;
+    }
+
+    try {
+      setPermissionLoading(true);
+      const status = await window.electronAPI.checkPermissions();
+      setPermissionStatus(status);
+    } catch (error) {
+      console.error('[PERMISSIONS] Failed to fetch macOS permission status:', error);
+    } finally {
+      setPermissionLoading(false);
+    }
+  }, []);
+
+  const updatePermissionOnboardingState = useCallback(async (updates: Partial<PermissionOnboardingState>) => {
+    if (typeof window.electronAPI === 'undefined') {
+      return;
+    }
+
+    const current: PermissionOnboardingState = settings?.permissionOnboarding ?? {
+      completedAt: null,
+      dismissedAt: null,
+      lastPromptAt: null,
+    };
+
+    const next: PermissionOnboardingState = {
+      ...current,
+      ...updates,
+    };
+
+    try {
+      await window.electronAPI.updateSettings({ permissionOnboarding: next });
+    } catch (error) {
+      console.error('[PERMISSIONS] Failed to update onboarding state:', error);
+    }
+  }, [settings]);
+
   useEffect(() => {
     if (!selectedMeeting) return;
     const updated = meetings.find(m => m.id === selectedMeeting.id);
@@ -443,6 +507,57 @@ function App() {
       setSelectedMeeting(updated);
     }
   }, [meetings, selectedMeeting]);
+
+  useEffect(() => {
+    if (showPermissionModal) {
+      refreshPermissionStatus();
+    }
+  }, [refreshPermissionStatus, showPermissionModal]);
+
+  useEffect(() => {
+    if (!isMac) {
+      return;
+    }
+
+    if (!settings) {
+      return;
+    }
+
+    const onboarding: PermissionOnboardingState = settings.permissionOnboarding ?? {
+      completedAt: null,
+      dismissedAt: null,
+      lastPromptAt: null,
+    };
+
+    if (allPermissionsGranted) {
+      setShowPermissionModal(false);
+      if (!onboarding.completedAt) {
+        void updatePermissionOnboardingState({
+          completedAt: new Date().toISOString(),
+          dismissedAt: null,
+        });
+      }
+      return;
+    }
+
+    if (onboarding.completedAt) {
+      return;
+    }
+
+    const now = Date.now();
+    const lastPromptTime = onboarding.lastPromptAt ? new Date(onboarding.lastPromptAt).getTime() : 0;
+    const dismissedTime = onboarding.dismissedAt ? new Date(onboarding.dismissedAt).getTime() : 0;
+    const cooldownMs = 7 * 24 * 60 * 60 * 1000;
+    const elapsedSincePrompt = now - Math.max(lastPromptTime, dismissedTime);
+    const canPrompt = onboarding.lastPromptAt ? elapsedSincePrompt > cooldownMs : true;
+
+    if (canPrompt) {
+      setShowPermissionModal(true);
+      if (!onboarding.lastPromptAt || elapsedSincePrompt > 60_000) {
+        void updatePermissionOnboardingState({ lastPromptAt: new Date().toISOString() });
+      }
+    }
+  }, [allPermissionsGranted, permissionStatus, settings, updatePermissionOnboardingState]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
   const [isTranscriptCleaning, setIsTranscriptCleaning] = useState(false);
@@ -460,6 +575,7 @@ function App() {
     loadSettings();
     const teardownListeners = setupEventListeners();
     refreshCoachingState();
+    refreshPermissionStatus();
     window.electronAPI.getCoachWindowStatus?.()
       ?.then((status: { isOpen?: boolean } | undefined) => {
         if (status) {
@@ -478,7 +594,7 @@ function App() {
         teardownListeners();
       }
     };
-  }, [refreshCoachingState]);
+  }, [refreshCoachingState, refreshPermissionStatus]);
 
   const loadMeetings = async () => {
     try {
@@ -508,6 +624,94 @@ function App() {
       setIsLoadingMeetings(false);
     }
   };
+
+  const handlePermissionOpenSettings = useCallback(async (permission: PermissionType) => {
+    if (typeof window.electronAPI === 'undefined') {
+      return;
+    }
+
+    try {
+      await window.electronAPI.openPermissionSettings(permission);
+    } catch (error) {
+      console.error('[PERMISSIONS] Failed to open System Settings pane:', error);
+    }
+  }, []);
+
+  const handlePermissionComplete = useCallback(async () => {
+    await updatePermissionOnboardingState({
+      completedAt: new Date().toISOString(),
+      dismissedAt: null,
+    });
+    setShowPermissionModal(false);
+  }, [updatePermissionOnboardingState]);
+
+  const handlePermissionRemindLater = useCallback(async () => {
+    await updatePermissionOnboardingState({
+      dismissedAt: new Date().toISOString(),
+      lastPromptAt: new Date().toISOString(),
+    });
+    setShowPermissionModal(false);
+  }, [updatePermissionOnboardingState]);
+
+  const handleSaveSearchView = useCallback(
+    async ({ id, name, options }: { id?: string; name: string; options: SearchOptions }) => {
+      if (typeof window.electronAPI === 'undefined') {
+        return;
+      }
+
+      const normalizedName = name.trim();
+      if (!normalizedName) {
+        return;
+      }
+
+      const existing: SavedSearchDefinition[] = Array.isArray(settings?.savedSearches)
+        ? (settings?.savedSearches as SavedSearchDefinition[])
+        : [];
+
+      const now = new Date().toISOString();
+      const withoutTarget = id ? existing.filter((entry) => entry.id !== id) : existing;
+      const entryId = id ?? uuidv4();
+      const original = id ? existing.find((entry) => entry.id === id) : undefined;
+
+      const entry: SavedSearchDefinition = {
+        id: entryId,
+        name: normalizedName,
+        options,
+        createdAt: original?.createdAt ?? now,
+        updatedAt: original ? now : undefined,
+      };
+
+      const nextSavedSearches = [entry, ...withoutTarget];
+
+      try {
+        await window.electronAPI.updateSettings({ savedSearches: nextSavedSearches });
+      } catch (error) {
+        console.error('[SEARCH] Failed to persist saved search', error);
+      }
+    },
+    [settings]
+  );
+
+  const handleDeleteSavedSearch = useCallback(
+    async (id: string) => {
+      if (typeof window.electronAPI === 'undefined') {
+        return;
+      }
+
+      const existing: SavedSearchDefinition[] = Array.isArray(settings?.savedSearches)
+        ? (settings?.savedSearches as SavedSearchDefinition[])
+        : [];
+
+      const nextSavedSearches = existing.filter((entry) => entry.id !== id);
+
+      try {
+        await window.electronAPI.updateSettings({ savedSearches: nextSavedSearches });
+      } catch (error) {
+        console.error('[SEARCH] Failed to delete saved search', error);
+      }
+    },
+    [settings]
+  );
 
   const loadSettings = async () => {
     try {
@@ -1066,6 +1270,19 @@ function App() {
         <AppTitle>Meeting Note Recorder</AppTitle>
       </TitleBar>
 
+      {showPermissionModal && isMac && (
+        <PermissionOnboardingModal
+          open={showPermissionModal}
+          status={permissionStatus}
+          loading={permissionLoading}
+          onRefresh={refreshPermissionStatus}
+          onOpenSettings={handlePermissionOpenSettings}
+          onRemindLater={handlePermissionRemindLater}
+          onComplete={handlePermissionComplete}
+          allGranted={allPermissionsGranted}
+        />
+      )}
+
       <SearchWrapper>
         <SearchToggle
           collapsed={searchCollapsed}
@@ -1076,8 +1293,10 @@ function App() {
         <SearchContainer collapsed={searchCollapsed}>
           <Search
             onSelectMeeting={setSelectedMeeting}
-            currentMeeting={selectedMeeting}
             collapsed={searchCollapsed}
+            savedSearches={settings?.savedSearches ?? []}
+            onSaveSearch={handleSaveSearchView}
+            onDeleteSavedSearch={handleDeleteSavedSearch}
           />
         </SearchContainer>
       </SearchWrapper>

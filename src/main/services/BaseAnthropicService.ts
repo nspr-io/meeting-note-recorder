@@ -20,6 +20,7 @@ export abstract class BaseAnthropicService extends EventEmitter {
    */
   initialize(apiKey: string | undefined): void {
     if (!apiKey) {
+      this.anthropic = null;
       this.logger.warn(`No Anthropic API key provided - ${this.constructor.name} disabled`);
       return;
     }

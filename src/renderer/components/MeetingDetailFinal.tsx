@@ -5,6 +5,7 @@ import { parseTranscript as parseTranscriptUtility } from '../../shared/utils/tr
 import { format } from 'date-fns';
 import MDEditor, { ICommand } from '@uiw/react-md-editor';
 import { combineNoteSections, extractNoteSections, hasSectionChanges } from './noteSectionUtils';
+import MeetingChatPanel from './MeetingChatPanel';
 
 const Container = styled.div`
   display: flex;
@@ -84,6 +85,37 @@ const MetaItem = styled.div`
   align-items: center;
   gap: 4px;
   position: relative;
+`;
+
+const StatusControl = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const StatusLabel = styled.span`
+  font-size: 13px;
+  color: #666;
+`;
+
+const StatusSelect = styled.select`
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  font-size: 13px;
+  color: #1a1a1a;
+  background: #fff;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+`;
+
+const StatusMessage = styled.span`
+  font-size: 12px;
+  color: #666;
 `;
 
 const AttendeesList = styled.div`
@@ -1127,11 +1159,20 @@ type FirefliesErrorState = {
   details?: unknown;
 };
 
-type ViewMode = 'context' | 'liveNotes' | 'transcript' | 'insights' | 'actions' | 'coach';
+type ViewMode = 'context' | 'liveNotes' | 'transcript' | 'insights' | 'actions' | 'coach' | 'chat';
 
 // Module-level transcript cache to persist across component re-renders
 const transcriptCache = new Map<string, any[]>();
 const transcriptSequenceCache = new Map<string, Set<string>>();
+
+const STATUS_OPTIONS: Array<{ value: Meeting['status']; label: string }> = [
+  { value: 'scheduled', label: 'Scheduled' },
+  { value: 'recording', label: 'Recording' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'partial', label: 'Partial' },
+  { value: 'error', label: 'Error' },
+  { value: 'active', label: 'Active' }
+];
 
 function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefresh, onShowToast, coachingState, onCoachingStateRefresh, activeCoachingMeeting, isCoachWindowOpen = false, onOpenCoachWindow, onCloseCoachWindow, isCoachPopout = false }: MeetingDetailFinalProps) {
   const initialSections = extractNoteSections(meeting.notes || '');
@@ -1146,15 +1187,20 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const hasChangesRef = useRef(hasChanges);
+  const baselineNotesRef = useRef(baselineNotes);
   const [transcriptSegments, setTranscriptSegments] = useState<any[]>(
     transcriptCache.get(meeting.id) || []
   );
   const [isFetchingFireflies, setIsFetchingFireflies] = useState(false);
   const [firefliesFetchError, setFirefliesFetchError] = useState<FirefliesErrorState | null>(null);
+  const hasStoredTranscript = Boolean(meeting.transcript && meeting.transcript.trim().length > 0);
   const [isRecording, setIsRecording] = useState(meeting.status === 'recording');
   const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
   const [elapsedTime, setElapsedTime] = useState('00:00:00');
   const [showAttendees, setShowAttendees] = useState(false);
+  const [selectedStatus, setSelectedStatus] = useState<Meeting['status']>(meeting.status);
+  const [isStatusUpdating, setIsStatusUpdating] = useState(false);
   const [isCorrecting, setIsCorrecting] = useState(false);
   const [correctionProgress, setCorrectionProgress] = useState<{ current: number; total: number; percentage: number } | null>(null);
   const [editorKey, setEditorKey] = useState(Date.now()); // Force fresh editor instance
@@ -1314,6 +1360,10 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   }, [isCoachPopout]);
 
   useEffect(() => {
+    setSelectedStatus(meeting.status);
+  }, [meeting.status]);
+
+  useEffect(() => {
     const sections = { calendarInfo, prepNotes, meetingNotes };
     const nextCombined = combineNoteSections(sections);
 
@@ -1323,6 +1373,14 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
 
     setHasChanges(hasSectionChanges(sections, baselineNotes));
   }, [calendarInfo, prepNotes, meetingNotes, baselineNotes, combinedNotes]);
+
+  useEffect(() => {
+    hasChangesRef.current = hasChanges;
+  }, [hasChanges]);
+
+  useEffect(() => {
+    baselineNotesRef.current = baselineNotes;
+  }, [baselineNotes]);
 
   // Update cache when segments change
   useEffect(() => {
@@ -1388,15 +1446,23 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     const previousMeetingId = previousMeetingIdRef.current;
     const meetingIdChanged = previousMeetingId !== meeting.id;
 
-    const parsedSections = extractNoteSections(meeting.notes || '');
-    setCalendarInfo(parsedSections.calendarInfo);
-    setPrepNotes(parsedSections.prepNotes);
-    setMeetingNotes(parsedSections.meetingNotes);
-    setIsEditingCalendar(false);
-    setCombinedNotes(combineNoteSections(parsedSections));
-    setBaselineNotes(meeting.notes || '');
+    const nextBaselineNotes = meeting.notes || '';
+    const parsedSections = extractNoteSections(nextBaselineNotes);
+    const previousBaseline = baselineNotesRef.current;
+    const hasPendingChanges = hasChangesRef.current;
+    const shouldHydrateNotes = meetingIdChanged || (!hasPendingChanges && nextBaselineNotes !== previousBaseline);
+
+    if (shouldHydrateNotes) {
+      setCalendarInfo(parsedSections.calendarInfo);
+      setPrepNotes(parsedSections.prepNotes);
+      setMeetingNotes(parsedSections.meetingNotes);
+      setIsEditingCalendar(false);
+      setCombinedNotes(combineNoteSections(parsedSections));
+      setBaselineNotes(nextBaselineNotes);
+      setHasChanges(false);
+    }
+
     setEditedTitle(meeting.title); // Update title when meeting prop changes
-    setHasChanges(false);
     setIsRecording(meeting.status === 'recording');
     setItemErrors({});
     setSendingItemIndex(null);
@@ -1833,6 +1899,29 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     }
   };
 
+  const handleStatusChange = useCallback(async (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const newStatus = event.target.value as Meeting['status'];
+
+    if (newStatus === meeting.status) {
+      setSelectedStatus(newStatus);
+      return;
+    }
+
+    setSelectedStatus(newStatus);
+    setIsStatusUpdating(true);
+
+    try {
+      await onUpdateMeeting({ ...meeting, status: newStatus });
+      onShowToast?.('Meeting status updated', 'success');
+    } catch (error) {
+      console.error('Failed to update meeting status:', error);
+      setSelectedStatus(meeting.status);
+      onShowToast?.('Failed to update meeting status', 'error');
+    } finally {
+      setIsStatusUpdating(false);
+    }
+  }, [meeting, onUpdateMeeting, onShowToast]);
+
   const handleNotesChange = (value: string) => {
     // Ignore the first onChange trigger from editor mount
     if (isFirstRender.current) {
@@ -1919,6 +2008,18 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       return;
     }
 
+    const existingTranscript = typeof meeting.transcript === 'string' ? meeting.transcript.trim() : '';
+    const hadTranscript = existingTranscript.length > 0;
+
+    if (hadTranscript) {
+      const confirmed = window.confirm(
+        'A transcript already exists for this meeting. Fetching from Fireflies will replace it. Do you want to continue?'
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
     setIsFetchingFireflies(true);
     setFirefliesFetchError(null);
 
@@ -1929,7 +2030,10 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
         if (onRefresh) {
           await onRefresh();
         }
-        onShowToast?.('Transcript fetched from Fireflies', 'success');
+        onShowToast?.(
+          hadTranscript ? 'Transcript replaced with Fireflies transcript' : 'Transcript fetched from Fireflies',
+          'success'
+        );
         setFirefliesFetchError(null);
       } else {
         const errorState = buildFirefliesErrorState(result);
@@ -2437,6 +2541,23 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
               }
               return null;
             })()}
+            <MetaItem>
+              <StatusControl>
+                <StatusLabel>📌 Status</StatusLabel>
+                <StatusSelect
+                  value={selectedStatus}
+                  onChange={handleStatusChange}
+                  disabled={isStatusUpdating}
+                >
+                  {STATUS_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </StatusSelect>
+                {isStatusUpdating && <StatusMessage>Updating…</StatusMessage>}
+              </StatusControl>
+            </MetaItem>
           </MetaInfo>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginTop: '16px' }}>
@@ -2470,6 +2591,12 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                 onClick={() => setViewMode('actions')}
               >
                 Actions
+              </Tab>
+              <Tab
+                active={viewMode === 'chat'}
+                onClick={() => setViewMode('chat')}
+              >
+                Chat
               </Tab>
               <Tab
                 active={viewMode === 'coach'}
@@ -2665,28 +2792,40 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                         </span>
                       )}
                     </TranscriptTitle>
-                    {meeting.transcript && !isRecording && (
-                      <Button
-                        onClick={handleCorrectTranscript}
-                        disabled={isCorrecting}
-                        style={{
-                          background: isCorrecting ? '#c7c7cc' : '#667eea',
-                          borderColor: isCorrecting ? '#c7c7cc' : '#667eea',
-                          color: 'white'
-                        }}
-                      >
-                        {isCorrecting ? (
-                          <>
-                            {correctionProgress ?
-                              `Processing block ${correctionProgress.current}/${correctionProgress.total}...` :
-                              'Preparing correction...'
-                            }
-                          </>
-                        ) : (
-                          <>✨ Improve with AI</>
-                        )}
-                      </Button>
-                    )}
+                    <ActionButtons>
+                      {!isRecording && (
+                        <Button
+                          onClick={handleFetchFirefliesTranscript}
+                          disabled={isFetchingFireflies}
+                        >
+                          {isFetchingFireflies
+                            ? (hasStoredTranscript ? 'Replacing with Fireflies...' : 'Fetching from Fireflies...')
+                            : (hasStoredTranscript ? 'Replace with Fireflies transcript' : 'Fetch from Fireflies')}
+                        </Button>
+                      )}
+                      {meeting.transcript && !isRecording && (
+                        <Button
+                          onClick={handleCorrectTranscript}
+                          disabled={isCorrecting}
+                          style={{
+                            background: isCorrecting ? '#c7c7cc' : '#667eea',
+                            borderColor: isCorrecting ? '#c7c7cc' : '#667eea',
+                            color: 'white'
+                          }}
+                        >
+                          {isCorrecting ? (
+                            <>
+                              {correctionProgress ?
+                                `Processing block ${correctionProgress.current}/${correctionProgress.total}...` :
+                                'Preparing correction...'
+                              }
+                            </>
+                          ) : (
+                            <>✨ Improve with AI</>
+                          )}
+                        </Button>
+                      )}
+                    </ActionButtons>
                   </TranscriptHeader>
                   {/* Show transcript (real-time updates during recording, parsed saved transcript after) */}
                   {(() => {
@@ -3142,6 +3281,11 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                 </ActionCard>
               </ActionGrid>
             </EditorContainer>
+          </TabPanel>
+
+          {/* Chat Panel */}
+          <TabPanel isActive={viewMode === 'chat'}>
+            <MeetingChatPanel meeting={meeting} isActive={viewMode === 'chat'} />
           </TabPanel>
 
           {/* Coach Panel - Always rendered but hidden when not active */}

@@ -1,9 +1,9 @@
-import { Meeting, TranscriptChunk, CalendarEvent } from '../../shared/types';
+import { Meeting, TranscriptChunk, CalendarEvent, MeetingChatMessage } from '../../shared/types';
 import { SettingsService } from './SettingsService';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs/promises';
-import chokidar, { FSWatcher } from 'chokidar';
+import type { FSWatcher } from 'chokidar';
 import { format } from 'date-fns';
 import { app } from 'electron';
 import { DescriptionProcessingService } from './DescriptionProcessingService';
@@ -23,6 +23,81 @@ import {
 
 const logger = getLogger();
 
+logger.info('[FILE-WATCHER] StorageService module loaded', {
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  env: {
+    CHOKIDAR_USEPOLLING: process.env.CHOKIDAR_USEPOLLING,
+    CHOKIDAR_INTERVAL: process.env.CHOKIDAR_INTERVAL,
+  },
+});
+
+let chokidarModule: typeof import('chokidar') | null = null;
+const getChokidar = (): typeof import('chokidar') => {
+  if (!chokidarModule) {
+    logger.info('[FILE-WATCHER] Loading chokidar module', {
+      isPackaged: app.isPackaged,
+      env: {
+        CHOKIDAR_USEPOLLING: process.env.CHOKIDAR_USEPOLLING,
+        CHOKIDAR_INTERVAL: process.env.CHOKIDAR_INTERVAL,
+      },
+    });
+    chokidarModule = require('chokidar');
+  }
+
+  return chokidarModule!;
+};
+
+const isFsEventsWatchSupported = (() => {
+  if (process.platform !== 'darwin') {
+    return false;
+  }
+
+  if (app.isPackaged) {
+    if (!process.env.CHOKIDAR_USEPOLLING) {
+      process.env.CHOKIDAR_USEPOLLING = 'true';
+      process.env.CHOKIDAR_INTERVAL = process.env.CHOKIDAR_INTERVAL || '300';
+    }
+
+    logger.info('[FILE-WATCHER] Disabling fsevents in packaged build, using fs.watch fallback');
+    return false;
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+    const fsevents = require('fsevents');
+    const supported = Boolean(fsevents && typeof fsevents.watch === 'function');
+
+    if (!supported) {
+      logger.info('[FILE-WATCHER] fsevents module loaded without watch(), using fs.watch fallback');
+      if (!process.env.CHOKIDAR_USEPOLLING) {
+        process.env.CHOKIDAR_USEPOLLING = 'true';
+        process.env.CHOKIDAR_INTERVAL = process.env.CHOKIDAR_INTERVAL || '300';
+      }
+    }
+
+    return supported;
+  } catch (error) {
+    logger.info('[FILE-WATCHER] fsevents module unavailable, using fs.watch fallback', {
+      error: error instanceof Error ? error.message : error
+    });
+    if (!process.env.CHOKIDAR_USEPOLLING) {
+      process.env.CHOKIDAR_USEPOLLING = 'true';
+      process.env.CHOKIDAR_INTERVAL = process.env.CHOKIDAR_INTERVAL || '300';
+    }
+    return false;
+  }
+})();
+
+logger.info('[FILE-WATCHER] fsevents support evaluation complete', {
+  isPackaged: app.isPackaged,
+  supported: isFsEventsWatchSupported,
+  env: {
+    CHOKIDAR_USEPOLLING: process.env.CHOKIDAR_USEPOLLING,
+    CHOKIDAR_INTERVAL: process.env.CHOKIDAR_INTERVAL,
+  },
+});
+
 export class StorageService {
   private meetingsCache: Map<string, Meeting> = new Map();
   private fileWatchers: Map<string, { watcher: FSWatcher; debounceTimer?: NodeJS.Timeout }> = new Map();
@@ -34,6 +109,8 @@ export class StorageService {
   private notifyMeetingsUpdated: () => void;
   private fullRefreshPromise: Promise<void> | null = null;
   private lastCacheSaveTimestamp = 0;
+  private chatHistoryCache: Map<string, MeetingChatMessage[]> = new Map();
+  private chatHistoryDir: string;
 
   constructor(settingsService: SettingsService, notifyMeetingsUpdated: () => void) {
     this.settingsService = settingsService;
@@ -42,6 +119,7 @@ export class StorageService {
     // Store cache in app data directory for fast loading
     const appDataPath = app.getPath('userData');
     this.cacheFilePath = path.join(appDataPath, 'meetings-cache.json');
+    this.chatHistoryDir = path.join(this.storagePath, 'chat-history');
 
     // Initialize description processor
     this.descriptionProcessor = new DescriptionProcessingService();
@@ -88,6 +166,38 @@ export class StorageService {
     }
 
     return null;
+  }
+
+  private getMeetingEndTime(meeting: Meeting): Date | null {
+    const explicitEnd = this.normalizeDateInput(meeting.endTime);
+    if (explicitEnd) {
+      return explicitEnd;
+    }
+
+    const startCandidate = meeting.startTime ?? meeting.date;
+    const start = this.normalizeDateInput(startCandidate);
+    if (!start) {
+      return null;
+    }
+
+    const durationMinutes = typeof meeting.duration === 'number' && meeting.duration > 0
+      ? meeting.duration
+      : 60;
+
+    return new Date(start.getTime() + durationMinutes * 60 * 1000);
+  }
+
+  private shouldReuseRecurringMeetingInstance(meeting: Meeting, event: CalendarEvent, now: Date): boolean {
+    const eventStart = this.normalizeDateInput(event.start);
+    if (!eventStart) {
+      return true;
+    }
+
+    if ((meeting.status === 'completed' || meeting.status === 'partial') && eventStart > now) {
+      return false;
+    }
+
+    return true;
   }
 
   private normalizeAttendees(value: unknown): Meeting['attendees'] {
@@ -188,12 +298,25 @@ export class StorageService {
     }
 
     if ('tags' in sanitized) {
-      sanitized.tags = Array.isArray(sanitized.tags)
-        ? sanitized.tags
-            .filter((tag) => typeof tag === 'string')
-            .map((tag) => tag.trim())
-            .filter((tag) => tag.length > 0)
-        : undefined;
+      if (Array.isArray(sanitized.tags)) {
+        const cleanedTags = sanitized.tags
+          .filter((tag) => typeof tag === 'string')
+          .map((tag) => tag.trim())
+          .filter((tag) => tag.length > 0);
+
+        const unique: string[] = [];
+        const seen = new Set<string>();
+        for (const tag of cleanedTags) {
+          if (!seen.has(tag)) {
+            seen.add(tag);
+            unique.push(tag);
+          }
+        }
+
+        sanitized.tags = unique.slice(0, 3);
+      } else {
+        sanitized.tags = undefined;
+      }
     }
 
     return sanitized;
@@ -205,14 +328,30 @@ export class StorageService {
     }
 
     const normalizedPath = path.resolve(meeting.filePath);
-    const watcher = chokidar.watch(normalizedPath, {
+
+    logger.info('[FILE-WATCHER] Creating watcher for meeting file', {
+      meetingId: meeting.id,
+      filePath: normalizedPath,
+      isPackaged: app.isPackaged,
+      fsEventsSupported: isFsEventsWatchSupported,
+      env: {
+        CHOKIDAR_USEPOLLING: process.env.CHOKIDAR_USEPOLLING,
+        CHOKIDAR_INTERVAL: process.env.CHOKIDAR_INTERVAL,
+      },
+    });
+
+    const watcher = getChokidar().watch(normalizedPath, {
       persistent: true,
       ignoreInitial: true,
       depth: 0,
       awaitWriteFinish: {
         stabilityThreshold: 200,
         pollInterval: 100
-      }
+      },
+      useFsEvents: isFsEventsWatchSupported,
+      usePolling: !isFsEventsWatchSupported,
+      interval: 300,
+      binaryInterval: 300
     });
 
     const handleChange = () => {
@@ -268,6 +407,10 @@ export class StorageService {
       clearTimeout(entry.debounceTimer);
     }
 
+    logger.info('[FILE-WATCHER] Closing watcher for meeting file', {
+      meetingId,
+    });
+
     entry.watcher.close().catch((error) => {
       logger.warn('[FILE-WATCHER] Failed to close watcher', {
         meetingId,
@@ -284,7 +427,24 @@ export class StorageService {
     }
   }
 
+  private getChatHistoryFilePath(meetingId: string): string {
+    return path.join(this.chatHistoryDir, `${meetingId}.json`);
+  }
+
+  private async ensureChatHistoryDir(): Promise<void> {
+    try {
+      await fs.mkdir(this.chatHistoryDir, { recursive: true });
+    } catch (error) {
+      logger.error('[CHAT-STORAGE] Failed to ensure chat history directory', {
+        dir: this.chatHistoryDir,
+        error: error instanceof Error ? error.message : error
+      });
+      throw error;
+    }
+  }
+
   async initialize(options?: { awaitFullSync?: boolean }): Promise<void> {
+    await this.ensureChatHistoryDir();
     await this.loadCacheFromDisk();
 
     // Inform listeners that cached data is available immediately
@@ -673,11 +833,32 @@ export class StorageService {
       timestamp: new Date().toISOString()
     });
 
+    const arraysEqual = (a?: string[], b?: string[]): boolean => {
+      if (!a && !b) {
+        return true;
+      }
+
+      if ((!a && b) || (a && !b)) {
+        return false;
+      }
+
+      const first = a ?? [];
+      const second = b ?? [];
+
+      if (first.length !== second.length) {
+        return false;
+      }
+
+      return first.every((value, index) => value === second[index]);
+    };
+
     const meeting = this.meetingsCache.get(id);
     if (!meeting) {
       logger.error('[JOURNEY-STORAGE-UPDATE-ERROR] Meeting not found', { id });
       throw new Error(`Meeting ${id} not found`);
     }
+
+    const originalTags = Array.isArray(meeting.tags) ? [...meeting.tags] : undefined;
 
     // Store original values for comparison
     const originalNotes = meeting.notes || '';
@@ -842,6 +1023,9 @@ export class StorageService {
 
     updatedMeeting.insightsFilePath = insightsFilePath;
 
+    const updatedTags = Array.isArray(updatedMeeting.tags) ? [...updatedMeeting.tags] : undefined;
+    const tagsChanged = !arraysEqual(originalTags, updatedTags);
+
     const hasSignificantNotes = !!(updatedMeeting.notes && updatedMeeting.notes.trim().length > 0);
     const hasSignificantTranscript = !!(updatedMeeting.transcript && updatedMeeting.transcript.trim().length > 0);
     const notesChanged = updatedMeeting.notes !== originalNotes;
@@ -858,6 +1042,7 @@ export class StorageService {
       sanitizedUpdates.endTime !== undefined ||
       sanitizedUpdates.attendees !== undefined ||
       sanitizedUpdates.notes !== undefined ||
+      tagsChanged ||
       sanitizedUpdates.insights !== undefined ||
       sanitizedUpdates.recallRecordingId !== undefined ||
       sanitizedUpdates.recallVideoUrl !== undefined ||
@@ -872,6 +1057,7 @@ export class StorageService {
       sanitizedUpdates.date ||
       sanitizedUpdates.status ||
       sanitizedUpdates.duration ||
+      tagsChanged ||
       insightsPathChanged
     );
 
@@ -886,6 +1072,7 @@ export class StorageService {
         wasCreated: shouldCreateFile,
         hasNotes: hasSignificantNotes,
         hasTranscript: hasSignificantTranscript,
+        hasTags: Array.isArray(updatedMeeting.tags) && updatedMeeting.tags.length > 0,
         hasInsights: !!insightsFilePath
       });
     } else {
@@ -952,6 +1139,15 @@ export class StorageService {
           error: error instanceof Error ? error.message : error
         });
       }
+    }
+
+    try {
+      await this.clearMeetingChatHistory(id);
+    } catch (error) {
+      logger.warn('[CHAT-STORAGE] Failed to clear chat history during delete', {
+        meetingId: id,
+        error: error instanceof Error ? error.message : error
+      });
     }
 
     this.meetingsCache.delete(id);
@@ -1097,6 +1293,7 @@ export class StorageService {
             });
             continue;
           }
+          const now = new Date();
           let existingMeeting = await this.getMeetingByCalendarId(event.id);
           let matchedByRecurringBase = false;
 
@@ -1129,17 +1326,29 @@ export class StorageService {
               }
 
               if (bestCandidate && smallestDiff <= MOVE_ASSOCIATION_THRESHOLD_MS) {
-                existingMeeting = bestCandidate;
-                matchedByRecurringBase = true;
-                if (bestCandidate.calendarEventId) {
-                  processedCalendarIds.add(bestCandidate.calendarEventId);
+                const reuseExisting = this.shouldReuseRecurringMeetingInstance(bestCandidate, event, now);
+
+                if (reuseExisting) {
+                  existingMeeting = bestCandidate;
+                  matchedByRecurringBase = true;
+                  if (bestCandidate.calendarEventId) {
+                    processedCalendarIds.add(bestCandidate.calendarEventId);
+                  }
+                  logger.info(`[SMART-SYNC] Matched moved recurring meeting`, {
+                    baseId: fallbackBaseId,
+                    previousId: bestCandidate.calendarEventId,
+                    newId: event.id,
+                    meetingId: bestCandidate.id
+                  });
+                } else {
+                  logger.info(`[SMART-SYNC] Preserving completed meeting history, creating new instance`, {
+                    baseId: fallbackBaseId,
+                    previousId: bestCandidate.calendarEventId,
+                    newId: event.id,
+                    meetingId: bestCandidate.id,
+                    meetingStatus: bestCandidate.status
+                  });
                 }
-                logger.info(`[SMART-SYNC] Matched moved recurring meeting`, {
-                  baseId: fallbackBaseId,
-                  previousId: bestCandidate.calendarEventId,
-                  newId: event.id,
-                  meetingId: bestCandidate.id
-                });
               }
             }
           }
@@ -1430,6 +1639,67 @@ export class StorageService {
     }
 
     await this.updateMeeting(meetingId, { transcript: meeting.transcript });
+  }
+
+  async getMeetingChatHistory(meetingId: string): Promise<MeetingChatMessage[]> {
+    const cached = this.chatHistoryCache.get(meetingId);
+    if (cached) {
+      return cached;
+    }
+
+    const filePath = this.getChatHistoryFilePath(meetingId);
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const parsed = JSON.parse(content) as MeetingChatMessage[];
+      const normalized = Array.isArray(parsed)
+        ? parsed.filter((entry) => entry && typeof entry.id === 'string' && typeof entry.content === 'string')
+        : [];
+      this.chatHistoryCache.set(meetingId, normalized);
+      return normalized;
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        logger.error('[CHAT-STORAGE] Failed to read chat history', {
+          meetingId,
+          filePath,
+          error: error instanceof Error ? error.message : error
+        });
+      }
+      this.chatHistoryCache.set(meetingId, []);
+      return [];
+    }
+  }
+
+  async appendMeetingChatHistory(meetingId: string, messages: MeetingChatMessage[]): Promise<MeetingChatMessage[]> {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return this.getMeetingChatHistory(meetingId);
+    }
+
+    const history = [...await this.getMeetingChatHistory(meetingId), ...messages];
+    await this.saveMeetingChatHistory(meetingId, history);
+    return history;
+  }
+
+  async saveMeetingChatHistory(meetingId: string, history: MeetingChatMessage[]): Promise<void> {
+    await this.ensureChatHistoryDir();
+    const filePath = this.getChatHistoryFilePath(meetingId);
+    this.chatHistoryCache.set(meetingId, history);
+    await fs.writeFile(filePath, JSON.stringify(history, null, 2), 'utf-8');
+  }
+
+  async clearMeetingChatHistory(meetingId: string): Promise<void> {
+    this.chatHistoryCache.delete(meetingId);
+    const filePath = this.getChatHistoryFilePath(meetingId);
+    try {
+      await fs.unlink(filePath);
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        logger.error('[CHAT-STORAGE] Failed to remove chat history file', {
+          meetingId,
+          filePath,
+          error: error instanceof Error ? error.message : error
+        });
+      }
+    }
   }
 
   async updateNotes(meetingId: string, notes: string): Promise<void> {

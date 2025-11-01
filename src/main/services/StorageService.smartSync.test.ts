@@ -24,6 +24,13 @@ jest.mock('uuid', () => ({
   v4: jest.fn(() => 'mock-uuid')
 }));
 
+jest.mock('chokidar', () => ({
+  watch: jest.fn(() => ({
+    on: jest.fn(),
+    close: jest.fn(),
+  })),
+}));
+
 const createStorageService = () => {
   const settingsService = {
     getSettings: jest.fn().mockReturnValue({
@@ -76,6 +83,57 @@ const buildCalendarEvent = (overrides: Partial<CalendarEvent> = {}): CalendarEve
   ...overrides
 });
 
+describe('StorageService.updateMeeting tag persistence', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('writes markdown and deduplicates when tags change', async () => {
+    const { service } = createStorageService();
+    const meeting = buildTouchedMeeting({
+      tags: ['existing'],
+      filePath: '/tmp/meeting-storage/2025/10/meeting.md'
+    });
+    (service as any).meetingsCache.set(meeting.id, meeting);
+
+    await service.updateMeeting(meeting.id, { tags: ['sales', 'sales', 'internal', 'support', 'customer'] });
+
+    const fsPromises = require('fs/promises') as { writeFile: jest.Mock };
+    const markdownCall = fsPromises.writeFile.mock.calls.find(([target]) => String(target).endsWith('.md'));
+    expect(markdownCall).toBeDefined();
+
+    const [, content] = markdownCall!;
+    expect(content).toMatch(/"?tags"?:/);
+    expect((content.match(/- "?sales"?/g) || []).length).toBe(1);
+    expect(content).toMatch(/- "?internal"?/);
+    expect(content).toMatch(/- "?support"?/);
+    expect(content).not.toMatch(/- "?customer"?/);
+
+    const updated = (service as any).meetingsCache.get(meeting.id) as Meeting;
+    expect(updated.tags).toEqual(['sales', 'internal', 'support']);
+  });
+
+  it('persists manual status updates', async () => {
+    const { service } = createStorageService();
+    const meeting = buildTouchedMeeting({
+      status: 'completed',
+      filePath: '/tmp/meeting-storage/2025/10/manual-status.md'
+    });
+    (service as any).meetingsCache.set(meeting.id, meeting);
+
+    const updated = await service.updateMeeting(meeting.id, { status: 'scheduled' });
+
+    expect(updated.status).toBe('scheduled');
+    const cached = (service as any).meetingsCache.get(meeting.id) as Meeting;
+    expect(cached.status).toBe('scheduled');
+
+    const fsPromises = require('fs/promises') as { writeFile: jest.Mock };
+    const markdownCall = fsPromises.writeFile.mock.calls.find(([target]) => String(target).endsWith('.md'));
+    expect(markdownCall).toBeDefined();
+    expect(markdownCall?.[1]).toMatch(/"?status"?: "?scheduled"?/);
+  });
+});
+
 describe('StorageService.smartSyncCalendarEvents - moved meetings', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -116,6 +174,60 @@ describe('StorageService.smartSyncCalendarEvents - moved meetings', () => {
     expect(updatedMeeting.calendarEventId).toBe(event.id);
     expect(updatedMeeting.title.startsWith('[DELETED]')).toBe(false);
     expect(deleteMeetingMock).not.toHaveBeenCalled();
+  });
+
+  it('creates a new meeting when a completed instance is moved to a future date', async () => {
+    const { service } = createStorageService();
+    const meeting = buildTouchedMeeting({
+      status: 'completed',
+      endTime: new Date('2025-10-25T10:00:00Z'),
+      transcript: 'Call transcript'
+    });
+    (service as any).meetingsCache.set(meeting.id, meeting);
+
+    const updateMeetingMock = jest.spyOn(service, 'updateMeeting');
+
+    const createMeetingMock = jest
+      .spyOn(service, 'createMeeting')
+      .mockImplementation(async (data) => {
+        const now = new Date();
+        const created: Meeting = {
+          id: 'new-meeting-completed-reschedule',
+          title: data.title ?? 'Untitled',
+          date: data.date ?? now,
+          startTime: data.startTime ?? data.date ?? now,
+          endTime: data.endTime ?? now,
+          attendees: data.attendees ?? [],
+          status: data.status ?? 'scheduled',
+          notes: data.notes ?? '',
+          transcript: data.transcript ?? '',
+          createdAt: now,
+          updatedAt: now,
+          calendarEventId: data.calendarEventId ?? 'new-id',
+          meetingUrl: data.meetingUrl,
+          calendarInviteUrl: data.calendarInviteUrl
+        } as Meeting;
+        return created;
+      });
+
+    const futureStart = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+    const futureEnd = new Date(futureStart.getTime() + 60 * 60 * 1000);
+
+    const event = buildCalendarEvent({
+      id: 'abc123_futureInstance',
+      start: futureStart,
+      end: futureEnd
+    });
+
+    const result = await service.smartSyncCalendarEvents([event]);
+
+    expect(updateMeetingMock).not.toHaveBeenCalled();
+    expect(createMeetingMock).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({ added: 1, updated: 0 }));
+
+    const cachedMeeting = (service as any).meetingsCache.get(meeting.id) as Meeting;
+    expect(cachedMeeting.calendarEventId).toBe('abc123_20251025T090000Z');
+    expect(cachedMeeting.status).toBe('completed');
   });
 
   it('keeps touched meeting intact when only the base calendar event id matches', async () => {

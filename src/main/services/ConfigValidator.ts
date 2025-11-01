@@ -161,6 +161,13 @@ export class ConfigValidator {
       migrated.anthropicApiKey = oldSettings.anthropicApiKey;
     }
 
+    migrated.permissionOnboarding = {
+      completedAt: null,
+      dismissedAt: null,
+      lastPromptAt: null,
+    };
+    migrated.savedSearches = [];
+
     return migrated;
   }
 
@@ -180,6 +187,12 @@ export class ConfigValidator {
       notionTodoIntegrationToken: '',
       notionTodoDatabaseId: '',
       coaches: DEFAULT_COACH_CONFIGS.map(coach => ({ ...coach })),
+      permissionOnboarding: {
+        completedAt: null,
+        dismissedAt: null,
+        lastPromptAt: null,
+      },
+      savedSearches: [],
     };
   }
 
@@ -243,6 +256,19 @@ export class ConfigValidator {
         enabled: typeof coach.enabled === 'boolean' ? coach.enabled : defaultsById.get(coach.id)?.enabled ?? true,
         isCustom: coach.isCustom ?? !defaultsById.has(coach.id),
       }));
+    }
+
+    const onboarding = sanitized.permissionOnboarding && typeof sanitized.permissionOnboarding === 'object'
+      ? sanitized.permissionOnboarding as any
+      : {};
+    sanitized.permissionOnboarding = {
+      completedAt: typeof onboarding.completedAt === 'string' ? onboarding.completedAt : null,
+      dismissedAt: typeof onboarding.dismissedAt === 'string' ? onboarding.dismissedAt : null,
+      lastPromptAt: typeof onboarding.lastPromptAt === 'string' ? onboarding.lastPromptAt : null,
+    };
+
+    if (!Array.isArray(sanitized.savedSearches)) {
+      sanitized.savedSearches = [];
     }
 
     return sanitized;
