@@ -3,6 +3,7 @@ import { existsSync, Dirent } from 'fs';
 import path from 'path';
 import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
+import { parse, parseISO, isValid } from 'date-fns';
 
 import { Meeting } from '../types';
 import { NoteSections } from '../../renderer/components/noteSectionUtils';
@@ -37,8 +38,32 @@ export class MeetingFileRepository {
   }
 
   async findFileByCalendarId(calendarEventId: string): Promise<string | null> {
-    const baseId = calendarEventId.split('_')[0];
+    const trimmedId = calendarEventId?.trim();
+    if (!trimmedId) {
+      return null;
+    }
+
+    const sanitizedId = this.sanitizeCalendarEventId(trimmedId);
+    const rawBaseId = trimmedId.split('_')[0] ?? '';
+    const sanitizedBaseId = rawBaseId ? this.sanitizeCalendarEventId(rawBaseId) : '';
+
+    const searchTokens: Array<{ token: string; weight: number }> = [];
+    if (sanitizedId) {
+      searchTokens.push({ token: `[${sanitizedId}]`, weight: 3 });
+    }
+    if (sanitizedBaseId && sanitizedBaseId !== sanitizedId) {
+      searchTokens.push({ token: `[${sanitizedBaseId}]`, weight: 2 });
+    }
+    if (rawBaseId && rawBaseId !== sanitizedBaseId) {
+      searchTokens.push({ token: `[${rawBaseId}]`, weight: 1 });
+    }
+
+    if (searchTokens.length === 0) {
+      return null;
+    }
+
     const monthDirs = await this.listMonthDirectories();
+    const candidates: Array<{ filePath: string; weight: number }> = [];
 
     for (const dir of monthDirs) {
       let entries: string[] = [];
@@ -53,9 +78,23 @@ export class MeetingFileRepository {
           continue;
         }
 
-        if (entry.includes(`[${calendarEventId}]`) || entry.includes(`[${baseId}]`)) {
-          return path.join(dir, entry);
+        const weight = searchTokens.reduce((acc, current) => (entry.includes(current.token) ? Math.max(acc, current.weight) : acc), 0);
+        if (weight > 0) {
+          candidates.push({ filePath: path.join(dir, entry), weight });
         }
+      }
+    }
+
+    candidates.sort((a, b) => b.weight - a.weight);
+
+    for (const candidate of candidates) {
+      const loaded = await this.loadByFilePath(candidate.filePath);
+      if (!loaded) {
+        continue;
+      }
+
+      if (loaded.meeting.calendarEventId === trimmedId) {
+        return candidate.filePath;
       }
     }
 
@@ -177,10 +216,15 @@ export class MeetingFileRepository {
       prepContent
     } = params;
 
+    const normalizedDate = this.parseMeetingDateInput(meetingDate);
+    if (!normalizedDate) {
+      throw new Error('meetingDate must be an ISO 8601 string or a recognized local date/time format (e.g. "YYYY-MM-DD HH:mm")');
+    }
+
     const meeting: Meeting = {
       id: uuidv4(),
       title: meetingTitle,
-      date: new Date(meetingDate),
+      date: normalizedDate,
       attendees: attendees ?? [],
       status: 'scheduled',
       notes: '',
@@ -345,6 +389,50 @@ export class MeetingFileRepository {
     }
 
     return result;
+  }
+
+  private sanitizeCalendarEventId(calendarEventId: string): string {
+    return calendarEventId.replace(/[^a-zA-Z0-9-_]/g, '').substring(0, 50);
+  }
+
+  private parseMeetingDateInput(value: string): Date | null {
+    if (!value) {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const isoCandidate = parseISO(trimmed);
+    if (isValid(isoCandidate)) {
+      return isoCandidate;
+    }
+
+    const knownFormats = [
+      'yyyy-MM-dd HH:mm',
+      'yyyy-MM-dd H:mm',
+      'yyyy/MM/dd HH:mm',
+      'yyyy/MM/dd H:mm',
+      'MM/dd/yyyy HH:mm',
+      'MM/dd/yyyy H:mm',
+      'yyyy-MM-dd'
+    ];
+
+    for (const formatString of knownFormats) {
+      const parsed = parse(trimmed, formatString, new Date());
+      if (isValid(parsed)) {
+        return parsed;
+      }
+    }
+
+    const fallback = new Date(trimmed);
+    if (!Number.isNaN(fallback.getTime())) {
+      return fallback;
+    }
+
+    return null;
   }
 
 }

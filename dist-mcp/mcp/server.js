@@ -13,7 +13,7 @@ const index_js_1 = require("@modelcontextprotocol/sdk/server/index.js");
 const stdio_js_1 = require("@modelcontextprotocol/sdk/server/stdio.js");
 const types_js_1 = require("@modelcontextprotocol/sdk/types.js");
 const electron_store_1 = __importDefault(require("electron-store"));
-const SearchService_1 = require("../main/services/SearchService");
+const SearchService_1 = require("../shared/search/SearchService");
 const MeetingFileRepository_1 = require("../shared/meetings/MeetingFileRepository");
 const meetingTags_1 = require("../shared/constants/meetingTags");
 function parseDateBoundary(value, options = {}) {
@@ -115,32 +115,32 @@ class MeetingNoteRecorderMcpServer {
                 const mostRecent = typeof args.most_recent === 'boolean' ? args.most_recent : false;
                 const dateFrom = parseDateBoundary(args.date_from, { endOfDay: false });
                 const dateTo = parseDateBoundary(args.date_to, { endOfDay: true });
+                const hasPrep = typeof args.has_prep === 'boolean' ? args.has_prep : undefined;
+                const hasTranscript = typeof args.has_transcript === 'boolean' ? args.has_transcript : undefined;
                 const results = this.searchService.search({
                     query,
                     filters: {
                         attendees,
                         status: status,
                         dateFrom,
-                        dateTo
+                        dateTo,
+                        hasPrep,
+                        hasTranscript
                     },
                     limit,
                     mostRecent
                 });
-                const filtered = this.applyResultFilters(results, {
-                    hasPrep: typeof args.has_prep === 'boolean' ? args.has_prep : undefined,
-                    hasTranscript: typeof args.has_transcript === 'boolean' ? args.has_transcript : undefined
-                });
                 return this.textResponse({
-                    results: filtered.map((result) => this.toSearchResultPayload(result)),
-                    total: filtered.length,
+                    results: results.map((result) => this.toSearchResultPayload(result)),
+                    total: results.length,
                     query,
                     filters_applied: {
                         attendees,
                         date_from: args.date_from || null,
                         date_to: args.date_to || null,
                         status,
-                        has_prep: args.has_prep ?? null,
-                        has_transcript: args.has_transcript ?? null,
+                        has_prep: hasPrep ?? null,
+                        has_transcript: hasTranscript ?? null,
                         most_recent: mostRecent
                     }
                 });
@@ -371,25 +371,6 @@ class MeetingNoteRecorderMcpServer {
     requiresIndex(toolName) {
         return ['search_meetings', 'list_recent_meetings', 'get_meeting_by_id'].includes(toolName);
     }
-    applyResultFilters(results, options) {
-        return results.filter((result) => {
-            const indexed = this.indexedMeetings.get(result.meeting.id);
-            if (!indexed) {
-                return false;
-            }
-            if (typeof options.hasPrep === 'boolean') {
-                if (options.hasPrep !== indexed.hasPrep) {
-                    return false;
-                }
-            }
-            if (typeof options.hasTranscript === 'boolean') {
-                if (options.hasTranscript !== indexed.hasTranscript) {
-                    return false;
-                }
-            }
-            return true;
-        });
-    }
     toSearchResultPayload(result) {
         const indexed = this.indexedMeetings.get(result.meeting.id);
         return {
@@ -427,6 +408,17 @@ class MeetingNoteRecorderMcpServer {
             duration: meeting.duration ?? null
         };
     }
+    rebuildSearchIndex() {
+        const indexedEntries = Array.from(this.indexedMeetings.values());
+        const metadata = {};
+        indexedEntries.forEach((entry) => {
+            metadata[entry.meeting.id] = {
+                hasPrep: entry.hasPrep,
+                hasTranscript: entry.hasTranscript
+            };
+        });
+        this.searchService.updateIndex(indexedEntries.map((item) => item.meeting), metadata);
+    }
     async refreshIndexWithMeeting(data) {
         const meeting = data.meeting;
         const indexed = {
@@ -440,7 +432,7 @@ class MeetingNoteRecorderMcpServer {
             sections: data.sections
         };
         this.indexedMeetings.set(meeting.id, indexed);
-        this.searchService.updateIndex(Array.from(this.indexedMeetings.values()).map((item) => item.meeting));
+        this.rebuildSearchIndex();
     }
     async buildIndex() {
         const storagePath = this.repository.getStoragePath();
@@ -471,7 +463,7 @@ class MeetingNoteRecorderMcpServer {
             };
             this.indexedMeetings.set(data.meeting.id, indexed);
         });
-        this.searchService.updateIndex(Array.from(this.indexedMeetings.values()).map((item) => item.meeting));
+        this.rebuildSearchIndex();
         this.indexBuilt = true;
         log('[INDEX] Completed', { indexedCount: this.indexedMeetings.size });
     }

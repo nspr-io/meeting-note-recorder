@@ -11,7 +11,7 @@ import { CalendarService } from './services/CalendarService';
 import { SettingsService } from './services/SettingsService';
 import { PermissionService } from './services/PermissionService';
 import { getLogger } from './services/LoggingService';
-import { SearchService } from './services/SearchService';
+import { SearchService } from '../shared/search/SearchService';
 import { PromptService } from './services/PromptService';
 import { RealtimeCoachingService } from './services/RealtimeCoachingService';
 import { NotionTodoService } from './services/NotionTodoService';

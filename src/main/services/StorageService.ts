@@ -23,6 +23,31 @@ import {
 
 const logger = getLogger();
 
+const STATUS_PRIORITY: Record<Meeting['status'], number> = {
+  completed: 50,
+  partial: 40,
+  recording: 35,
+  active: 30,
+  scheduled: 20,
+  error: 10
+};
+
+type DeduplicationTrigger = 'cache-load' | 'file-load' | 'manual';
+
+interface DuplicateArchiveRecord {
+  calendarEventId: string;
+  canonicalMeetingId: string;
+  archivedMeetingId: string;
+  originalFilePath?: string;
+  archivedFilePath?: string;
+  originalInsightsPath?: string | null;
+  archivedInsightsPath?: string | null;
+  status: Meeting['status'];
+  notesLength: number;
+  transcriptLength: number;
+  updatedAt?: string;
+}
+
 logger.info('[FILE-WATCHER] StorageService module loaded', {
   platform: process.platform,
   isPackaged: app.isPackaged,
@@ -111,6 +136,7 @@ export class StorageService {
   private lastCacheSaveTimestamp = 0;
   private chatHistoryCache: Map<string, MeetingChatMessage[]> = new Map();
   private chatHistoryDir: string;
+  private dedupeInFlight: Promise<void> | null = null;
 
   constructor(settingsService: SettingsService, notifyMeetingsUpdated: () => void) {
     this.settingsService = settingsService;
@@ -643,6 +669,7 @@ export class StorageService {
       }
 
       logger.info(`[LOAD] Successfully loaded ${loadedCount} meetings into cache`);
+      await this.resolveDuplicateMeetings('file-load');
     } catch (error) {
       logger.error('Failed to load meetings:', error);
     }
@@ -1222,12 +1249,12 @@ export class StorageService {
   }
 
   async getMeetingByCalendarId(calendarId: string): Promise<Meeting | undefined> {
-    return Array.from(this.meetingsCache.values())
-      .find(m => {
-        if (!m.calendarEventId) return false;
-        // Exact match only - each recurring instance has unique ID
-        return m.calendarEventId === calendarId;
-      });
+    const candidates = Array.from(this.meetingsCache.values()).filter((meeting) => meeting.calendarEventId === calendarId);
+    if (!candidates.length) {
+      return undefined;
+    }
+
+    return this.selectPreferredMeetingCandidate(candidates);
   }
 
   // Check if a meeting has been "touched" by the user (has notes, files, or changes)
@@ -1240,6 +1267,371 @@ export class StorageService {
       meeting.status === 'completed' ||
       meeting.status === 'partial'
     );
+  }
+
+  private getStatusWeight(status: Meeting['status'] | undefined): number {
+    if (!status) {
+      return 0;
+    }
+    return STATUS_PRIORITY[status] ?? 0;
+  }
+
+  private selectPreferredMeetingCandidate(meetings: Meeting[]): Meeting {
+    if (meetings.length === 1) {
+      return meetings[0];
+    }
+
+    const compare = (a: Meeting, b: Meeting): number => {
+      const touchedA = this.isMeetingTouched(a) ? 1 : 0;
+      const touchedB = this.isMeetingTouched(b) ? 1 : 0;
+      if (touchedA !== touchedB) {
+        return touchedB - touchedA;
+      }
+
+      const statusDiff = this.getStatusWeight(b.status) - this.getStatusWeight(a.status);
+      if (statusDiff !== 0) {
+        return statusDiff;
+      }
+
+      const notesLengthDiff = (b.notes?.trim().length ?? 0) - (a.notes?.trim().length ?? 0);
+      if (notesLengthDiff !== 0) {
+        return notesLengthDiff;
+      }
+
+      const transcriptLengthDiff = (b.transcript?.trim().length ?? 0) - (a.transcript?.trim().length ?? 0);
+      if (transcriptLengthDiff !== 0) {
+        return transcriptLengthDiff;
+      }
+
+      const updatedA = this.normalizeDateInput(a.updatedAt)?.getTime() ?? 0;
+      const updatedB = this.normalizeDateInput(b.updatedAt)?.getTime() ?? 0;
+      if (updatedA !== updatedB) {
+        return updatedB - updatedA;
+      }
+
+      const createdA = this.normalizeDateInput(a.createdAt)?.getTime() ?? 0;
+      const createdB = this.normalizeDateInput(b.createdAt)?.getTime() ?? 0;
+      if (createdA !== createdB) {
+        return createdB - createdA;
+      }
+
+      return a.id.localeCompare(b.id);
+    };
+
+    const sorted = [...meetings].sort(compare);
+    return sorted[0];
+  }
+
+  private computeCanonicalUpdates(canonical: Meeting, duplicates: Meeting[]): Partial<Meeting> {
+    const updates: Partial<Meeting> = {};
+    let bestStatus = canonical.status;
+
+    for (const duplicate of duplicates) {
+      if (this.getStatusWeight(duplicate.status) > this.getStatusWeight(bestStatus)) {
+        bestStatus = duplicate.status;
+      }
+    }
+
+    if (bestStatus && bestStatus !== canonical.status) {
+      updates.status = bestStatus;
+    }
+
+    if ((!canonical.notes || canonical.notes.trim().length === 0)) {
+      const donorWithNotes = duplicates.find((meeting) => meeting.notes && meeting.notes.trim().length > 0);
+      if (donorWithNotes?.notes) {
+        updates.notes = donorWithNotes.notes;
+      }
+    }
+
+    if ((!canonical.transcript || canonical.transcript.trim().length === 0)) {
+      const donorWithTranscript = duplicates.find((meeting) => meeting.transcript && meeting.transcript.trim().length > 0);
+      if (donorWithTranscript?.transcript) {
+        updates.transcript = donorWithTranscript.transcript;
+      }
+    }
+
+    return updates;
+  }
+
+  private sanitizeCalendarEventIdForFileName(calendarEventId: string): string {
+    return calendarEventId.replace(/[^a-zA-Z0-9-_]/g, '').substring(0, 50);
+  }
+
+  private async archiveDuplicateMeeting(
+    duplicate: Meeting,
+    options: { archiveRoot: string; calendarEventId: string; canonicalId: string }
+  ): Promise<DuplicateArchiveRecord> {
+    this.unwatchMeetingFile(duplicate.id);
+
+    const normalizedNotesLength = duplicate.notes?.trim().length ?? 0;
+    const normalizedTranscriptLength = duplicate.transcript?.trim().length ?? 0;
+
+    const record: DuplicateArchiveRecord = {
+      calendarEventId: options.calendarEventId,
+      canonicalMeetingId: options.canonicalId,
+      archivedMeetingId: duplicate.id,
+      originalFilePath: duplicate.filePath,
+      originalInsightsPath: duplicate.insightsFilePath ?? null,
+      status: duplicate.status,
+      notesLength: normalizedNotesLength,
+      transcriptLength: normalizedTranscriptLength,
+      updatedAt: this.normalizeDateInput(duplicate.updatedAt)?.toISOString()
+    };
+
+    if (duplicate.filePath) {
+      const relative = path.relative(this.storagePath, duplicate.filePath);
+      const safeRelative = relative && !relative.startsWith('..') ? relative : path.basename(duplicate.filePath);
+      const archiveDir = path.join(options.archiveRoot, options.calendarEventId);
+      const archivePath = path.join(archiveDir, safeRelative);
+
+      try {
+        await this.ensureDirectoryExists(path.dirname(archivePath));
+        await fs.rename(duplicate.filePath, archivePath);
+        record.archivedFilePath = archivePath;
+      } catch (error: any) {
+        logger.warn('[DEDUPLICATION] Failed to archive duplicate file', {
+          meetingId: duplicate.id,
+          filePath: duplicate.filePath,
+          archivePath,
+          error: error instanceof Error ? error.message : error
+        });
+      }
+    }
+
+    if (duplicate.insightsFilePath) {
+      const storagePath = this.settingsService.getSettings().storagePath;
+      const absoluteInsights = path.isAbsolute(duplicate.insightsFilePath)
+        ? duplicate.insightsFilePath
+        : path.join(storagePath, duplicate.insightsFilePath);
+      const archiveDir = path.join(options.archiveRoot, options.calendarEventId, 'insights');
+      const archiveInsightsPath = path.join(archiveDir, path.basename(absoluteInsights));
+
+      try {
+        await this.ensureDirectoryExists(path.dirname(archiveInsightsPath));
+        await fs.rename(absoluteInsights, archiveInsightsPath);
+        record.archivedInsightsPath = archiveInsightsPath;
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT') {
+          logger.warn('[DEDUPLICATION] Failed to archive duplicate insights file', {
+            meetingId: duplicate.id,
+            insightsPath: absoluteInsights,
+            archivePath: archiveInsightsPath,
+            error: error instanceof Error ? error.message : error
+          });
+        }
+      }
+    }
+
+    this.meetingsCache.delete(duplicate.id);
+    return record;
+  }
+
+  private async resolveDuplicateMeetings(trigger: DeduplicationTrigger): Promise<void> {
+    if (this.dedupeInFlight) {
+      await this.dedupeInFlight;
+      return;
+    }
+
+    const execution = this.executeDuplicateResolution(trigger).catch((error) => {
+      logger.error('[DEDUPLICATION] Duplicate resolution failed', {
+        trigger,
+        error: error instanceof Error ? error.message : error
+      });
+    }).finally(() => {
+      this.dedupeInFlight = null;
+    });
+
+    this.dedupeInFlight = execution;
+    await execution;
+  }
+
+  private async executeDuplicateResolution(trigger: DeduplicationTrigger): Promise<void> {
+    const groups = new Map<string, Meeting[]>();
+
+    for (const meeting of this.meetingsCache.values()) {
+      if (!meeting.calendarEventId) {
+        continue;
+      }
+      const group = groups.get(meeting.calendarEventId) ?? [];
+      group.push(meeting);
+      groups.set(meeting.calendarEventId, group);
+    }
+
+    let archiveRoot: string | null = null;
+    const archiveRecords: DuplicateArchiveRecord[] = [];
+    let affectedEvents = 0;
+
+    for (const [calendarEventId, meetings] of groups.entries()) {
+      if (meetings.length <= 1) {
+        continue;
+      }
+
+      affectedEvents++;
+      const canonical = this.selectPreferredMeetingCandidate(meetings);
+      const duplicates = meetings.filter((meeting) => meeting.id !== canonical.id);
+
+      let canonicalMeeting = canonical;
+      const updates = this.computeCanonicalUpdates(canonical, duplicates);
+      if (Object.keys(updates).length > 0) {
+        try {
+          canonicalMeeting = await this.updateMeeting(canonical.id, {
+            ...updates,
+            calendarEventId: canonical.calendarEventId
+          });
+        } catch (error) {
+          logger.warn('[DEDUPLICATION] Failed to update canonical meeting while merging duplicates', {
+            meetingId: canonical.id,
+            calendarEventId,
+            error: error instanceof Error ? error.message : error
+          });
+        }
+      }
+
+      if (!archiveRoot) {
+        archiveRoot = path.join(this.storagePath, '_duplicates', format(new Date(), 'yyyyMMdd-HHmmss'));
+      }
+
+      for (const duplicate of duplicates) {
+        const record = await this.archiveDuplicateMeeting(duplicate, {
+          archiveRoot,
+          calendarEventId,
+          canonicalId: canonicalMeeting.id
+        });
+        archiveRecords.push(record);
+      }
+    }
+
+    if (!archiveRecords.length) {
+      return;
+    }
+
+    if (archiveRoot) {
+      try {
+        await fs.mkdir(archiveRoot, { recursive: true });
+        const summaryPath = path.join(archiveRoot, 'summary.json');
+        const summary = {
+          trigger,
+          archivedAt: new Date().toISOString(),
+          archiveRoot,
+          archivedMeetings: archiveRecords.length,
+          affectedEvents,
+          records: archiveRecords
+        };
+        await fs.writeFile(summaryPath, JSON.stringify(summary, null, 2), 'utf-8');
+      } catch (error) {
+        logger.warn('[DEDUPLICATION] Failed to write deduplication summary', {
+          archiveRoot,
+          error: error instanceof Error ? error.message : error
+        });
+      }
+    }
+
+    await this.saveCacheToDisk();
+    this.notifyMeetingsUpdated();
+
+    logger.info('[DEDUPLICATION] Archived duplicate meetings', {
+      trigger,
+      archiveRoot,
+      archivedMeetings: archiveRecords.length,
+      affectedEvents
+    });
+  }
+
+  private async tryHydrateMeetingFromDiskByCalendarId(calendarEventId: string, referenceDate?: Date): Promise<Meeting | undefined> {
+    if (!calendarEventId) {
+      return undefined;
+    }
+
+    const sanitizedId = this.sanitizeCalendarEventIdForFileName(calendarEventId);
+    const candidateDirs = new Set<string>();
+    const baseDate = referenceDate ? new Date(referenceDate) : new Date();
+
+    const addMonthDir = (date: Date) => {
+      const year = format(date, 'yyyy');
+      const month = format(date, 'MM');
+      candidateDirs.add(path.join(this.storagePath, year, month));
+    };
+
+    addMonthDir(baseDate);
+    const prevMonth = new Date(baseDate);
+    prevMonth.setMonth(prevMonth.getMonth() - 1);
+    addMonthDir(prevMonth);
+    const nextMonth = new Date(baseDate);
+    nextMonth.setMonth(nextMonth.getMonth() + 1);
+    addMonthDir(nextMonth);
+
+    const matchingFiles = new Set<string>();
+    for (const dir of candidateDirs) {
+      try {
+        const entries = await fs.readdir(dir);
+        for (const entry of entries) {
+          if (!entry.endsWith('.md')) {
+            continue;
+          }
+          if (entry.includes(`[${sanitizedId}]-`)) {
+            matchingFiles.add(path.join(dir, entry));
+          }
+        }
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT') {
+          logger.debug('[DEDUPLICATION] Failed to inspect directory during hydrate attempt', {
+            directory: dir,
+            error: error instanceof Error ? error.message : error
+          });
+        }
+      }
+    }
+
+    if (!matchingFiles.size) {
+      try {
+        const allFiles = await this.scanForMarkdownFiles(this.storagePath);
+        for (const filePath of allFiles) {
+          if (filePath.includes(`[${sanitizedId}]-`)) {
+            matchingFiles.add(filePath);
+          }
+        }
+      } catch (error) {
+        logger.warn('[DEDUPLICATION] Failed to scan storage for calendar event files', {
+          calendarEventId,
+          error: error instanceof Error ? error.message : error
+        });
+      }
+    }
+
+    if (!matchingFiles.size) {
+      return undefined;
+    }
+
+    let bestMeeting: Meeting | null = null;
+    for (const filePath of matchingFiles) {
+      const meeting = await this.loadMeetingFromFile(filePath);
+      if (!meeting) {
+        continue;
+      }
+
+      if (meeting.calendarEventId === calendarEventId) {
+        bestMeeting = meeting;
+        break;
+      }
+
+      if (!bestMeeting) {
+        bestMeeting = meeting;
+      }
+    }
+
+    if (!bestMeeting) {
+      return undefined;
+    }
+
+    this.meetingsCache.set(bestMeeting.id, bestMeeting);
+    this.watchMeetingFile(bestMeeting);
+    logger.info('[DEDUPLICATION] Hydrated meeting from disk by calendar event id', {
+      calendarEventId,
+      meetingId: bestMeeting.id,
+      filePath: bestMeeting.filePath
+    });
+
+    return bestMeeting;
   }
 
   // Smart sync calendar events with existing meetings
@@ -1295,6 +1687,9 @@ export class StorageService {
           }
           const now = new Date();
           let existingMeeting = await this.getMeetingByCalendarId(event.id);
+          if (!existingMeeting) {
+            existingMeeting = await this.tryHydrateMeetingFromDiskByCalendarId(event.id, event.start instanceof Date ? event.start : new Date(event.start));
+          }
           let matchedByRecurringBase = false;
 
           if (!existingMeeting && event.id.includes('_')) {
@@ -1536,6 +1931,7 @@ export class StorageService {
         }
       }
 
+      await this.resolveDuplicateMeetings('cache-load');
       logger.info(`Loaded ${this.meetingsCache.size} meetings from cache (last 6 months + future + active)`);
     } catch (error) {
       // Cache doesn't exist yet, that's ok

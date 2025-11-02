@@ -13,7 +13,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import ElectronStore from 'electron-store';
 
 import { Meeting, SearchResult } from '../shared/types';
-import { SearchService } from '../main/services/SearchService';
+import { SearchMetadata, SearchService } from '../shared/search/SearchService';
 import {
   MeetingFileRepository,
   MeetingFileData,
@@ -322,34 +322,34 @@ class MeetingNoteRecorderMcpServer {
       const dateFrom = parseDateBoundary(args.date_from, { endOfDay: false });
       const dateTo = parseDateBoundary(args.date_to, { endOfDay: true });
 
+      const hasPrep = typeof args.has_prep === 'boolean' ? args.has_prep : undefined;
+      const hasTranscript = typeof args.has_transcript === 'boolean' ? args.has_transcript : undefined;
+
       const results = this.searchService.search({
         query,
         filters: {
           attendees,
           status: status as Meeting['status'][] | undefined,
           dateFrom,
-          dateTo
+          dateTo,
+          hasPrep,
+          hasTranscript
         },
         limit,
         mostRecent
       });
 
-      const filtered = this.applyResultFilters(results, {
-        hasPrep: typeof args.has_prep === 'boolean' ? args.has_prep : undefined,
-        hasTranscript: typeof args.has_transcript === 'boolean' ? args.has_transcript : undefined
-      });
-
       return this.textResponse({
-        results: filtered.map((result) => this.toSearchResultPayload(result)),
-        total: filtered.length,
+        results: results.map((result) => this.toSearchResultPayload(result)),
+        total: results.length,
         query,
         filters_applied: {
           attendees,
           date_from: args.date_from || null,
           date_to: args.date_to || null,
           status,
-          has_prep: args.has_prep ?? null,
-          has_transcript: args.has_transcript ?? null,
+          has_prep: hasPrep ?? null,
+          has_transcript: hasTranscript ?? null,
           most_recent: mostRecent
         }
       });
@@ -440,29 +440,6 @@ class MeetingNoteRecorderMcpServer {
     }
   };
 
-  private applyResultFilters(results: SearchResult[], options: { hasPrep?: boolean; hasTranscript?: boolean }): SearchResult[] {
-    return results.filter((result) => {
-      const indexed = this.indexedMeetings.get(result.meeting.id);
-      if (!indexed) {
-        return false;
-      }
-
-      if (typeof options.hasPrep === 'boolean') {
-        if (options.hasPrep !== indexed.hasPrep) {
-          return false;
-        }
-      }
-
-      if (typeof options.hasTranscript === 'boolean') {
-        if (options.hasTranscript !== indexed.hasTranscript) {
-          return false;
-        }
-      }
-
-      return true;
-    });
-  }
-
   private toSearchResultPayload(result: SearchResult) {
     const indexed = this.indexedMeetings.get(result.meeting.id);
     return {
@@ -502,6 +479,23 @@ class MeetingNoteRecorderMcpServer {
     };
   }
 
+  private rebuildSearchIndex(): void {
+    const indexedEntries = Array.from(this.indexedMeetings.values());
+    const metadata: Record<string, SearchMetadata> = {};
+
+    indexedEntries.forEach((entry) => {
+      metadata[entry.meeting.id] = {
+        hasPrep: entry.hasPrep,
+        hasTranscript: entry.hasTranscript
+      } satisfies SearchMetadata;
+    });
+
+    this.searchService.updateIndex(
+      indexedEntries.map((item) => item.meeting),
+      metadata
+    );
+  }
+
   private async refreshIndexWithMeeting(data: MeetingFileData): Promise<void> {
     const meeting = data.meeting;
     const indexed: IndexedMeeting = {
@@ -516,8 +510,7 @@ class MeetingNoteRecorderMcpServer {
     };
 
     this.indexedMeetings.set(meeting.id, indexed);
-
-    this.searchService.updateIndex(Array.from(this.indexedMeetings.values()).map((item) => item.meeting));
+    this.rebuildSearchIndex();
   }
 
   private async buildIndex(): Promise<void> {
@@ -552,7 +545,7 @@ class MeetingNoteRecorderMcpServer {
       this.indexedMeetings.set(data.meeting.id, indexed);
     });
 
-    this.searchService.updateIndex(Array.from(this.indexedMeetings.values()).map((item) => item.meeting));
+    this.rebuildSearchIndex();
     this.indexBuilt = true;
     log('[INDEX] Completed', { indexedCount: this.indexedMeetings.size });
   }

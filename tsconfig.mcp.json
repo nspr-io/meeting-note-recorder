@@ -12,7 +12,6 @@
   "include": [
     "src/mcp/**/*",
     "src/shared/**/*",
-    "src/main/services/SearchService.ts",
     "src/renderer/components/noteSectionUtils.ts"
   ],
   "exclude": [
