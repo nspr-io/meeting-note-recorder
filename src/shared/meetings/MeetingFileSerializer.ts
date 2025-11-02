@@ -55,12 +55,57 @@ export function extractStructuredSections(bodyContent: string): {
   transcriptContent: string;
 } {
   const normalized = bodyContent.replace(/\r\n/g, '\n');
-  const sections = normalized.split('\n---\n');
-  const notesSection = sections.find((section) => section.includes('# Meeting Notes')) ?? '';
-  const transcriptSection = sections.find((section) => section.includes('# Transcript')) ?? '';
 
-  const notesContent = notesSection.replace(/# Meeting Notes\s*/i, '').trim();
-  const transcriptContent = transcriptSection.replace(/# Transcript\s*/i, '').trim();
+  const notesHeadingRegex = /#\s*Meeting Notes/i;
+  const transcriptHeadingRegex = /#\s*Transcript/i;
+
+  const notesMatch = notesHeadingRegex.exec(normalized);
+  let notesContent = '';
+  let transcriptContent = '';
+
+  let transcriptIndex = -1;
+  let transcriptHeadingLength = 0;
+
+  if (notesMatch) {
+    const notesStart = notesMatch.index + notesMatch[0].length;
+    const transcriptSearch = normalized.slice(notesStart);
+    const relativeTranscriptMatch = transcriptHeadingRegex.exec(transcriptSearch);
+
+    if (relativeTranscriptMatch) {
+      transcriptIndex = notesStart + relativeTranscriptMatch.index;
+      transcriptHeadingLength = relativeTranscriptMatch[0].length;
+    } else {
+      const fallbackTranscriptMatch = transcriptHeadingRegex.exec(normalized);
+      if (fallbackTranscriptMatch) {
+        transcriptIndex = fallbackTranscriptMatch.index;
+        transcriptHeadingLength = fallbackTranscriptMatch[0].length;
+      }
+    }
+
+    const notesEnd = transcriptIndex !== -1 ? transcriptIndex : normalized.length;
+    notesContent = normalized.slice(notesStart, notesEnd).trim();
+
+    if (notesContent) {
+      notesContent = notesContent.replace(/\n-{3,}\s*$/g, '').trim();
+    }
+  } else {
+    const fallbackTranscriptMatch = transcriptHeadingRegex.exec(normalized);
+    if (fallbackTranscriptMatch) {
+      transcriptIndex = fallbackTranscriptMatch.index;
+      transcriptHeadingLength = fallbackTranscriptMatch[0].length;
+      notesContent = normalized.slice(0, transcriptIndex).trim();
+      if (notesContent) {
+        notesContent = notesContent.replace(/\n-{3,}\s*$/g, '').trim();
+      }
+    } else {
+      notesContent = normalized.trim();
+    }
+  }
+
+  if (transcriptIndex !== -1) {
+    const transcriptStart = transcriptIndex + transcriptHeadingLength;
+    transcriptContent = normalized.slice(transcriptStart).trim();
+  }
 
   return { notesContent, transcriptContent };
 }

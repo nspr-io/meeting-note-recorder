@@ -20,8 +20,6 @@ import {
   combineNoteSections,
   NoteSections
 } from '../../renderer/components/noteSectionUtils';
-import { sanitizeCalendarEventIdForFileName } from '../../shared/meetings/calendarEventIdUtils';
-
 const PREP_START = '<!-- PREP_NOTES -->';
 const PREP_END = '<!-- /PREP_NOTES -->';
 
@@ -1307,6 +1305,10 @@ export class StorageService {
     return STATUS_PRIORITY[status] ?? 0;
   }
 
+  private sanitizeCalendarEventIdForFileName(calendarEventId: string): string {
+    return calendarEventId.replace(/[^a-zA-Z0-9-_]/g, '').substring(0, 50);
+  }
+
   private selectPreferredMeetingCandidate(meetings: Meeting[]): Meeting {
     if (meetings.length === 1) {
       return meetings[0];
@@ -1569,7 +1571,7 @@ export class StorageService {
       return undefined;
     }
 
-    const sanitizedId = sanitizeCalendarEventIdForFileName(calendarEventId);
+    const sanitizedId = this.sanitizeCalendarEventIdForFileName(calendarEventId);
     const candidateDirs = new Set<string>();
     const baseDate = referenceDate ? new Date(referenceDate) : new Date();
 

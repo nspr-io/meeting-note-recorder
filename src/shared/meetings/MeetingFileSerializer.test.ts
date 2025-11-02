@@ -80,6 +80,39 @@ describe('MeetingFileSerializer', () => {
     expect(meeting.insights).toBe(expectedInsights);
   });
 
+  it('preserves prep closing marker when prep content includes horizontal rules', async () => {
+    const markdown = `---
+id: prep-hr-test
+title: Prep HR Test
+date: 2025-11-02T15:00:00.000Z
+---
+# Meeting Notes
+
+<!-- PREP_NOTES -->
+Agenda item A
+
+---
+
+**Prepared**: Nov 2, 2025 | **Timezone**: GMT
+<!-- /PREP_NOTES -->
+
+---
+
+# Transcript
+
+Transcript body goes here.
+`;
+
+    const { meeting, sections } = await deserializeMeetingMarkdown(markdown, {
+      filePath: '/storage/2025/11/2025-11-02-15-00-[prep-hr-test]-prep-hr-test.md'
+    });
+
+    expect(sections.prepNotes).toContain('Agenda item A');
+    expect(sections.prepNotes).toContain('**Prepared**: Nov 2, 2025');
+    expect(sections.meetingNotes).toBe('');
+    expect(meeting.notes.trim().endsWith('<!-- /PREP_NOTES -->')).toBe(true);
+  });
+
   it('generates deterministic filenames using meeting metadata', () => {
     const fileName = generateMeetingFileName(baseMeeting);
     const date = new Date(baseMeeting.date);
