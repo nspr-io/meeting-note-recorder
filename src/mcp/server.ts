@@ -134,6 +134,14 @@ class MeetingNoteRecorderMcpServer {
                 type: 'string',
                 description: 'ISO 8601 date string. Required when creating a new file.'
               },
+              meeting_start: {
+                type: 'string',
+                description: 'ISO 8601 timestamp for the meeting start. Required when creating a new file.'
+              },
+              meeting_end: {
+                type: 'string',
+                description: 'Optional ISO 8601 timestamp for when the meeting ends.'
+              },
               attendees: {
                 type: 'array',
                 items: { type: 'string' }
@@ -141,8 +149,16 @@ class MeetingNoteRecorderMcpServer {
               meeting_url: {
                 type: 'string'
               },
+              calendar_invite_url: {
+                type: 'string',
+                description: 'HTML link to the calendar event, if available.'
+              },
               prep_content: {
                 type: 'string'
+              },
+              allow_create: {
+                type: 'boolean',
+                description: 'Defaults to false. When true, the meeting will be created if missing (requires meeting metadata).'
               }
             },
             required: ['calendar_event_id', 'prep_content']
@@ -289,9 +305,13 @@ class MeetingNoteRecorderMcpServer {
         calendarEventId: String(args.calendar_event_id || ''),
         meetingTitle: args.meeting_title ? String(args.meeting_title) : undefined,
         meetingDate: args.meeting_date ? String(args.meeting_date) : undefined,
+        meetingStart: args.meeting_start ? String(args.meeting_start) : undefined,
+        meetingEnd: args.meeting_end ? String(args.meeting_end) : undefined,
         attendees: Array.isArray(args.attendees) ? args.attendees.map(String) : [],
         meetingUrl: args.meeting_url ? String(args.meeting_url) : undefined,
-        prepContent: String(args.prep_content || '')
+        calendarInviteUrl: args.calendar_invite_url ? String(args.calendar_invite_url) : undefined,
+        prepContent: String(args.prep_content || ''),
+        allowCreate: typeof args.allow_create === 'boolean' ? args.allow_create : undefined
       };
 
       if (!payload.calendarEventId.trim()) {

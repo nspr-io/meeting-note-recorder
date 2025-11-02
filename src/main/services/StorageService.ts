@@ -20,6 +20,10 @@ import {
   combineNoteSections,
   NoteSections
 } from '../../renderer/components/noteSectionUtils';
+import { sanitizeCalendarEventIdForFileName } from '../../shared/meetings/calendarEventIdUtils';
+
+const PREP_START = '<!-- PREP_NOTES -->';
+const PREP_END = '<!-- /PREP_NOTES -->';
 
 const logger = getLogger();
 
@@ -885,17 +889,28 @@ export class StorageService {
       throw new Error(`Meeting ${id} not found`);
     }
 
-    const originalTags = Array.isArray(meeting.tags) ? [...meeting.tags] : undefined;
+    let diskMeeting: Meeting | null = null;
+    if (meeting.filePath) {
+      diskMeeting = await this.loadMeetingFromFile(meeting.filePath);
+      if (diskMeeting) {
+        diskMeeting.filePath = meeting.filePath;
+      }
+    }
 
-    // Store original values for comparison
-    const originalNotes = meeting.notes || '';
-    const originalTranscript = meeting.transcript || '';
-    const originalInsightsPath = meeting.insightsFilePath || undefined;
+    const baseMeeting = (diskMeeting ?? meeting) as Meeting;
+
+    const originalTags = Array.isArray(baseMeeting.tags) ? [...baseMeeting.tags] : undefined;
+
+    // Store original values for comparison (prefer on-disk state when available)
+    const originalNotes = baseMeeting.notes || '';
+    const originalTranscript = baseMeeting.transcript || '';
+    const originalInsightsPath = baseMeeting.insightsFilePath || undefined;
 
     const incomingInsights = sanitizedUpdates.insights ?? undefined;
+    const notesProvided = Object.prototype.hasOwnProperty.call(sanitizedUpdates, 'notes');
 
     const updatedMeeting: Meeting = {
-      ...meeting,
+      ...baseMeeting,
       ...sanitizedUpdates,
       id: meeting.id, // Ensure ID doesn't change
       updatedAt: sanitizedUpdates.updatedAt ?? new Date(),
@@ -921,14 +936,14 @@ export class StorageService {
     }
 
     // Check if existing markdown file is present at previous path
-    const fileExists = meeting.filePath ? await fs.access(meeting.filePath).then(() => true).catch(() => false) : false;
+    const fileExists = baseMeeting.filePath ? await fs.access(baseMeeting.filePath).then(() => true).catch(() => false) : false;
 
     // If file exists, re-read it to get latest notes before updating
     // This prevents overwriting user edits made outside the app
-    if (fileExists && meeting.filePath) {
+    if (fileExists && baseMeeting.filePath) {
       try {
-        const fileContent = await fs.readFile(meeting.filePath, 'utf-8');
-        const parsed = await deserializeMeetingMarkdown(fileContent, { filePath: meeting.filePath });
+        const fileContent = await fs.readFile(baseMeeting.filePath, 'utf-8');
+        const parsed = await deserializeMeetingMarkdown(fileContent, { filePath: baseMeeting.filePath });
 
         const fileNotes = parsed.meeting.notes || '';
         const fileTranscript = parsed.transcript;
@@ -970,11 +985,27 @@ export class StorageService {
       }
     }
 
+    if (notesProvided && typeof sanitizedUpdates.notes === 'string') {
+      const incomingNotes = sanitizedUpdates.notes;
+      if (incomingNotes.includes(PREP_START) && !incomingNotes.includes(PREP_END)) {
+        if (diskMeeting?.notes?.includes(PREP_END)) {
+          logger.warn('[NOTES-MARKER-VALIDATION] Incoming notes missing closing PREP marker, preserving disk version', {
+            meetingId: id,
+          });
+          updatedMeeting.notes = diskMeeting.notes;
+        } else {
+          logger.warn('[NOTES-MARKER-VALIDATION] Incoming notes missing closing PREP marker but disk copy also lacks marker', {
+            meetingId: id,
+          });
+        }
+      }
+    }
+
     let insightsFilePath = originalInsightsPath;
 
     // If title or date changed AND markdown file exists, rename file (and linked insights file)
-    if ((sanitizedUpdates.title || sanitizedUpdates.date) && fileExists && meeting.filePath) {
-      const oldPath = meeting.filePath;
+    if ((sanitizedUpdates.title || sanitizedUpdates.date) && fileExists && baseMeeting.filePath) {
+      const oldPath = baseMeeting.filePath;
       const newFileName = generateMeetingFileName(updatedMeeting);
       const newPath = path.join(storagePath, newFileName);
 
@@ -1353,10 +1384,6 @@ export class StorageService {
     return updates;
   }
 
-  private sanitizeCalendarEventIdForFileName(calendarEventId: string): string {
-    return calendarEventId.replace(/[^a-zA-Z0-9-_]/g, '').substring(0, 50);
-  }
-
   private async archiveDuplicateMeeting(
     duplicate: Meeting,
     options: { archiveRoot: string; calendarEventId: string; canonicalId: string }
@@ -1542,7 +1569,7 @@ export class StorageService {
       return undefined;
     }
 
-    const sanitizedId = this.sanitizeCalendarEventIdForFileName(calendarEventId);
+    const sanitizedId = sanitizeCalendarEventIdForFileName(calendarEventId);
     const candidateDirs = new Set<string>();
     const baseDate = referenceDate ? new Date(referenceDate) : new Date();
 

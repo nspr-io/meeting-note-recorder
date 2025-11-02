@@ -14,6 +14,7 @@ import {
   inferDateFromFilename,
   inferDateFromDirectory
 } from './MeetingFileSerializer';
+import { sanitizeCalendarEventIdForFileName } from './calendarEventIdUtils';
 
 export interface MeetingFileData {
   meeting: Meeting;
@@ -25,9 +26,13 @@ export interface PrepSectionSaveOptions {
   calendarEventId: string;
   meetingTitle?: string;
   meetingDate?: string;
+  meetingStart?: string;
+  meetingEnd?: string;
   attendees?: string[];
   meetingUrl?: string;
+  calendarInviteUrl?: string;
   prepContent: string;
+  allowCreate?: boolean;
 }
 
 export class MeetingFileRepository {
@@ -43,9 +48,9 @@ export class MeetingFileRepository {
       return null;
     }
 
-    const sanitizedId = this.sanitizeCalendarEventId(trimmedId);
+    const sanitizedId = sanitizeCalendarEventIdForFileName(trimmedId);
     const rawBaseId = trimmedId.split('_')[0] ?? '';
-    const sanitizedBaseId = rawBaseId ? this.sanitizeCalendarEventId(rawBaseId) : '';
+    const sanitizedBaseId = rawBaseId ? sanitizeCalendarEventIdForFileName(rawBaseId) : '';
 
     const searchTokens: Array<{ token: string; weight: number }> = [];
     if (sanitizedId) {
@@ -150,10 +155,15 @@ export class MeetingFileRepository {
       calendarEventId,
       meetingTitle,
       meetingDate,
+      meetingStart,
+      meetingEnd,
       attendees = [],
       meetingUrl,
+      calendarInviteUrl,
       prepContent
     } = options;
+
+    const allowCreate = options.allowCreate ?? false;
 
     if (!prepContent || !prepContent.trim()) {
       throw new Error('prepContent is required');
@@ -162,16 +172,27 @@ export class MeetingFileRepository {
     let existing = await this.loadByCalendarId(calendarEventId);
 
     if (!existing) {
+      if (!allowCreate) {
+        throw new Error('Meeting not found for provided calendarEventId. Set allowCreate=true and include full meeting metadata to create a new file.');
+      }
+
       if (!meetingTitle || !meetingDate) {
         throw new Error('meetingTitle and meetingDate are required when creating a new file');
+      }
+
+      if (!meetingStart) {
+        throw new Error('meetingStart is required when creating a new file');
       }
 
       const filePath = await this.createMeetingFile({
         calendarEventId,
         meetingTitle,
         meetingDate,
+        meetingStart,
+        meetingEnd,
         attendees,
         meetingUrl,
+        calendarInviteUrl,
         prepContent
       });
 
@@ -203,16 +224,22 @@ export class MeetingFileRepository {
     calendarEventId: string;
     meetingTitle: string;
     meetingDate: string;
+    meetingStart: string;
+    meetingEnd?: string;
     attendees: string[];
     meetingUrl?: string;
+    calendarInviteUrl?: string;
     prepContent: string;
   }): Promise<string> {
     const {
       calendarEventId,
       meetingTitle,
       meetingDate,
+      meetingStart,
+      meetingEnd,
       attendees,
       meetingUrl,
+      calendarInviteUrl,
       prepContent
     } = params;
 
@@ -221,16 +248,32 @@ export class MeetingFileRepository {
       throw new Error('meetingDate must be an ISO 8601 string or a recognized local date/time format (e.g. "YYYY-MM-DD HH:mm")');
     }
 
+    const normalizedStart = this.parseMeetingDateInput(meetingStart);
+    if (!normalizedStart) {
+      throw new Error('meetingStart must be an ISO 8601 string or a recognized date/time format (e.g. "YYYY-MM-DD HH:mm")');
+    }
+
+    let normalizedEnd: Date | null = null;
+    if (meetingEnd) {
+      normalizedEnd = this.parseMeetingDateInput(meetingEnd);
+      if (!normalizedEnd) {
+        throw new Error('meetingEnd must be an ISO 8601 string or a recognized date/time format (e.g. "YYYY-MM-DD HH:mm")');
+      }
+    }
+
     const meeting: Meeting = {
       id: uuidv4(),
       title: meetingTitle,
       date: normalizedDate,
+      startTime: normalizedStart,
+      endTime: normalizedEnd ?? undefined,
       attendees: attendees ?? [],
       status: 'scheduled',
       notes: '',
       transcript: '',
       calendarEventId,
       meetingUrl,
+      calendarInviteUrl,
       createdAt: new Date(),
       updatedAt: new Date()
     };
@@ -389,10 +432,6 @@ export class MeetingFileRepository {
     }
 
     return result;
-  }
-
-  private sanitizeCalendarEventId(calendarEventId: string): string {
-    return calendarEventId.replace(/[^a-zA-Z0-9-_]/g, '').substring(0, 50);
   }
 
   private parseMeetingDateInput(value: string): Date | null {

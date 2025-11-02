@@ -12,6 +12,7 @@ import {
   extractNoteSections,
   combineNoteSections
 } from '../../renderer/components/noteSectionUtils';
+import { sanitizeCalendarEventIdForFileName } from './calendarEventIdUtils';
 
 export interface MeetingDeserializationOptions {
   filePath?: string;
@@ -135,7 +136,7 @@ export function generateMeetingFileName(meeting: Meeting): string {
   const timestamp = format(normalizedDate, 'yyyy-MM-dd-HH-mm');
 
   const eventIdPart = meeting.calendarEventId
-    ? `[${meeting.calendarEventId.replace(/[^a-zA-Z0-9-_]/g, '').substring(0, 50)}]-`
+    ? `[${sanitizeCalendarEventIdForFileName(meeting.calendarEventId)}]-`
     : '';
 
   const title = typeof meeting.title === 'string' ? meeting.title : 'untitled';

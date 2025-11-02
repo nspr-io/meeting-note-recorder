@@ -1,6 +1,7 @@
 import { StorageService } from './StorageService';
 import type { Meeting, CalendarEvent } from '../../shared/types';
 import type { SettingsService } from './SettingsService';
+import * as MeetingFileSerializer from '../../shared/meetings/MeetingFileSerializer';
 
 jest.mock('./DescriptionProcessingService', () => ({
   DescriptionProcessingService: jest.fn().mockImplementation(() => ({
@@ -30,6 +31,34 @@ jest.mock('chokidar', () => ({
     close: jest.fn(),
   })),
 }));
+
+const diskMeetingsByPath = new Map<string, Meeting>();
+const deserializeMeetingMarkdownSpy = jest.spyOn(MeetingFileSerializer, 'deserializeMeetingMarkdown');
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  diskMeetingsByPath.clear();
+  deserializeMeetingMarkdownSpy.mockImplementation(async (_content, options) => {
+    const filePath = options?.filePath ?? '';
+    const diskMeeting = diskMeetingsByPath.get(filePath);
+    const meetingFromDisk = diskMeeting
+      ? { ...diskMeeting }
+      : buildTouchedMeeting({ filePath });
+
+    // Ensure the meeting retains the file path reference for downstream logic
+    meetingFromDisk.filePath = filePath;
+
+    return {
+      meeting: meetingFromDisk,
+      sections: {
+        calendarInfo: '',
+        prepNotes: '',
+        meetingNotes: meetingFromDisk.notes ?? ''
+      },
+      transcript: meetingFromDisk.transcript ?? ''
+    };
+  });
+});
 
 const createStorageService = () => {
   const settingsService = {
@@ -84,10 +113,6 @@ const buildCalendarEvent = (overrides: Partial<CalendarEvent> = {}): CalendarEve
 });
 
 describe('StorageService.updateMeeting tag persistence', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
   it('writes markdown and deduplicates when tags change', async () => {
     const { service } = createStorageService();
     const meeting = buildTouchedMeeting({
@@ -95,6 +120,7 @@ describe('StorageService.updateMeeting tag persistence', () => {
       filePath: '/tmp/meeting-storage/2025/10/meeting.md'
     });
     (service as any).meetingsCache.set(meeting.id, meeting);
+    diskMeetingsByPath.set(meeting.filePath!, { ...meeting });
 
     await service.updateMeeting(meeting.id, { tags: ['sales', 'sales', 'internal', 'support', 'customer'] });
 
@@ -120,6 +146,7 @@ describe('StorageService.updateMeeting tag persistence', () => {
       filePath: '/tmp/meeting-storage/2025/10/manual-status.md'
     });
     (service as any).meetingsCache.set(meeting.id, meeting);
+    diskMeetingsByPath.set(meeting.filePath!, { ...meeting });
 
     const updated = await service.updateMeeting(meeting.id, { status: 'scheduled' });
 
@@ -132,13 +159,40 @@ describe('StorageService.updateMeeting tag persistence', () => {
     expect(markdownCall).toBeDefined();
     expect(markdownCall?.[1]).toMatch(/"?status"?: "?scheduled"?/);
   });
+
+  it('preserves prep notes closing marker when cached notes are stale', async () => {
+    const { service } = createStorageService();
+    const filePath = '/tmp/meeting-storage/2025/11/mindstone-x-mvpr-weekly-call.md';
+    const cachedMeeting = buildTouchedMeeting({
+      title: 'Mindstone x MVPR weekly call',
+      calendarEventId: 'mvpr-event',
+      filePath,
+      notes: '<!-- PREP_NOTES -->\nCached prep content without closing marker'
+    });
+    (service as any).meetingsCache.set(cachedMeeting.id, cachedMeeting);
+
+    diskMeetingsByPath.set(filePath, {
+      ...cachedMeeting,
+      notes: '<!-- PREP_NOTES -->\nCached prep content without closing marker\n<!-- /PREP_NOTES -->'
+    });
+
+    await service.updateMeeting(cachedMeeting.id, {
+      date: new Date('2025-11-10T08:45:00Z')
+    });
+
+    const fsPromises = require('fs/promises') as { writeFile: jest.Mock };
+    const prepWriteCall = fsPromises.writeFile.mock.calls.find(([, content]) =>
+      typeof content === 'string' && content.includes('<!-- PREP_NOTES -->')
+    );
+    expect(prepWriteCall).toBeDefined();
+    expect(prepWriteCall?.[1]).toContain('<!-- /PREP_NOTES -->');
+
+    const updatedMeeting = (service as any).meetingsCache.get(cachedMeeting.id) as Meeting;
+    expect(updatedMeeting.notes).toContain('<!-- /PREP_NOTES -->');
+  });
 });
 
 describe('StorageService.smartSyncCalendarEvents - moved meetings', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
   it('re-associates touched recurring meeting when the instance is rescheduled', async () => {
     const { service } = createStorageService();
     const meeting = buildTouchedMeeting();
