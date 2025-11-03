@@ -18,7 +18,7 @@ import { NotionTodoService } from './services/NotionTodoService';
 import FirefliesTranscriptService from './services/FirefliesTranscriptService';
 import { MeetingChatService } from './services/MeetingChatService';
 import { ServiceError } from './services/ServiceError';
-import { IpcChannels, Meeting, UserProfile, SearchOptions, CoachingType, NotionShareMode, ActionItemSyncStatus, CoachConfig, CoachWindowStatus, PermissionType } from '../shared/types';
+import { IpcChannels, Meeting, CalendarEvent, UserProfile, SearchOptions, CoachingType, NotionShareMode, ActionItemSyncStatus, CoachConfig, CoachWindowStatus, PermissionType } from '../shared/types';
 import { generateNotificationHTML, NotificationType } from './utils/notificationTemplate';
 
 const logger = getLogger();
@@ -1735,9 +1735,17 @@ async function findMatchingScheduledMeeting(detectedTitle?: string): Promise<Mee
 
     // Look for meetings starting within the next 3 minutes OR already ongoing
     const matchingMeetings = meetings.filter((meeting: Meeting) => {
-      if (meeting.status !== 'scheduled') return false;
+      const eligibleStatuses: Array<Meeting['status']> = ['scheduled', 'recording', 'active'];
+      const status = meeting.status ?? 'scheduled';
+      if (!eligibleStatuses.includes(status)) {
+        return false;
+      }
 
-      const meetingStartTime = new Date(meeting.date);
+      const meetingStartSource = meeting.startTime ?? meeting.date;
+      const meetingStartTime = new Date(meetingStartSource);
+      if (Number.isNaN(meetingStartTime.getTime())) {
+        return false;
+      }
       const timeDiff = meetingStartTime.getTime() - now.getTime(); // Positive if meeting is in future
       const minutesDiff = timeDiff / (1000 * 60);
 
@@ -1776,9 +1784,22 @@ async function findMatchingScheduledMeeting(detectedTitle?: string): Promise<Mee
 
     // Return the earliest scheduled meeting if any
     if (matchingMeetings.length > 0) {
-      return matchingMeetings.sort((a: Meeting, b: Meeting) =>
-        new Date(a.date).getTime() - new Date(b.date).getTime()
-      )[0];
+      const statusPriority: Partial<Record<Meeting['status'], number>> = {
+        recording: 3,
+        active: 2,
+        scheduled: 1
+      };
+
+      return matchingMeetings
+        .sort((a: Meeting, b: Meeting) => {
+          const aPriority = statusPriority[a.status ?? 'scheduled'] ?? 0;
+          const bPriority = statusPriority[b.status ?? 'scheduled'] ?? 0;
+          if (aPriority !== bPriority) {
+            return bPriority - aPriority;
+          }
+
+          return new Date(a.date).getTime() - new Date(b.date).getTime();
+        })[0];
     }
 
     return null;
@@ -1786,6 +1807,65 @@ async function findMatchingScheduledMeeting(detectedTitle?: string): Promise<Mee
     logger.error('Error finding matching scheduled meeting:', error);
     return null;
   }
+}
+
+function isStoredMeeting(candidate: Meeting | CalendarEvent): candidate is Meeting {
+  return typeof (candidate as Meeting)?.status === 'string';
+}
+
+async function prepareMeetingForRecording(
+  match: Meeting | CalendarEvent,
+  context: { detectedTitle?: string; platform?: Meeting['platform'] }
+): Promise<{ meeting: Meeting; created: boolean }> {
+  const startTime = new Date();
+  const platform = context.platform;
+
+  if (isStoredMeeting(match)) {
+    const updates: Partial<Meeting> = {
+      status: 'recording',
+      startTime
+    };
+    if (platform) {
+      updates.platform = platform;
+    }
+
+    const updated = await storageService.updateMeeting(match.id, updates);
+    return { meeting: updated, created: false };
+  }
+
+  const existing = await storageService.getMeetingByCalendarId(match.id);
+  if (existing) {
+    const updates: Partial<Meeting> = {
+      status: 'recording',
+      startTime
+    };
+    if (platform) {
+      updates.platform = platform;
+    }
+
+    const refreshed = await storageService.updateMeeting(existing.id, updates);
+    return { meeting: refreshed, created: false };
+  }
+
+  const creationPayload: Partial<Meeting> = {
+    title: match.title || context.detectedTitle || 'Untitled Meeting',
+    date: match.start ?? new Date(),
+    status: 'recording',
+    startTime,
+    calendarEventId: match.id,
+    meetingUrl: match.meetingUrl,
+    calendarInviteUrl: match.htmlLink,
+    attendees: match.attendees ?? [],
+    notes: '',
+    transcript: ''
+  };
+
+  if (platform) {
+    creationPayload.platform = platform;
+  }
+
+  const created = await storageService.createMeeting(creationPayload);
+  return { meeting: created, created: true };
 }
 
 // Store active notifications to prevent garbage collection
@@ -2096,71 +2176,42 @@ function setupMeetingDetectionHandlers() {
         autoRecordNextMeeting = false;
 
         try {
-          let meetingToRecord = matchedMeeting;
+          let meetingToRecord: Meeting;
 
           if (matchedMeeting) {
-            // Use the matched scheduled meeting
-            logger.info('[AUTO-RECORD] Using matched scheduled meeting', {
-              meetingId: matchedMeeting.id,
+            logger.info('[AUTO-RECORD] Using matched meeting candidate', {
+              candidateId: matchedMeeting.id,
               title: matchedMeeting.title
             });
 
-            // Search for existing meeting by calendar event ID
-            const allMeetings = await storageService.getAllMeetings();
-            const calendarEventId = matchedMeeting.calendarEventId || matchedMeeting.id;
-            const existingMeeting = allMeetings.find(m => m.calendarEventId === calendarEventId);
+            const { meeting, created } = await prepareMeetingForRecording(matchedMeeting, {
+              detectedTitle: data.meetingTitle,
+              platform: data.platform as Meeting['platform']
+            });
+            meetingToRecord = meeting;
 
-            if (existingMeeting) {
-              // Update the existing meeting status to recording
-              logger.info('[AUTO-RECORD] Found existing meeting in storage, updating', {
-                existingMeetingId: existingMeeting.id,
-                calendarEventId: calendarEventId
-              });
-
-              await storageService.updateMeeting(existingMeeting.id, {
-                status: 'recording',
-                startTime: new Date(),
-                platform: data.platform as Meeting['platform']
-              });
-              meetingToRecord = await storageService.getMeeting(existingMeeting.id);
-            } else {
-              // Meeting doesn't exist in storage, create it
-              logger.info('[AUTO-RECORD] Meeting not in storage, creating new', {
-                calendarEventId: calendarEventId,
-                title: matchedMeeting.title
-              });
-
-              meetingToRecord = await storageService.createMeeting({
-                title: matchedMeeting.title || data.meetingTitle || 'Untitled Meeting',
-                date: matchedMeeting.date || new Date(),
-                status: 'recording',
-                startTime: new Date(),
-                platform: data.platform as Meeting['platform'],
-                calendarEventId: calendarEventId,
-                meetingUrl: matchedMeeting.meetingUrl,
-                calendarInviteUrl: matchedMeeting.calendarInviteUrl,
-                attendees: matchedMeeting.attendees || [],
-                notes: matchedMeeting.notes || '',
-                transcript: ''
-              });
+            if (created) {
+              await storageService.forceSave();
             }
           } else {
-            // Create new meeting for recording
             logger.info('[AUTO-RECORD] Creating new meeting for recording', {
               title: data.meetingTitle || 'Untitled Meeting'
             });
 
-            meetingToRecord = await storageService.createMeeting({
+            const creationPayload: Partial<Meeting> = {
               title: data.meetingTitle || 'Untitled Meeting',
               date: new Date(),
               status: 'recording',
               startTime: new Date(),
-              platform: data.platform as Meeting['platform'],
               notes: '',
               transcript: ''
-            });
+            };
 
-            // Force save immediately after creation
+            if (data.platform) {
+              creationPayload.platform = data.platform as Meeting['platform'];
+            }
+
+            meetingToRecord = await storageService.createMeeting(creationPayload);
             await storageService.forceSave();
           }
 
@@ -2267,104 +2318,71 @@ function setupMeetingDetectionHandlers() {
         activeNotifications.delete(notificationId);
 
       try {
-        let meetingToRecord = matchedMeeting;
+        let meetingToRecord: Meeting;
 
         if (matchedMeeting) {
-          // Use the matched scheduled meeting
-          logger.info('[JOURNEY-9a] Using matched scheduled meeting', {
-            meetingId: matchedMeeting.id,
-            title: matchedMeeting.title,
-            calendarEventId: matchedMeeting.calendarEventId
+          logger.info('[JOURNEY-9a] Using matched meeting candidate', {
+            candidateId: matchedMeeting.id,
+            title: matchedMeeting.title
           });
 
-          // Search for existing meeting by calendar event ID
-          const allMeetings = await storageService.getAllMeetings();
-          const calendarEventId = matchedMeeting.calendarEventId || matchedMeeting.id;
-          const existingMeeting = allMeetings.find(m => m.calendarEventId === calendarEventId);
+          const { meeting, created } = await prepareMeetingForRecording(matchedMeeting, {
+            detectedTitle: data.meetingTitle,
+            platform: data.platform as Meeting['platform']
+          });
+          meetingToRecord = meeting;
 
-          if (existingMeeting) {
-            // Update the existing meeting status to recording
-            logger.info('[JOURNEY-9a-update] Found existing meeting in storage, updating', {
-              existingMeetingId: existingMeeting.id,
-              calendarEventId: calendarEventId,
-              currentStatus: existingMeeting.status
+          if (created) {
+            logger.info('[JOURNEY-9a-created] Meeting created from candidate', {
+              meetingId: meetingToRecord.id,
+              title: meetingToRecord.title
             });
-
-            await storageService.updateMeeting(existingMeeting.id, {
-              status: 'recording',
-              startTime: new Date(),
-              platform: data.platform as Meeting['platform']
-            });
-            meetingToRecord = await storageService.getMeeting(existingMeeting.id);
-          } else {
-            // Meeting doesn't exist in storage, create it
-            logger.info('[JOURNEY-9a-fallback] Meeting not in storage, creating new', {
-              calendarEventId: calendarEventId,
-              title: matchedMeeting.title
-            });
-
-            meetingToRecord = await storageService.createMeeting({
-              title: matchedMeeting.title || data.meetingTitle || 'Untitled Meeting',
-              date: matchedMeeting.date || new Date(),
-              status: 'recording',
-              startTime: new Date(),
-              platform: data.platform as Meeting['platform'],
-              calendarEventId: calendarEventId,
-              meetingUrl: matchedMeeting.meetingUrl,
-              calendarInviteUrl: matchedMeeting.calendarInviteUrl,
-              attendees: matchedMeeting.attendees || [],
-              notes: matchedMeeting.notes || '',
-              transcript: ''
-            });
+            try {
+              await storageService.forceSave();
+              logger.info('[JOURNEY-9a-created] Cache saved after creation');
+            } catch (saveError) {
+              logger.error('[JOURNEY-9a-created] Failed to force save cache', {
+                error: saveError instanceof Error ? saveError.message : String(saveError),
+                stack: saveError instanceof Error ? saveError.stack : undefined
+              });
+            }
           }
         } else {
-          // Create new meeting for recording
           logger.info('[JOURNEY-9b] Creating new meeting for recording', {
             title: data.meetingTitle || 'Untitled Meeting',
             windowId: data.windowId
           });
 
+          const creationPayload: Partial<Meeting> = {
+            title: data.meetingTitle || 'Untitled Meeting',
+            date: new Date(),
+            status: 'recording',
+            startTime: new Date(),
+            notes: '',
+            transcript: ''
+          };
+
+          if (data.platform) {
+            creationPayload.platform = data.platform as Meeting['platform'];
+          }
+
+          meetingToRecord = await storageService.createMeeting(creationPayload);
+          logger.info('[JOURNEY-9b-created] New meeting created successfully', {
+            meetingId: meetingToRecord.id,
+            title: meetingToRecord.title
+          });
+
           try {
-            logger.info('[JOURNEY-9b-pre-create] About to call storageService.createMeeting');
-
-            meetingToRecord = await storageService.createMeeting({
-              title: data.meetingTitle || 'Untitled Meeting',
-              date: new Date(),
-              status: 'recording',
-              startTime: new Date(),
-              platform: data.platform as Meeting['platform'],
-              notes: '',
-              transcript: ''
+            await storageService.forceSave();
+            logger.info('[JOURNEY-9b-created] Cache saved after meeting creation');
+          } catch (saveError) {
+            logger.error('[JOURNEY-9b-created] Failed to force save cache', {
+              error: saveError instanceof Error ? saveError.message : String(saveError),
+              stack: saveError instanceof Error ? saveError.stack : undefined
             });
-
-            logger.info('[JOURNEY-9c] New meeting created successfully', {
-              meetingId: meetingToRecord.id,
-              title: meetingToRecord.title,
-              status: meetingToRecord.status
-            });
-
-            // Force save immediately after creation
-            logger.info('[JOURNEY-9c-force-save] Forcing cache save after meeting creation');
-            try {
-              await storageService.forceSave();
-              logger.info('[JOURNEY-9c-force-save-success] Cache saved successfully');
-            } catch (saveError) {
-              logger.error('[JOURNEY-9c-force-save-error] Failed to force save cache', {
-                error: saveError instanceof Error ? saveError.message : String(saveError),
-                stack: saveError instanceof Error ? saveError.stack : undefined
-              });
-            }
-          } catch (createError) {
-            logger.error('[JOURNEY-9b-ERROR] Failed to create meeting', {
-              error: createError instanceof Error ? createError.message : String(createError),
-              stack: createError instanceof Error ? createError.stack : undefined,
-              name: createError instanceof Error ? createError.name : undefined
-            });
-            throw createError;
           }
         }
 
-        // Start recording with proper meeting ID
         logger.info('[JOURNEY-9d] About to start recording', {
           meetingId: meetingToRecord.id,
           meetingTitle: meetingToRecord.title,

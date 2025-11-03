@@ -3,6 +3,7 @@ import { SettingsService } from './SettingsService';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs/promises';
+import crypto from 'crypto';
 import type { FSWatcher } from 'chokidar';
 import { format } from 'date-fns';
 import { app } from 'electron';
@@ -127,8 +128,11 @@ logger.info('[FILE-WATCHER] fsevents support evaluation complete', {
 
 export class StorageService {
   private meetingsCache: Map<string, Meeting> = new Map();
-  private fileWatchers: Map<string, { watcher: FSWatcher; debounceTimer?: NodeJS.Timeout }> = new Map();
+  private fileWatchers: Map<string, { watcher: FSWatcher; filePath: string; debounceTimer?: NodeJS.Timeout }> = new Map();
   private readonly watcherDebounceMs = 300;
+  private fileContentHashes: Map<string, string> = new Map();
+  private recentSelfWrites: Map<string, NodeJS.Timeout> = new Map();
+  private readonly selfWriteTtlMs = 1500;
   private settingsService: SettingsService;
   private storagePath: string;
   private cacheFilePath: string;
@@ -388,25 +392,39 @@ export class StorageService {
         return;
       }
 
+      if (this.isSelfWrite(entry.filePath)) {
+        logger.debug('[FILE-WATCHER] Ignoring self-initiated change', {
+          meetingId: meeting.id,
+          filePath: entry.filePath
+        });
+        return;
+      }
+
       if (entry.debounceTimer) {
         clearTimeout(entry.debounceTimer);
       }
 
       entry.debounceTimer = setTimeout(async () => {
         try {
-          const refreshed = await this.loadMeetingFromFile(normalizedPath);
-          if (refreshed) {
-            this.meetingsCache.set(meeting.id, refreshed);
-            logger.info('[FILE-WATCHER] Reloaded meeting from disk', {
+          const refreshed = await this.loadMeetingFromFile(entry.filePath, { skipIfUnchanged: true });
+          if (!refreshed) {
+            logger.debug('[FILE-WATCHER] Skipped reload due to unchanged content hash', {
               meetingId: meeting.id,
-              filePath: normalizedPath
+              filePath: entry.filePath
             });
-            this.notifyMeetingsUpdated();
+            return;
           }
+
+          this.meetingsCache.set(meeting.id, refreshed);
+          logger.info('[FILE-WATCHER] Reloaded meeting from disk', {
+            meetingId: meeting.id,
+            filePath: entry.filePath
+          });
+          this.notifyMeetingsUpdated();
         } catch (error) {
           logger.warn('[FILE-WATCHER] Failed to reload meeting from disk', {
             meetingId: meeting.id,
-            filePath: normalizedPath,
+            filePath: entry.filePath,
             error: error instanceof Error ? error.message : error
           });
         }
@@ -422,7 +440,7 @@ export class StorageService {
       });
     });
 
-    this.fileWatchers.set(meeting.id, { watcher });
+    this.fileWatchers.set(meeting.id, { watcher, filePath: normalizedPath });
   }
 
   private unwatchMeetingFile(meetingId: string): void {
@@ -437,6 +455,7 @@ export class StorageService {
 
     logger.info('[FILE-WATCHER] Closing watcher for meeting file', {
       meetingId,
+      filePath: entry.filePath
     });
 
     entry.watcher.close().catch((error) => {
@@ -447,11 +466,61 @@ export class StorageService {
     });
 
     this.fileWatchers.delete(meetingId);
+    this.removeFileContentHash(entry.filePath);
+    this.clearSelfWriteMarker(entry.filePath);
   }
 
   private unwatchAllMeetingFiles(): void {
     for (const meetingId of this.fileWatchers.keys()) {
       this.unwatchMeetingFile(meetingId);
+    }
+  }
+
+  private computeContentHash(content: string): string {
+    return crypto.createHash('sha1').update(content).digest('hex');
+  }
+
+  private updateFileContentHash(filePath: string, content: string): void {
+    const normalized = path.resolve(filePath);
+    const hash = this.computeContentHash(content);
+    this.fileContentHashes.set(normalized, hash);
+  }
+
+  private getFileContentHash(filePath: string): string | undefined {
+    const normalized = path.resolve(filePath);
+    return this.fileContentHashes.get(normalized);
+  }
+
+  private removeFileContentHash(filePath: string): void {
+    const normalized = path.resolve(filePath);
+    this.fileContentHashes.delete(normalized);
+  }
+
+  private markSelfWrite(filePath: string): void {
+    const normalized = path.resolve(filePath);
+    const existing = this.recentSelfWrites.get(normalized);
+    if (existing) {
+      clearTimeout(existing);
+    }
+
+    const timeout = setTimeout(() => {
+      this.recentSelfWrites.delete(normalized);
+    }, this.selfWriteTtlMs);
+
+    this.recentSelfWrites.set(normalized, timeout);
+  }
+
+  private isSelfWrite(filePath: string): boolean {
+    const normalized = path.resolve(filePath);
+    return this.recentSelfWrites.has(normalized);
+  }
+
+  private clearSelfWriteMarker(filePath: string): void {
+    const normalized = path.resolve(filePath);
+    const timer = this.recentSelfWrites.get(normalized);
+    if (timer) {
+      clearTimeout(timer);
+      this.recentSelfWrites.delete(normalized);
     }
   }
 
@@ -705,11 +774,22 @@ export class StorageService {
     return mdFiles;
   }
 
-  private async loadMeetingFromFile(filePath: string): Promise<Meeting | null> {
+  private async loadMeetingFromFile(filePath: string, options?: { skipIfUnchanged?: boolean }): Promise<Meeting | null> {
+    const normalizedPath = path.resolve(filePath);
+
     try {
-      const content = await fs.readFile(filePath, 'utf-8');
+      const content = await fs.readFile(normalizedPath, 'utf-8');
+      const nextHash = this.computeContentHash(content);
+
+      if (options?.skipIfUnchanged) {
+        const existingHash = this.getFileContentHash(normalizedPath);
+        if (existingHash === nextHash) {
+          return null;
+        }
+      }
+
       const { meeting, insightsLoadError } = await deserializeMeetingMarkdown(content, {
-        filePath,
+        filePath: normalizedPath,
         storagePath: this.getStoragePath(),
         loadInsights: true
       });
@@ -717,15 +797,16 @@ export class StorageService {
       if (insightsLoadError) {
         logger.warn('[INSIGHTS-FILE] Failed to read insights artifact', {
           meetingId: meeting.id,
-          filePath,
+          filePath: normalizedPath,
           error: insightsLoadError instanceof Error ? insightsLoadError.message : insightsLoadError
         });
       }
 
-      meeting.filePath = filePath;
+      meeting.filePath = normalizedPath;
+      this.fileContentHashes.set(normalizedPath, nextHash);
       return meeting;
     } catch (error) {
-      logger.error(`Failed to load meeting from ${filePath}:`, error);
+      logger.error(`Failed to load meeting from ${normalizedPath}:`, error);
       return null;
     }
   }
@@ -1135,6 +1216,8 @@ export class StorageService {
       await this.ensureDirectoryExists(updatedMeeting.filePath!);
       const markdown = this.formatMeetingToMarkdown(updatedMeeting);
       await fs.writeFile(updatedMeeting.filePath!, markdown, 'utf-8');
+      this.updateFileContentHash(updatedMeeting.filePath!, markdown);
+      this.markSelfWrite(updatedMeeting.filePath!);
 
       logger.info('[JOURNEY-STORAGE-UPDATE] File ' + (shouldCreateFile ? 'created' : 'updated'), {
         id: updatedMeeting.id,
@@ -1185,6 +1268,9 @@ export class StorageService {
     }
 
     this.unwatchMeetingFile(id);
+    if (meeting.filePath) {
+      this.removeFileContentHash(meeting.filePath);
+    }
 
     if (meeting.filePath) {
       try {
@@ -2168,6 +2254,8 @@ export class StorageService {
           await this.ensureDirectoryExists(meeting.filePath);
           const markdown = this.formatMeetingToMarkdown(meeting);
           await fs.writeFile(meeting.filePath, markdown, 'utf-8');
+          this.updateFileContentHash(meeting.filePath, markdown);
+          this.markSelfWrite(meeting.filePath);
           logger.info(`[AUTO-SAVE] Saved meeting ${meetingId} to ${meeting.filePath}`);
 
           // Also save cache periodically
@@ -2229,6 +2317,8 @@ export class StorageService {
     await this.ensureDirectoryExists(filePath);
     const markdown = this.formatMeetingToMarkdown(meeting);
     await fs.writeFile(filePath, markdown, 'utf-8');
+    this.updateFileContentHash(filePath, markdown);
+    this.markSelfWrite(filePath);
 
     return filePath;
   }
