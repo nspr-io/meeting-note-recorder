@@ -895,7 +895,21 @@ export class StorageService {
       }
     }
 
-    const baseMeeting = (diskMeeting ?? meeting) as Meeting;
+    let baseMeeting = (diskMeeting ?? meeting) as Meeting;
+
+    const shouldPreserveRecordingStatus =
+      meeting.status === 'recording' &&
+      sanitizedUpdates.status === undefined &&
+      baseMeeting.status !== 'recording';
+
+    if (shouldPreserveRecordingStatus) {
+      logger.debug('[JOURNEY-STORAGE-UPDATE] Preserving recording status from cache during disk merge', {
+        id,
+        cachedStatus: meeting.status,
+        diskStatus: baseMeeting.status
+      });
+      baseMeeting = { ...baseMeeting, status: meeting.status };
+    }
 
     const originalTags = Array.isArray(baseMeeting.tags) ? [...baseMeeting.tags] : undefined;
 

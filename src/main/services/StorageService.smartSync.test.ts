@@ -160,6 +160,33 @@ describe('StorageService.updateMeeting tag persistence', () => {
     expect(markdownCall?.[1]).toMatch(/"?status"?: "?scheduled"?/);
   });
 
+  it('preserves recording status when disk copy reports completed during transcript updates', async () => {
+    const { service } = createStorageService();
+    const filePath = '/tmp/meeting-storage/2025/11/recording-meeting.md';
+    const meeting = buildTouchedMeeting({
+      status: 'recording',
+      transcript: 'existing line',
+      filePath
+    });
+    (service as any).meetingsCache.set(meeting.id, meeting);
+
+    diskMeetingsByPath.set(filePath, {
+      ...meeting,
+      status: 'completed'
+    });
+
+    const updated = await service.updateMeeting(meeting.id, { transcript: 'existing line\nnew line' });
+
+    expect(updated.status).toBe('recording');
+    const cached = (service as any).meetingsCache.get(meeting.id) as Meeting;
+    expect(cached.status).toBe('recording');
+
+    const fsPromises = require('fs/promises') as { writeFile: jest.Mock };
+    const markdownCall = fsPromises.writeFile.mock.calls.find(([target]) => String(target).endsWith('.md'));
+    expect(markdownCall).toBeDefined();
+    expect(markdownCall?.[1]).toMatch(/"?status"?: "?recording"?/);
+  });
+
   it('preserves prep notes closing marker when cached notes are stale', async () => {
     const { service } = createStorageService();
     const filePath = '/tmp/meeting-storage/2025/11/mindstone-x-mvpr-weekly-call.md';
