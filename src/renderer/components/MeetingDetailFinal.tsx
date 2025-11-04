@@ -7,6 +7,160 @@ import MDEditor, { ICommand } from '@uiw/react-md-editor';
 import { combineNoteSections, extractNoteSections, hasSectionChanges } from './noteSectionUtils';
 import MeetingChatPanel from './MeetingChatPanel';
 
+type MetadataDraft = {
+  date: string;
+  startTime: string;
+  endTime: string;
+  duration: string;
+  attendees: string;
+  meetingUrl: string;
+  tags: string;
+};
+
+const toDateInputValue = (value?: Date | string): string => {
+  if (!value) {
+    return '';
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return format(date, 'yyyy-MM-dd');
+};
+
+const toTimeInputValue = (value?: Date | string): string => {
+  if (!value) {
+    return '';
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return format(date, 'HH:mm');
+};
+
+const buildDateFromInput = (value: string): Date | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const [year, month, day] = value.split('-').map((token) => Number(token));
+  if (!year || !month || !day) {
+    return undefined;
+  }
+
+  const result = new Date(year, month - 1, day);
+  result.setHours(0, 0, 0, 0);
+  return Number.isNaN(result.getTime()) ? undefined : result;
+};
+
+const buildDateTimeFromInput = (dateInput: string, timeInput: string): Date | undefined => {
+  const baseDate = buildDateFromInput(dateInput);
+  if (!baseDate || !timeInput) {
+    return undefined;
+  }
+
+  const [hoursRaw, minutesRaw] = timeInput.split(':');
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+    return undefined;
+  }
+
+  const result = new Date(baseDate);
+  result.setHours(hours, minutes, 0, 0);
+  return Number.isNaN(result.getTime()) ? undefined : result;
+};
+
+const formatAttendeesForInput = (attendees: Meeting['attendees']): string => {
+  if (!Array.isArray(attendees) || attendees.length === 0) {
+    return '';
+  }
+
+  return attendees
+    .map((entry) => {
+      if (typeof entry === 'string') {
+        return entry;
+      }
+      const name = entry.name?.trim();
+      const email = entry.email?.trim();
+      if (name && email) {
+        return `${name} <${email}>`;
+      }
+      if (name) {
+        return name;
+      }
+      return email ?? '';
+    })
+    .filter((value) => value && value.trim().length > 0)
+    .join('\n');
+};
+
+const parseAttendeesInput = (value: string): Meeting['attendees'] => {
+  if (!value.trim()) {
+    return [];
+  }
+
+  const entries = value
+    .split(/[\n,]+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  const result: Meeting['attendees'] = [];
+
+  entries.forEach((entry) => {
+    const match = entry.match(/^(.*?)(?:\s*<([^>]+)>)?$/);
+    if (!match) {
+      result.push(entry);
+      return;
+    }
+
+    const rawName = match[1]?.trim();
+    const rawEmail = match[2]?.trim();
+
+    if (rawEmail) {
+      result.push({
+        name: rawName || rawEmail,
+        email: rawEmail
+      });
+    } else if (rawName) {
+      result.push(rawName);
+    }
+  });
+
+  return result;
+};
+
+const parseTagsInput = (value: string): string[] => {
+  if (!value.trim()) {
+    return [];
+  }
+
+  const tokens = value
+    .split(/[\n,]+/)
+    .map((token) => token.trim().toLowerCase())
+    .filter((token) => token.length > 0);
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+
+  for (const token of tokens) {
+    if (!seen.has(token)) {
+      seen.add(token);
+      unique.push(token);
+    }
+    if (unique.length === 3) {
+      break;
+    }
+  }
+
+  return unique;
+};
+
 const Container = styled.div`
   display: flex;
   flex-direction: column;
@@ -172,6 +326,96 @@ const AttendeeToggle = styled.button`
   &:hover {
     color: #1a1a1a;
   }
+`;
+
+const TagsWrapper = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+`;
+
+const TagChip = styled.span`
+  background: rgba(102, 126, 234, 0.12);
+  color: #4338ca;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: lowercase;
+`;
+
+const MetadataEditor = styled.div`
+  margin-top: 16px;
+  padding: 16px;
+  background: #f9fafb;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+`;
+
+const MetadataGrid = styled.div`
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+`;
+
+const MetadataGroup = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+`;
+
+const MetadataLabel = styled.span`
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+`;
+
+const MetadataInput = styled.input`
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #1f2937;
+  background: #ffffff;
+
+  &:focus {
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+    outline: none;
+  }
+`;
+
+const MetadataTextarea = styled.textarea`
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #1f2937;
+  background: #ffffff;
+  min-height: 96px;
+  resize: vertical;
+
+  &:focus {
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+    outline: none;
+  }
+`;
+
+const MetadataActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-end;
+`;
+
+const MetadataError = styled.span`
+  font-size: 12px;
+  color: #dc2626;
+  margin-right: auto;
 `;
 
 const TabPanel = styled.div<{ isActive: boolean }>`
@@ -1187,6 +1431,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [isEditingCalendar, setIsEditingCalendar] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showDeleteTranscriptModal, setShowDeleteTranscriptModal] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
   const hasChangesRef = useRef(hasChanges);
   const baselineNotesRef = useRef(baselineNotes);
@@ -1197,6 +1442,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [firefliesFetchError, setFirefliesFetchError] = useState<FirefliesErrorState | null>(null);
   const hasStoredTranscript = Boolean(meeting.transcript && meeting.transcript.trim().length > 0);
   const [isRecording, setIsRecording] = useState(meeting.status === 'recording');
+  const [isDeletingTranscript, setIsDeletingTranscript] = useState(false);
   const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
   const [elapsedTime, setElapsedTime] = useState('00:00:00');
   const [showAttendees, setShowAttendees] = useState(false);
@@ -1207,6 +1453,19 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const [editorKey, setEditorKey] = useState(Date.now()); // Force fresh editor instance
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editedTitle, setEditedTitle] = useState(meeting.title);
+  const buildMetadataDraft = useCallback((): MetadataDraft => ({
+    date: toDateInputValue(meeting.date),
+    startTime: toTimeInputValue(meeting.startTime),
+    endTime: toTimeInputValue(meeting.endTime),
+    duration: typeof meeting.duration === 'number' && !Number.isNaN(meeting.duration) ? String(meeting.duration) : '',
+    attendees: formatAttendeesForInput(meeting.attendees),
+    meetingUrl: meeting.meetingUrl || '',
+    tags: Array.isArray(meeting.tags) && meeting.tags.length > 0 ? meeting.tags.join(', ') : ''
+  }), [meeting.attendees, meeting.date, meeting.duration, meeting.endTime, meeting.meetingUrl, meeting.startTime, meeting.tags]);
+  const [isEditingMetadata, setIsEditingMetadata] = useState(false);
+  const [metadataDraft, setMetadataDraft] = useState<MetadataDraft>(buildMetadataDraft);
+  const [isMetadataSaving, setIsMetadataSaving] = useState(false);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
   const [insights, setInsights] = useState<any>(null);
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
   const [teamSummary, setTeamSummary] = useState<any>(null);
@@ -1231,6 +1490,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   const meetingFullDateLabel = hasValidMeetingDate ? format(meetingDateObj, 'PPP') : 'Date unavailable';
   const meetingDateLabel = hasValidMeetingDate ? format(meetingDateObj, 'MMM d, yyyy') : 'Date unavailable';
   const meetingTimeLabel = hasValidMeetingDate ? format(meetingDateObj, 'h:mm a') : '–';
+  const canDeleteTranscript = !isRecording && (hasStoredTranscript || transcriptSegments.length > 0);
 
   const formatTodoDueDate = useCallback((iso?: string | null) => {
     if (!iso) {
@@ -1347,6 +1607,89 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     }
     return command;
   }, []);
+
+  useEffect(() => {
+    if (!isEditingMetadata) {
+      setMetadataDraft(buildMetadataDraft());
+    }
+  }, [buildMetadataDraft, isEditingMetadata]);
+
+  const handleMetadataFieldChange = useCallback((field: keyof MetadataDraft, value: string) => {
+    setMetadataDraft((draft) => ({
+      ...draft,
+      [field]: value
+    }));
+  }, []);
+
+  const handleToggleMetadata = useCallback(() => {
+    setMetadataError(null);
+    if (isEditingMetadata) {
+      setMetadataDraft(buildMetadataDraft());
+      setIsEditingMetadata(false);
+    } else {
+      setIsEditingMetadata(true);
+    }
+  }, [buildMetadataDraft, isEditingMetadata]);
+
+  const handleMetadataSave = useCallback(async () => {
+    if (isMetadataSaving) {
+      return;
+    }
+
+    setMetadataError(null);
+
+    const dateValue = buildDateFromInput(metadataDraft.date);
+    if (!dateValue) {
+      setMetadataError('Please provide a valid date.');
+      return;
+    }
+
+    const startTimeValue = metadataDraft.startTime ? buildDateTimeFromInput(metadataDraft.date, metadataDraft.startTime) : undefined;
+    if (metadataDraft.startTime && !startTimeValue) {
+      setMetadataError('Please provide a valid start time.');
+      return;
+    }
+
+    const endTimeValue = metadataDraft.endTime ? buildDateTimeFromInput(metadataDraft.date, metadataDraft.endTime) : undefined;
+    if (metadataDraft.endTime && !endTimeValue) {
+      setMetadataError('Please provide a valid end time.');
+      return;
+    }
+
+    const durationValue = metadataDraft.duration.trim() ? Number(metadataDraft.duration) : undefined;
+    if (metadataDraft.duration.trim() && (Number.isNaN(durationValue) || durationValue < 0)) {
+      setMetadataError('Duration must be a non-negative number.');
+      return;
+    }
+
+    const attendeesValue = parseAttendeesInput(metadataDraft.attendees);
+    const tagsValue = parseTagsInput(metadataDraft.tags);
+    const meetingUrlValue = metadataDraft.meetingUrl.trim();
+
+    const updatedMeeting: Meeting = {
+      ...meeting,
+      date: dateValue,
+      startTime: startTimeValue,
+      endTime: endTimeValue,
+      duration: durationValue !== undefined ? durationValue : undefined,
+      attendees: attendeesValue,
+      meetingUrl: meetingUrlValue || undefined,
+      tags: tagsValue.length > 0 ? tagsValue : undefined,
+      updatedAt: new Date()
+    };
+
+    setIsMetadataSaving(true);
+    try {
+      await onUpdateMeeting(updatedMeeting);
+      setIsEditingMetadata(false);
+      onShowToast?.('Meeting details updated.', 'success');
+    } catch (error) {
+      console.error('Failed to update meeting metadata:', error);
+      setMetadataError('Failed to update meeting details. Please try again.');
+    } finally {
+      setIsMetadataSaving(false);
+    }
+  }, [isMetadataSaving, metadataDraft, meeting, onUpdateMeeting, onShowToast]);
 
   useEffect(() => {
     if (isCoachingForCurrentMeeting) {
@@ -1949,6 +2292,35 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     }
   };
 
+  const handleDeleteTranscript = async () => {
+    if (isDeletingTranscript) {
+      return;
+    }
+
+    setIsDeletingTranscript(true);
+
+    try {
+      await onUpdateMeeting({
+        ...meeting,
+        transcript: '',
+        firefliesTranscriptId: null,
+        firefliesTranscriptFetchedAt: null
+      });
+
+      setTranscriptSegments([]);
+      transcriptCache.set(meeting.id, []);
+      transcriptSequenceCache.delete(meeting.id);
+      setFirefliesFetchError(null);
+      onShowToast?.('Transcript deleted', 'success');
+    } catch (error) {
+      console.error('Failed to delete transcript:', error);
+      onShowToast?.('Failed to delete transcript', 'error');
+    } finally {
+      setIsDeletingTranscript(false);
+      setShowDeleteTranscriptModal(false);
+    }
+  };
+
   const handleCorrectTranscript = async () => {
     if (!meeting.transcript || isCorrecting) return;
 
@@ -2487,6 +2859,14 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   Stop Recording
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                onClick={handleToggleMetadata}
+                disabled={isMetadataSaving}
+                style={{ border: '1px solid #e2e8f0' }}
+              >
+                {isEditingMetadata ? 'Close Details' : 'Edit Details'}
+              </Button>
               {hasChanges && (
                 <Button onClick={handleSave} disabled={isSaving}>
                   {isSaving ? 'Saving...' : 'Save'}
@@ -2543,6 +2923,16 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
               }
               return null;
             })()}
+            {Array.isArray(meeting.tags) && meeting.tags.length > 0 && (
+              <MetaItem>
+                <span>🏷️</span>
+                <TagsWrapper>
+                  {meeting.tags.map((tag) => (
+                    <TagChip key={tag}>{tag}</TagChip>
+                  ))}
+                </TagsWrapper>
+              </MetaItem>
+            )}
             <MetaItem>
               <StatusControl>
                 <StatusLabel>📌 Status</StatusLabel>
@@ -2561,6 +2951,85 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
               </StatusControl>
             </MetaItem>
           </MetaInfo>
+
+          {isEditingMetadata && (
+            <MetadataEditor>
+              <MetadataGrid>
+                <MetadataGroup>
+                  <MetadataLabel>Date</MetadataLabel>
+                  <MetadataInput
+                    type="date"
+                    value={metadataDraft.date}
+                    onChange={(event) => handleMetadataFieldChange('date', event.target.value)}
+                  />
+                </MetadataGroup>
+                <MetadataGroup>
+                  <MetadataLabel>Start time</MetadataLabel>
+                  <MetadataInput
+                    type="time"
+                    value={metadataDraft.startTime}
+                    onChange={(event) => handleMetadataFieldChange('startTime', event.target.value)}
+                  />
+                </MetadataGroup>
+                <MetadataGroup>
+                  <MetadataLabel>End time</MetadataLabel>
+                  <MetadataInput
+                    type="time"
+                    value={metadataDraft.endTime}
+                    onChange={(event) => handleMetadataFieldChange('endTime', event.target.value)}
+                  />
+                </MetadataGroup>
+                <MetadataGroup>
+                  <MetadataLabel>Duration (minutes)</MetadataLabel>
+                  <MetadataInput
+                    type="number"
+                    min={0}
+                    value={metadataDraft.duration}
+                    onChange={(event) => handleMetadataFieldChange('duration', event.target.value)}
+                    placeholder="e.g. 45"
+                  />
+                </MetadataGroup>
+                <MetadataGroup style={{ gridColumn: '1 / -1' }}>
+                  <MetadataLabel>Meeting link</MetadataLabel>
+                  <MetadataInput
+                    type="url"
+                    value={metadataDraft.meetingUrl}
+                    onChange={(event) => handleMetadataFieldChange('meetingUrl', event.target.value)}
+                    placeholder="https://..."
+                  />
+                </MetadataGroup>
+                <MetadataGroup style={{ gridColumn: '1 / -1' }}>
+                  <MetadataLabel>Attendees</MetadataLabel>
+                  <MetadataTextarea
+                    value={metadataDraft.attendees}
+                    onChange={(event) => handleMetadataFieldChange('attendees', event.target.value)}
+                    placeholder={'One per line, e.g. Jane Doe <jane@example.com>'}
+                  />
+                </MetadataGroup>
+                <MetadataGroup style={{ gridColumn: '1 / -1' }}>
+                  <MetadataLabel>Tags</MetadataLabel>
+                  <MetadataInput
+                    value={metadataDraft.tags}
+                    onChange={(event) => handleMetadataFieldChange('tags', event.target.value)}
+                    placeholder="Comma or newline separated"
+                  />
+                </MetadataGroup>
+              </MetadataGrid>
+              <MetadataActions>
+                {metadataError && <MetadataError>{metadataError}</MetadataError>}
+                <Button
+                  variant="ghost"
+                  onClick={handleToggleMetadata}
+                  disabled={isMetadataSaving}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={handleMetadataSave} disabled={isMetadataSaving}>
+                  {isMetadataSaving ? 'Saving...' : 'Save Details'}
+                </Button>
+              </MetadataActions>
+            </MetadataEditor>
+          )}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginTop: '16px' }}>
             <TabContainer style={{ flex: 1 }}>
@@ -2825,6 +3294,15 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                           ) : (
                             <>✨ Improve with AI</>
                           )}
+                        </Button>
+                      )}
+                      {canDeleteTranscript && (
+                        <Button
+                          variant="danger"
+                          onClick={() => setShowDeleteTranscriptModal(true)}
+                          disabled={isDeletingTranscript}
+                        >
+                          {isDeletingTranscript ? 'Deleting transcript…' : 'Delete transcript'}
                         </Button>
                       )}
                     </ActionButtons>
@@ -3500,6 +3978,22 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
             </Button>
             <Button variant="danger" onClick={handleDelete}>
               Delete
+            </Button>
+          </ModalButtons>
+        </ModalContent>
+      </Modal>
+      <Modal show={showDeleteTranscriptModal}>
+        <ModalContent>
+          <ModalTitle>Delete Transcript?</ModalTitle>
+          <ModalText>
+            Are you sure you want to delete the transcript for "{meeting.title}"? Notes will be preserved.
+          </ModalText>
+          <ModalButtons>
+            <Button variant="ghost" onClick={() => setShowDeleteTranscriptModal(false)} disabled={isDeletingTranscript}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={handleDeleteTranscript} disabled={isDeletingTranscript}>
+              {isDeletingTranscript ? 'Deleting…' : 'Delete Transcript'}
             </Button>
           </ModalButtons>
         </ModalContent>

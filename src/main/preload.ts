@@ -156,6 +156,7 @@ const api = {
       'transcript-correction-progress',
       'transcript-correction-completed',
       'transcript-correction-failed',
+      'end-recording-trigger'
     ];
 
     if (validChannels.includes(channel as any)) {

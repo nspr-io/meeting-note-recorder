@@ -3,6 +3,7 @@ export const STANDARD_MEETING_TAGS = [
   'customer-support',
   'product-demo',
   'onboarding',
+  'interview',
   'renewal',
   'account-strategy',
   'product-feedback',

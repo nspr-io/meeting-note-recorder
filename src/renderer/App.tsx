@@ -681,8 +681,13 @@ function App() {
         });
         setIsRecording(true);
         if (!options?.skipAutoSelect) {
-          setSelectedMeeting(recState.meeting);
-          setTabMode('upcoming'); // Show upcoming tab where recording is
+          const currentSelection = selectedMeetingRef.current;
+          const shouldAutoSelect = !currentSelection || currentSelection.id === recState.meeting.id;
+
+          if (shouldAutoSelect) {
+            setSelectedMeeting(recState.meeting);
+            setTabMode('upcoming'); // Show upcoming tab where recording is
+          }
         }
       }
     } catch (error) {

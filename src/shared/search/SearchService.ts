@@ -1,4 +1,4 @@
-import Fuse, { IFuseOptions } from 'fuse.js';
+import Fuse, { IFuseOptions, FuseResult } from 'fuse.js';
 import { Meeting, SearchMatch, SearchOptions, SearchResult } from '../types';
 
 export interface SearchMetadata {
@@ -29,19 +29,25 @@ export class SearchService {
         { name: 'transcript', weight: 1 },
         { name: 'attendees.name', weight: 1.5 },
         { name: 'attendees.email', weight: 1.5 },
+        {
+          name: 'attendees',
+          weight: 1.5,
+          getFn: (meeting) => this.extractAttendeeNames(meeting.attendees),
+        },
         { name: 'platform', weight: 0.5 },
         { name: 'tags', weight: 1 },
       ],
-      threshold: 0.3,
+      threshold: 0.4,
       includeScore: true,
       includeMatches: true,
       minMatchCharLength: 2,
       shouldSort: true,
+      ignoreLocation: true,
       findAllMatches: false,
       location: 0,
       distance: 100,
-      useExtendedSearch: false,
-      ignoreLocation: false,
+      useExtendedSearch: true,
+      ignoreFieldNorm: false,
       ignoreFieldNorm: false,
     };
 
@@ -77,7 +83,7 @@ export class SearchService {
 
     this.addToHistory(options.query);
 
-    const searchResults = this.fuse.search(options.query);
+    const searchResults = this.performSearchWithFallback(options.query);
 
     let results: SearchResult[] = searchResults.map((result) => ({
       meeting: result.item,
@@ -98,6 +104,61 @@ export class SearchService {
     }
 
     return results;
+  }
+
+  private performSearchWithFallback(query: string): FuseResult<Meeting>[] {
+    if (!this.fuse) {
+      return [];
+    }
+
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
+      return [];
+    }
+
+    const tokens = this.tokenizeQuery(trimmedQuery);
+    let results = this.fuse.search(trimmedQuery);
+    if (tokens.length <= 1) {
+      return results;
+    }
+
+    const aggregated = new Map<string, FuseResult<Meeting>>();
+
+    results.forEach((candidate) => {
+      const meetingId = candidate.item?.id;
+      if (meetingId) {
+        aggregated.set(meetingId, candidate);
+      }
+    });
+
+    tokens.forEach((token) => {
+      const tokenResults = this.fuse?.search(token) ?? [];
+      tokenResults.forEach((candidate) => {
+        const meetingId = candidate.item?.id;
+        if (!meetingId) {
+          return;
+        }
+        const existing = aggregated.get(meetingId);
+        const candidateScore = candidate.score ?? 0;
+        if (!existing || candidateScore < (existing.score ?? Number.POSITIVE_INFINITY)) {
+          aggregated.set(meetingId, candidate);
+        }
+      });
+    });
+
+    if (aggregated.size === 0) {
+      return results;
+    }
+
+    results = Array.from(aggregated.values()).sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
+    return results;
+  }
+
+  private tokenizeQuery(query: string): string[] {
+    return query
+      .split(/\s+/)
+      .map((token) => token.replace(/["'`]/g, '').trim())
+      .filter((token) => token.length > 0);
   }
 
   private getAllMeetings(options: SearchOptions): SearchResult[] {

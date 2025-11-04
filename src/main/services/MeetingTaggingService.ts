@@ -46,7 +46,9 @@ export class MeetingTaggingService extends BaseAnthropicService {
         return fallbackTags;
       }
 
-      return parsed;
+      const heuristics = this.deriveFallbackTags(meeting);
+      const combined = Array.from(new Set([...parsed, ...heuristics]));
+      return combined.slice(0, 3);
     } catch (error) {
       this.logger.error('[TAGGING] Failed to generate tags via Anthropic', {
         meetingId: meeting.id,
@@ -158,6 +160,10 @@ Return JSON: {"tags": ["tag-one", "tag-two"]}`;
       tags.add('existing-client');
     }
 
+    if (title.includes('interview') || title.includes('candidate') || title.includes('recruit') || title.includes('hiring')) {
+      tags.add('interview');
+    }
+
     const attendeeEmails = Array.isArray(meeting.attendees)
       ? meeting.attendees
           .map((attendee) => (typeof attendee === 'string' ? attendee : attendee.email || ''))
@@ -172,6 +178,15 @@ Return JSON: {"tags": ["tag-one", "tag-two"]}`;
       tags.add('support');
     }
 
-    return Array.from(tags);
+    if (attendeeEmails.some((email) => email.toLowerCase().includes('talent') || email.toLowerCase().includes('recruit'))) {
+      tags.add('interview');
+    }
+
+    const transcript = typeof meeting.transcript === 'string' ? meeting.transcript.toLowerCase() : '';
+    if (/interview|candidate|recruit/.test(transcript)) {
+      tags.add('interview');
+    }
+
+    return Array.from(tags).slice(0, 3);
   }
 }

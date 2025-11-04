@@ -119,6 +119,69 @@ function notifyRecordingStopped() {
   notifyMeetingsUpdated();
 }
 
+function buildMeetingTriggerTags(meeting: Meeting): string[] {
+  const baseTags = Array.isArray(meeting.tags) ? meeting.tags : [];
+  const extras = new Set<string>();
+
+  const title = (meeting.title || '').toLowerCase();
+  const notes = typeof meeting.notes === 'string' ? meeting.notes.toLowerCase() : '';
+  const transcript = typeof meeting.transcript === 'string' ? meeting.transcript.toLowerCase() : '';
+
+  const combinedText = `${title} ${notes} ${transcript}`;
+  if (/interview|candidate|recruit|hiring/.test(combinedText)) {
+    extras.add('interview');
+  }
+
+  const attendeeEmails = Array.isArray(meeting.attendees)
+    ? meeting.attendees
+        .map((attendee) => (typeof attendee === 'string' ? attendee : attendee.email || ''))
+        .filter((email) => typeof email === 'string' && email.length > 0)
+    : [];
+
+  if (attendeeEmails.some((email) => /recruit|talent|hr/.test(email.toLowerCase()))) {
+    extras.add('interview');
+  }
+
+  return Array.from(new Set<string>([...extras, ...baseTags]));
+}
+
+async function dispatchEndRecordingTrigger(meetingId: string): Promise<void> {
+  if (!storageService) {
+    logger.warn('[AUTOMATION] Skipping end recording trigger dispatch; storage unavailable');
+    return;
+  }
+
+  try {
+    const meeting = await storageService.getMeeting(meetingId);
+    if (!meeting) {
+      return;
+    }
+
+    const payload = {
+      meetingId: meeting.id,
+      title: meeting.title,
+      status: meeting.status,
+      duration: meeting.duration ?? null,
+      tags: buildMeetingTriggerTags(meeting),
+      meetingUrl: meeting.meetingUrl ?? null,
+      endedAt: new Date().toISOString()
+    };
+
+    logger.info('[AUTOMATION] Dispatching end recording trigger', {
+      meetingId: payload.meetingId,
+      tags: payload.tags
+    });
+
+    notifyUI('end-recording-trigger', payload);
+    app.emit('end-recording-trigger', payload);
+  } catch (error) {
+    logger.warn('[AUTOMATION] Failed to dispatch end recording trigger', {
+      meetingId,
+      error: error instanceof Error ? error.message : error
+    });
+  }
+}
+
 function notifySettingsUpdated(settings: any) {
   notifyUI(IpcChannels.SETTINGS_UPDATED, settings);
 }
@@ -1460,6 +1523,7 @@ function setupIpcHandlers() {
 
       if (meetingId) {
         void autoGenerateInsightsForMeeting(meetingId);
+        void dispatchEndRecordingTrigger(meetingId);
       }
 
       if (mainWindow) {
@@ -1813,6 +1877,102 @@ function isStoredMeeting(candidate: Meeting | CalendarEvent): candidate is Meeti
   return typeof (candidate as Meeting)?.status === 'string';
 }
 
+function normalizeMatchTitle(title?: string | null): string {
+  return typeof title === 'string' ? title.trim().replace(/\s+/g, ' ').toLowerCase() : '';
+}
+
+async function findExistingMeetingForCalendarMatch(
+  match: CalendarEvent,
+  context: { detectedTitle?: string }
+): Promise<Meeting | null> {
+  const direct = await storageService.getMeetingByCalendarId(match.id);
+  if (direct) {
+    return direct;
+  }
+
+  const allMeetings = await storageService.getAllMeetings();
+  const normalizedEventTitle = normalizeMatchTitle(match.title || context.detectedTitle);
+  const eventStart = match.start ? new Date(match.start) : null;
+  const eventId = match.id ?? '';
+  const baseEventId = typeof eventId === 'string' && eventId.includes('_') ? eventId.split('_')[0] : eventId;
+
+  let bestScore = -Infinity;
+  let bestMeeting: Meeting | null = null;
+
+  const considerMeeting = (meeting: Meeting, score: number) => {
+    if (score > bestScore) {
+      bestScore = score;
+      bestMeeting = meeting;
+    }
+  };
+
+  for (const meeting of allMeetings) {
+    if (!meeting.calendarEventId) {
+      continue;
+    }
+
+    const meetingStatus = meeting.status ?? 'scheduled';
+    if (!['scheduled', 'active', 'recording', 'partial'].includes(meetingStatus)) {
+      continue;
+    }
+
+    let score = 0;
+    const meetingEventId = meeting.calendarEventId;
+
+    if (meetingEventId === eventId) {
+      score += 20;
+    }
+
+    const meetingBaseId = meetingEventId.includes('_') ? meetingEventId.split('_')[0] : meetingEventId;
+    if (baseEventId && meetingBaseId === baseEventId) {
+      score += 8;
+    } else if (baseEventId && meetingEventId.includes(baseEventId)) {
+      score += 4;
+    }
+
+    const meetingTitle = normalizeMatchTitle(meeting.title);
+    if (normalizedEventTitle) {
+      if (meetingTitle === normalizedEventTitle) {
+        score += 6;
+      } else if (meetingTitle && (meetingTitle.includes(normalizedEventTitle) || normalizedEventTitle.includes(meetingTitle))) {
+        score += 3;
+      }
+    }
+
+    if (eventStart) {
+      const meetingStartSource = meeting.startTime ?? meeting.date;
+      const meetingStart = meetingStartSource ? new Date(meetingStartSource as Date | string) : null;
+      if (meetingStart && !Number.isNaN(meetingStart.getTime())) {
+        const diffMinutes = Math.abs(eventStart.getTime() - meetingStart.getTime()) / 60000;
+        if (diffMinutes <= 5) {
+          score += 6;
+        } else if (diffMinutes <= 30) {
+          score += 3;
+        } else if (diffMinutes <= 120) {
+          score += 1;
+        }
+      }
+    }
+
+    if (score > 0) {
+      considerMeeting(meeting, score);
+    }
+  }
+
+  if (bestMeeting !== null && bestScore >= 8) {
+    return bestMeeting;
+  }
+
+  if (normalizedEventTitle) {
+    const fallback = await findMatchingScheduledMeeting(match.title || context.detectedTitle);
+    if (fallback) {
+      return fallback;
+    }
+  }
+
+  return null;
+}
+
 async function prepareMeetingForRecording(
   match: Meeting | CalendarEvent,
   context: { detectedTitle?: string; platform?: Meeting['platform'] }
@@ -1833,7 +1993,7 @@ async function prepareMeetingForRecording(
     return { meeting: updated, created: false };
   }
 
-  const existing = await storageService.getMeetingByCalendarId(match.id);
+  const existing = await findExistingMeetingForCalendarMatch(match, context);
   if (existing) {
     const updates: Partial<Meeting> = {
       status: 'recording',
@@ -1841,6 +2001,9 @@ async function prepareMeetingForRecording(
     };
     if (platform) {
       updates.platform = platform;
+    }
+    if (match.id && existing.calendarEventId !== match.id) {
+      updates.calendarEventId = match.id;
     }
 
     const refreshed = await storageService.updateMeeting(existing.id, updates);
@@ -2903,6 +3066,7 @@ app.whenReady().then(async () => {
       // Update meeting status to completed
       await storageService.updateMeeting(meetingId, { status: 'completed' });
       void autoGenerateInsightsForMeeting(meetingId);
+      void dispatchEndRecordingTrigger(meetingId);
 
       if (mainWindow) {
         mainWindow.webContents.send(IpcChannels.RECORDING_STOPPED);

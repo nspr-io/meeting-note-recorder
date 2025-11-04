@@ -1469,6 +1469,17 @@ export class StorageService {
       updates.status = bestStatus;
     }
 
+    const titleCandidates = [canonical, ...duplicates]
+      .map((meeting) => typeof meeting.title === 'string' ? meeting.title.trim() : '')
+      .filter((title) => title && !this.isPlaceholderTitle(title));
+
+    if (titleCandidates.length > 0) {
+      const preferredTitle = titleCandidates[0];
+      if (preferredTitle && preferredTitle !== canonical.title) {
+        updates.title = preferredTitle;
+      }
+    }
+
     if ((!canonical.notes || canonical.notes.trim().length === 0)) {
       const donorWithNotes = duplicates.find((meeting) => meeting.notes && meeting.notes.trim().length > 0);
       if (donorWithNotes?.notes) {
@@ -1484,6 +1495,31 @@ export class StorageService {
     }
 
     return updates;
+  }
+
+  private isPlaceholderTitle(title: string | undefined): boolean {
+    if (!title) {
+      return true;
+    }
+
+    const normalized = title.trim().toLowerCase();
+    if (!normalized) {
+      return true;
+    }
+
+    if (normalized.includes('untitled')) {
+      return true;
+    }
+
+    if (normalized === 'unknown' || normalized === 'unknown meeting') {
+      return true;
+    }
+
+    if (normalized.startsWith('meeting detected') && normalized.endsWith('unknown')) {
+      return true;
+    }
+
+    return false;
   }
 
   private async archiveDuplicateMeeting(
