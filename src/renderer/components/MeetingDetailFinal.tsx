@@ -1143,6 +1143,7 @@ interface MeetingDetailFinalProps {
   onDeleteMeeting?: (meetingId: string) => void;
   onRefresh?: () => Promise<void> | void;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
+  onJoinMeetingIntent?: (meetingId: string) => void;
   coachingState: (CoachingState & { feedbackHistory: CoachingFeedback[] });
   onCoachingStateRefresh: () => Promise<void> | void;
   activeCoachingMeeting?: Meeting | null;
@@ -1174,7 +1175,7 @@ const STATUS_OPTIONS: Array<{ value: Meeting['status']; label: string }> = [
   { value: 'active', label: 'Active' }
 ];
 
-function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefresh, onShowToast, coachingState, onCoachingStateRefresh, activeCoachingMeeting, isCoachWindowOpen = false, onOpenCoachWindow, onCloseCoachWindow, isCoachPopout = false }: MeetingDetailFinalProps) {
+function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefresh, onShowToast, onJoinMeetingIntent, coachingState, onCoachingStateRefresh, activeCoachingMeeting, isCoachWindowOpen = false, onOpenCoachWindow, onCloseCoachWindow, isCoachPopout = false }: MeetingDetailFinalProps) {
   const initialSections = extractNoteSections(meeting.notes || '');
   const [viewMode, setViewMode] = useState<ViewMode>(isCoachPopout ? 'coach' : 'context');
   const [calendarInfo, setCalendarInfo] = useState(initialSections.calendarInfo);
@@ -2420,6 +2421,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                   variant="primary"
                   onClick={async () => {
                     if (meeting.meetingUrl) {
+                      onJoinMeetingIntent?.(meeting.id);
                       // Use new handler that sets auto-record intent
                       await (window as any).electronAPI.joinMeetingWithIntent(meeting.meetingUrl);
                     }

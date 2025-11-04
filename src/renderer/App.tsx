@@ -436,6 +436,71 @@ function App() {
     [permissionStatus]
   );
 
+  const selectedMeetingRef = useRef<Meeting | null>(null);
+  const joinMeetingIntentRef = useRef<{ meetingId: string; timeoutId: ReturnType<typeof setTimeout>; timestamp: number } | null>(null);
+
+  const clearJoinMeetingIntent = useCallback(() => {
+    if (joinMeetingIntentRef.current?.timeoutId) {
+      clearTimeout(joinMeetingIntentRef.current.timeoutId);
+    }
+    joinMeetingIntentRef.current = null;
+  }, []);
+
+  const registerJoinMeetingIntent = useCallback((meetingId: string) => {
+    clearJoinMeetingIntent();
+    const timeoutId = setTimeout(() => {
+      joinMeetingIntentRef.current = null;
+    }, 120000);
+    joinMeetingIntentRef.current = {
+      meetingId,
+      timeoutId,
+      timestamp: Date.now()
+    };
+  }, [clearJoinMeetingIntent]);
+
+  useEffect(() => {
+    selectedMeetingRef.current = selectedMeeting;
+  }, [selectedMeeting]);
+
+  useEffect(() => {
+    return () => {
+      clearJoinMeetingIntent();
+    };
+  }, [clearJoinMeetingIntent]);
+
+  const focusMeetingAfterRecordingStart = useCallback((meeting: Meeting | null) => {
+    if (!meeting) {
+      return;
+    }
+
+    const joinIntent = joinMeetingIntentRef.current;
+    const now = Date.now();
+    const isRecentJoinIntent = !!joinIntent && (now - joinIntent.timestamp) < 120000;
+    const currentSelection = selectedMeetingRef.current;
+
+    if (
+      isRecentJoinIntent &&
+      joinIntent!.meetingId !== meeting.id &&
+      currentSelection &&
+      currentSelection.id !== meeting.id
+    ) {
+      return;
+    }
+
+    setSelectedMeeting(prev => {
+      if (prev && prev.id === meeting.id && prev === meeting) {
+        return prev;
+      }
+      return meeting;
+    });
+    setViewMode('meetings');
+    setTabMode('upcoming');
+
+    if (isRecentJoinIntent) {
+      clearJoinMeetingIntent();
+    }
+  }, [clearJoinMeetingIntent]);
+
   const refreshCoachingState = useCallback(async () => {
     if (typeof window.electronAPI === 'undefined') {
       return;
@@ -596,7 +661,7 @@ function App() {
     };
   }, [refreshCoachingState, refreshPermissionStatus]);
 
-  const loadMeetings = async () => {
+  const loadMeetings = async (options?: { skipAutoSelect?: boolean }) => {
     try {
       setIsLoadingMeetings(true);
       console.log('[JOURNEY-UI-LOAD-1] Loading meetings from backend');
@@ -615,8 +680,10 @@ function App() {
           title: recState.meeting.title
         });
         setIsRecording(true);
-        setSelectedMeeting(recState.meeting);
-        setTabMode('upcoming'); // Show upcoming tab where recording is
+        if (!options?.skipAutoSelect) {
+          setSelectedMeeting(recState.meeting);
+          setTabMode('upcoming'); // Show upcoming tab where recording is
+        }
       }
     } catch (error) {
       console.error('[JOURNEY-UI-LOAD-ERROR] Failed to load meetings:', error);
@@ -787,7 +854,7 @@ function App() {
     window.electronAPI.on('transcript-correction-completed', handleTranscriptCorrectionCompleted);
     window.electronAPI.on('transcript-correction-failed', handleTranscriptCorrectionFailed);
 
-    window.electronAPI.on(IpcChannels.MEETINGS_UPDATED, loadMeetings);
+    window.electronAPI.on(IpcChannels.MEETINGS_UPDATED, () => loadMeetings());
     window.electronAPI.on(IpcChannels.RECORDING_STARTED, async (data: any) => {
       console.log('[JOURNEY-UI-EVENT-1] RECORDING_STARTED event received:', {
         data,
@@ -803,12 +870,7 @@ function App() {
           title: data.meeting.title,
           status: data.meeting.status
         });
-        setSelectedMeeting(data.meeting);
-        console.log('[JOURNEY-UI-STATE-2] selectedMeeting set to:', data.meeting.id);
-        setViewMode('meetings');
-        console.log('[JOURNEY-UI-STATE-3] viewMode set to: meetings');
-        setTabMode('upcoming');
-        console.log('[JOURNEY-UI-STATE-4] tabMode set to: upcoming');
+        focusMeetingAfterRecordingStart(data.meeting);
 
         // Also update the meetings list to include this new meeting
         setMeetings(prev => {
@@ -827,7 +889,7 @@ function App() {
       } else if (data.meetingId) {
         console.log('[JOURNEY-UI-EVENT-3] Only meetingId provided, loading from storage');
         // Fallback to loading from storage
-        await loadMeetings();
+        await loadMeetings({ skipAutoSelect: true });
         const loadedMeetings = await window.electronAPI.getMeetings();
         console.log('[JOURNEY-UI-EVENT-4] Meetings loaded for selection:', loadedMeetings.length);
         const meeting = loadedMeetings.find((m: Meeting) => m.id === data.meetingId);
@@ -837,9 +899,7 @@ function App() {
           title: meeting?.title
         });
         if (meeting) {
-          setSelectedMeeting(meeting);
-          setViewMode('meetings');
-          setTabMode('upcoming');
+          focusMeetingAfterRecordingStart(meeting);
           console.log('[JOURNEY-UI-EVENT-6] Meeting selected successfully');
         } else {
           console.error('[JOURNEY-UI-EVENT-ERROR] Meeting not found in list:', data.meetingId);
@@ -1181,6 +1241,7 @@ function App() {
                 }
               }}
               onShowToast={showToastHelper}
+              onJoinMeetingIntent={registerJoinMeetingIntent}
               coachingState={coachingState}
               onCoachingStateRefresh={refreshCoachingState}
               activeCoachingMeeting={coachingMeeting || null}
@@ -1247,6 +1308,7 @@ function App() {
               }
             }}
             onShowToast={showToastHelper}
+            onJoinMeetingIntent={registerJoinMeetingIntent}
             coachingState={coachingState}
             onCoachingStateRefresh={refreshCoachingState}
             activeCoachingMeeting={coachingMeeting || null}
