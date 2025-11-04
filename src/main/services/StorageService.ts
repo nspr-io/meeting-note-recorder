@@ -973,6 +973,26 @@ export class StorageService {
       diskMeeting = await this.loadMeetingFromFile(meeting.filePath);
       if (diskMeeting) {
         diskMeeting.filePath = meeting.filePath;
+
+        if (meeting.status === 'recording') {
+          const titleWasExplicitlyUpdated = Object.prototype.hasOwnProperty.call(sanitizedUpdates, 'title');
+
+          if (!titleWasExplicitlyUpdated) {
+            const diskTitle = typeof diskMeeting.title === 'string' ? diskMeeting.title.trim() : '';
+            const cachedTitle = typeof meeting.title === 'string' ? meeting.title.trim() : '';
+            const diskTitleIsFallback = !diskTitle || diskTitle === 'Untitled Meeting';
+            const cachedTitleIsMeaningful = !!cachedTitle && cachedTitle !== 'Untitled Meeting';
+
+            if (diskTitleIsFallback && cachedTitleIsMeaningful) {
+              logger.warn('[FILE-SYNC] Preserving cached title during recording', {
+                meetingId: id,
+                cachedTitle: meeting.title,
+                diskTitle: diskMeeting.title
+              });
+              diskMeeting.title = meeting.title;
+            }
+          }
+        }
       }
     }
 

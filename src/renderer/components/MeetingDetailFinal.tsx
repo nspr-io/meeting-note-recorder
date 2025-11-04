@@ -100,7 +100,7 @@ const formatAttendeesForInput = (attendees: Meeting['attendees']): string => {
     .join('\n');
 };
 
-const parseAttendeesInput = (value: string): Meeting['attendees'] => {
+const parseAttendeesInput = (value: string): Attendee[] => {
   if (!value.trim()) {
     return [];
   }
@@ -110,12 +110,12 @@ const parseAttendeesInput = (value: string): Meeting['attendees'] => {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
 
-  const result: Meeting['attendees'] = [];
+  const result: Attendee[] = [];
 
   entries.forEach((entry) => {
     const match = entry.match(/^(.*?)(?:\s*<([^>]+)>)?$/);
     if (!match) {
-      result.push(entry);
+      result.push({ name: entry });
       return;
     }
 
@@ -128,7 +128,7 @@ const parseAttendeesInput = (value: string): Meeting['attendees'] => {
         email: rawEmail
       });
     } else if (rawName) {
-      result.push(rawName);
+      result.push({ name: rawName });
     }
   });
 
@@ -1656,10 +1656,14 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       return;
     }
 
-    const durationValue = metadataDraft.duration.trim() ? Number(metadataDraft.duration) : undefined;
-    if (metadataDraft.duration.trim() && (Number.isNaN(durationValue) || durationValue < 0)) {
-      setMetadataError('Duration must be a non-negative number.');
-      return;
+    let durationValue: number | undefined;
+    if (metadataDraft.duration.trim()) {
+      const parsedDuration = Number(metadataDraft.duration);
+      if (Number.isNaN(parsedDuration) || parsedDuration < 0) {
+        setMetadataError('Duration must be a non-negative number.');
+        return;
+      }
+      durationValue = parsedDuration;
     }
 
     const attendeesValue = parseAttendeesInput(metadataDraft.attendees);
@@ -1671,9 +1675,9 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       date: dateValue,
       startTime: startTimeValue,
       endTime: endTimeValue,
-      duration: durationValue !== undefined ? durationValue : undefined,
+      duration: durationValue,
       attendees: attendeesValue,
-      meetingUrl: meetingUrlValue || undefined,
+      meetingUrl: meetingUrlValue !== '' ? meetingUrlValue : undefined,
       tags: tagsValue.length > 0 ? tagsValue : undefined,
       updatedAt: new Date()
     };
@@ -2303,8 +2307,8 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
       await onUpdateMeeting({
         ...meeting,
         transcript: '',
-        firefliesTranscriptId: null,
-        firefliesTranscriptFetchedAt: null
+        firefliesTranscriptId: undefined,
+        firefliesTranscriptFetchedAt: undefined
       });
 
       setTranscriptSegments([]);

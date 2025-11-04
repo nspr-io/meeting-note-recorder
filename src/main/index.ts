@@ -172,7 +172,7 @@ async function dispatchEndRecordingTrigger(meetingId: string): Promise<void> {
       tags: payload.tags
     });
 
-    notifyUI('end-recording-trigger', payload);
+    notifyUI(IpcChannels.END_RECORDING_TRIGGER, payload);
     app.emit('end-recording-trigger', payload);
   } catch (error) {
     logger.warn('[AUTOMATION] Failed to dispatch end recording trigger', {

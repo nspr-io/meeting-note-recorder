@@ -156,7 +156,7 @@ const api = {
       'transcript-correction-progress',
       'transcript-correction-completed',
       'transcript-correction-failed',
-      'end-recording-trigger'
+      IpcChannels.END_RECORDING_TRIGGER
     ];
 
     if (validChannels.includes(channel as any)) {

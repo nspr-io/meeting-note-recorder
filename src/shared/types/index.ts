@@ -199,6 +199,7 @@ export enum IpcChannels {
   MEETING_DETECTED = 'meeting-detected',
   RECORDING_STARTED = 'recording-started',
   RECORDING_STOPPED = 'recording-stopped',
+  END_RECORDING_TRIGGER = 'end-recording-trigger',
   TRANSCRIPT_UPDATE = 'transcript-update',
   GET_TRANSCRIPT_BUFFER = 'get-transcript-buffer',
   CONNECTION_STATUS = 'connection-status',

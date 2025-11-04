@@ -48,7 +48,6 @@ export class SearchService {
       distance: 100,
       useExtendedSearch: true,
       ignoreFieldNorm: false,
-      ignoreFieldNorm: false,
     };
 
     this.fuse = new Fuse(this.meetings, fuseOptions);

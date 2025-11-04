@@ -1,6 +1,7 @@
 import { Meeting, Attendee } from '../../shared/types';
 import { createServiceLogger } from './ServiceLogger';
 import { ApiError, AuthenticationError, NetworkError, ServiceError } from './ServiceError';
+import path from 'path';
 
 const logger = createServiceLogger('FirefliesTranscriptService');
 
@@ -24,6 +25,11 @@ interface FirefliesTranscriptSummary {
 interface FetchResult {
   transcript: string;
   transcriptId: string;
+}
+
+interface FirefliesSearchAttempt {
+  label: string;
+  variables: Record<string, unknown>;
 }
 
 const GRAPHQL_ENDPOINT = 'https://api.fireflies.ai/graphql';
@@ -139,36 +145,8 @@ export class FirefliesTranscriptService {
 
   private async searchCandidateTranscripts(meeting: Meeting): Promise<FirefliesTranscriptSummary[]> {
     const meetingDate = this.resolveMeetingDate(meeting);
-
-    const fromDate = new Date(meetingDate.getTime() - 2 * 60 * 60 * 1000); // 2 hours before
-    const toDate = new Date(meetingDate.getTime() + 6 * 60 * 60 * 1000); // 6 hours after
-
-    const variables: Record<string, unknown> = {
-      fromDate: fromDate.toISOString(),
-      toDate: toDate.toISOString(),
-      limit: 20
-    };
-
     const attendeeEmails = this.extractAttendeeEmails(meeting);
-    if (attendeeEmails.length) {
-      variables.participants = attendeeEmails;
-    }
-
-    const normalizedTitle = meeting.title?.trim();
-    if (normalizedTitle) {
-      variables.keyword = normalizedTitle.substring(0, 255);
-    }
-
-    logger.debug('Searching Fireflies transcripts', {
-      meetingId: meeting.id,
-      query: {
-        fromDate: variables.fromDate,
-        toDate: variables.toDate,
-        limit: variables.limit,
-        participantsCount: Array.isArray(variables.participants) ? variables.participants.length : 0,
-        hasKeyword: Boolean(variables.keyword)
-      }
-    });
+    const attempts = this.buildSearchAttempts(meeting, meetingDate, attendeeEmails);
 
     const query = `
       query FirefliesTranscripts($fromDate: DateTime, $toDate: DateTime, $participants: [String!], $keyword: String, $limit: Int) {
@@ -189,15 +167,137 @@ export class FirefliesTranscriptService {
       }
     `;
 
-    const response = await this.executeGraphQL<{ transcripts: FirefliesTranscriptSummary[] | null }>(query, variables);
-    const transcripts = response?.transcripts ?? [];
+    const aggregated = new Map<string, FirefliesTranscriptSummary>();
+    let successfulAttempt: string | null = null;
 
-    logger.info('Fireflies returned transcript candidates', {
-      meetingId: meeting.id,
-      candidateCount: transcripts.length
+    for (const attempt of attempts) {
+      const attemptVariables = { ...attempt.variables } as Record<string, unknown>;
+      const participantsValue = (attemptVariables as Record<string, unknown>).participants;
+      const keywordValue = (attemptVariables as Record<string, unknown>).keyword;
+
+      logger.debug('Searching Fireflies transcripts', {
+        meetingId: meeting.id,
+        attempt: attempt.label,
+        query: {
+          fromDate: attemptVariables.fromDate,
+          toDate: attemptVariables.toDate,
+          limit: attemptVariables.limit,
+          participantsCount: Array.isArray(participantsValue) ? participantsValue.length : 0,
+          hasKeyword: typeof keywordValue === 'string' && keywordValue.trim().length > 0
+        }
+      });
+
+      const response = await this.executeGraphQL<{ transcripts: FirefliesTranscriptSummary[] | null }>(query, attemptVariables);
+      const transcripts = response?.transcripts ?? [];
+
+      logger.info('Fireflies returned transcript candidates', {
+        meetingId: meeting.id,
+        attempt: attempt.label,
+        candidateCount: transcripts.length
+      });
+
+      transcripts.forEach((transcript) => {
+        if (!aggregated.has(transcript.id)) {
+          aggregated.set(transcript.id, transcript);
+        }
+      });
+
+      if (aggregated.size > 0) {
+        successfulAttempt = attempt.label;
+        break;
+      }
+    }
+
+    const results = Array.from(aggregated.values());
+
+    if (!results.length) {
+      logger.info('No candidate Fireflies transcripts returned for meeting', {
+        meetingId: meeting.id,
+        attemptsTried: attempts.map((attempt) => attempt.label)
+      });
+    } else {
+      logger.info('Fireflies candidate search completed', {
+        meetingId: meeting.id,
+        candidateCount: results.length,
+        attempt: successfulAttempt ?? attempts[attempts.length - 1]?.label
+      });
+    }
+
+    return results;
+  }
+
+  private buildSearchAttempts(meeting: Meeting, meetingDate: Date, attendeeEmails: string[]): FirefliesSearchAttempt[] {
+    const fromDate = new Date(meetingDate.getTime() - 2 * 60 * 60 * 1000);
+    const toDate = new Date(meetingDate.getTime() + 6 * 60 * 60 * 1000);
+
+    const baseWindow = {
+      fromDate: fromDate.toISOString(),
+      toDate: toDate.toISOString()
+    };
+
+    const participants = attendeeEmails.length ? attendeeEmails : undefined;
+    const keywordCandidates = this.buildKeywordCandidates(meeting);
+    const attempts: FirefliesSearchAttempt[] = [];
+
+    keywordCandidates.forEach((keyword, index) => {
+      const variables: Record<string, unknown> = {
+        ...baseWindow,
+        limit: 20,
+        keyword
+      };
+
+      if (participants) {
+        variables.participants = participants;
+      }
+
+      attempts.push({
+        label: `keyword-${index + 1}`,
+        variables
+      });
     });
 
-    return transcripts;
+    const fallbackVariables: Record<string, unknown> = {
+      ...baseWindow,
+      limit: participants ? 30 : 50
+    };
+
+    if (participants) {
+      fallbackVariables.participants = participants;
+    }
+
+    attempts.push({
+      label: 'fallback-no-keyword',
+      variables: fallbackVariables
+    });
+
+    return attempts;
+  }
+
+  private buildKeywordCandidates(meeting: Meeting): string[] {
+    const candidates = new Set<string>();
+
+    const addCandidate = (value?: string | null) => {
+      if (!value) {
+        return;
+      }
+      const normalized = value.trim().replace(/\s+/g, ' ');
+      if (!normalized) {
+        return;
+      }
+      candidates.add(normalized.length > 255 ? normalized.substring(0, 255) : normalized);
+    };
+
+    addCandidate(meeting.title);
+
+    if (meeting.filePath) {
+      const baseName = path.basename(meeting.filePath, path.extname(meeting.filePath));
+      let cleaned = baseName.replace(/^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-/, '');
+      cleaned = cleaned.replace(/^\[[^\]]+\]-/, '');
+      cleaned = cleaned.replace(/[-_]+/g, ' ').trim();
+      addCandidate(cleaned);
+    }
+
+    return Array.from(candidates);
   }
 
   private selectBestTranscript(candidates: FirefliesTranscriptSummary[], meeting: Meeting): FirefliesTranscriptSummary | null {
