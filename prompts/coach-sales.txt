@@ -29,6 +29,9 @@ Context from previous feedback:
 Recent conversation (last 10 minutes):
 {{recentTranscript}}
 
+Meeting prep context:
+{{meetingPrep}}
+
 Meeting notes taken so far:
 {{meetingNotes}}
 

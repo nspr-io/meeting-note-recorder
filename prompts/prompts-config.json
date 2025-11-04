@@ -66,16 +66,16 @@
   "coach-sales": {
     "name": "Sales Coach",
     "description": "Real-time coaching for sales calls",
-    "variables": ["previousFeedback", "recentTranscript"]
+    "variables": ["previousFeedback", "recentTranscript", "meetingNotes", "meetingPrep"]
   },
   "coach-interview": {
     "name": "Interview Coach",
     "description": "Real-time coaching for job interviews",
-    "variables": ["previousFeedback", "recentTranscript"]
+    "variables": ["previousFeedback", "recentTranscript", "meetingNotes", "meetingPrep"]
   },
   "coach-facilitator": {
     "name": "Meeting Facilitator Coach",
     "description": "Real-time coaching for meeting facilitation",
-    "variables": ["previousFeedback", "recentTranscript"]
+    "variables": ["previousFeedback", "recentTranscript", "meetingNotes", "meetingPrep"]
   }
 }

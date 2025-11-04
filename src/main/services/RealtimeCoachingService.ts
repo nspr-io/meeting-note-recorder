@@ -1,9 +1,11 @@
 import type { Message, Tool, ToolUseBlock } from '@anthropic-ai/sdk/resources/messages';
 import fs from 'fs/promises';
-import { CoachConfig, CoachingType, CoachingFeedback, CoachingState, TranscriptChunk } from '../../shared/types';
+import { CoachConfig, CoachingType, CoachingFeedback, CoachingState, TranscriptChunk, Meeting } from '../../shared/types';
 import { PromptService } from './PromptService';
 import { BaseAnthropicService } from './BaseAnthropicService';
 import { SettingsService } from './SettingsService';
+import { StorageService } from './StorageService';
+import { extractNoteSections } from '../../renderer/components/noteSectionUtils';
 
 const ANALYSIS_INTERVAL_MS = 60000; // 60 seconds (1 minute)
 const TRANSCRIPT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
@@ -17,13 +19,17 @@ export class RealtimeCoachingService extends BaseAnthropicService {
   private transcriptHistory: TranscriptChunk[] = [];
   private feedbackHistory: CoachingFeedback[] = [];
   private currentMeetingNotes: string = '';
+  private currentMeetingNotesCombined: string = '';
+  private currentMeetingPrep: string = '';
   private settingsService: SettingsService;
   private coachVariableValues: Record<string, string> = {};
+  private storageService: StorageService;
 
-  constructor(promptService: PromptService | null, settingsService: SettingsService) {
+  constructor(promptService: PromptService | null, settingsService: SettingsService, storageService: StorageService) {
     super('RealtimeCoachingService');
     this.promptService = promptService;
     this.settingsService = settingsService;
+    this.storageService = storageService;
   }
 
   /**
@@ -52,12 +58,16 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     this.transcriptHistory = [];
     this.feedbackHistory = [];
     this.currentMeetingNotes = '';
+    this.currentMeetingNotesCombined = '';
+    this.currentMeetingPrep = '';
     try {
       this.coachVariableValues = await this.loadCoachVariableValues(coachConfig);
     } catch (error) {
       this.logger.error('Failed to load coach variables:', error);
       this.coachVariableValues = {};
     }
+
+    await this.loadMeetingContext(meetingId, { refresh: true });
 
     // Start periodic analysis
     this.intervalId = setInterval(() => {
@@ -93,6 +103,8 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     this.transcriptHistory = [];
     this.feedbackHistory = [];
     this.currentMeetingNotes = '';
+    this.currentMeetingNotesCombined = '';
+    this.currentMeetingPrep = '';
     this.coachVariableValues = {};
   }
 
@@ -131,10 +143,46 @@ export class RealtimeCoachingService extends BaseAnthropicService {
       return;
     }
 
-    this.currentMeetingNotes = notes;
+    this.applyNoteSections(notes);
     this.logger.debug('Updated meeting notes for coaching', {
-      notesLength: notes.length
+      notesLength: notes.length,
+      hasPrep: this.currentMeetingPrep.length > 0
     });
+  }
+
+  private applyNoteSections(notes: string | null | undefined): void {
+    const content = typeof notes === 'string' ? notes : '';
+    const sections = extractNoteSections(content);
+
+    this.currentMeetingNotesCombined = content.trim();
+    this.currentMeetingNotes = sections.meetingNotes?.trim() || '';
+    this.currentMeetingPrep = sections.prepNotes?.trim() || '';
+  }
+
+  private async loadMeetingContext(meetingId: string, options: { refresh?: boolean } = {}): Promise<void> {
+    try {
+      let meeting: Meeting | undefined;
+
+      if (options.refresh && typeof this.storageService.refreshMeetingFromDisk === 'function') {
+        meeting = await this.storageService.refreshMeetingFromDisk(meetingId);
+      }
+
+      if (!meeting) {
+        meeting = await this.storageService.getMeeting(meetingId);
+      }
+
+      if (!meeting) {
+        this.logger.debug('No meeting found when loading coaching context', { meetingId });
+        return;
+      }
+
+      this.applyNoteSections(meeting.notes);
+    } catch (error) {
+      this.logger.warn('Failed to load meeting context for coaching', {
+        meetingId,
+        error: error instanceof Error ? error.message : error
+      });
+    }
   }
 
   /**
@@ -160,13 +208,21 @@ export class RealtimeCoachingService extends BaseAnthropicService {
     const currentMeetingId = this.meetingId;
 
     try {
+      if (currentMeetingId) {
+        await this.loadMeetingContext(currentMeetingId, { refresh: true });
+      }
+
       // Build context from previous feedback
       const previousFeedback = this.buildPreviousFeedbackContext();
+      const meetingNotesForPrompt = this.currentMeetingNotes?.trim()
+        ? this.currentMeetingNotes
+        : this.currentMeetingNotesCombined;
 
       const prompt = await this.promptService.getInterpolatedPrompt(this.coachingType, {
         previousFeedback,
         recentTranscript,
-        meetingNotes: this.currentMeetingNotes || 'No notes yet',
+        meetingNotes: meetingNotesForPrompt || 'No notes yet',
+        meetingPrep: this.currentMeetingPrep || 'No prep notes yet',
         coachVariables: this.coachVariableValues,
       });
 

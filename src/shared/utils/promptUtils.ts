@@ -6,6 +6,7 @@ export interface PromptVariables {
   transcript?: string;
   notes?: string;
   meetingNotes?: string;
+  meetingPrep?: string;
   previousFeedback?: string;
   recentTranscript?: string;
   coachVariables?: Record<string, string>;
@@ -42,6 +43,7 @@ export function interpolatePrompt(template: string, variables: PromptVariables):
   result = result.replace(/\{\{\s*transcript\s*\}\}/g, variables.transcript || '');
   result = result.replace(/\{\{\s*notes\s*\}\}/g, variables.notes || '');
   result = result.replace(/\{\{\s*meetingNotes\s*\}\}/g, variables.meetingNotes || '');
+  result = result.replace(/\{\{\s*meetingPrep\s*\}\}/g, variables.meetingPrep || '');
   result = result.replace(/\{\{\s*previousFeedback\s*\}\}/g, variables.previousFeedback || '');
   result = result.replace(/\{\{\s*recentTranscript\s*\}\}/g, variables.recentTranscript || '');
 
@@ -107,6 +109,7 @@ export function validatePromptTemplate(
     'transcript',
     'notes',
     'meetingNotes',
+    'meetingPrep',
     'previousFeedback',
     'recentTranscript'
   ]);

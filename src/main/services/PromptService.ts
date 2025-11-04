@@ -1,4 +1,4 @@
-const BASE_COACH_VARIABLES = ['previousFeedback', 'recentTranscript'];
+const BASE_COACH_VARIABLES = ['previousFeedback', 'recentTranscript', 'meetingNotes', 'meetingPrep'];
 import fs from 'fs/promises';
 import path from 'path';
 import { app } from 'electron';

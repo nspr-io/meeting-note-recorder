@@ -2845,7 +2845,7 @@ app.whenReady().then(async () => {
 
   // Initialize coaching service
   logger.info('[MAIN-INIT] Creating RealtimeCoachingService with PromptService:', { hasPromptService: promptService !== null });
-  coachingService = new RealtimeCoachingService(promptService, settingsService);
+  coachingService = new RealtimeCoachingService(promptService, settingsService, storageService);
   meetingChatService = new MeetingChatService(storageService);
   const settings = settingsService.getSettings();
   if (settings.anthropicApiKey) {
