@@ -1410,6 +1410,15 @@ type ViewMode = 'context' | 'liveNotes' | 'transcript' | 'insights' | 'actions' 
 const transcriptCache = new Map<string, any[]>();
 const transcriptSequenceCache = new Map<string, Set<string>>();
 
+const getOrCreateTranscriptSequenceSet = (meetingId: string): Set<string> => {
+  let sequences = transcriptSequenceCache.get(meetingId);
+  if (!sequences) {
+    sequences = new Set<string>();
+    transcriptSequenceCache.set(meetingId, sequences);
+  }
+  return sequences;
+};
+
 const STATUS_OPTIONS: Array<{ value: Meeting['status']; label: string }> = [
   { value: 'scheduled', label: 'Scheduled' },
   { value: 'recording', label: 'Recording' },
@@ -2100,10 +2109,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
     }
 
     const sequenceId = data.sequenceId || data.hash;
-    if (!transcriptSequenceCache.has(meeting.id)) {
-      transcriptSequenceCache.set(meeting.id, new Set());
-    }
-    const seenSequences = transcriptSequenceCache.get(meeting.id)!;
+    const seenSequences = getOrCreateTranscriptSequenceSet(meeting.id);
 
     setTranscriptSegments(prev => {
       console.log('[TRANSCRIPT-UPDATE] Current segment count before add:', prev.length);
@@ -2182,9 +2188,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
   useEffect(() => {
     console.log('[MeetingDetailFinal] Setting up transcript listener for meeting:', meeting.id);
 
-    if (!transcriptSequenceCache.has(meeting.id)) {
-      transcriptSequenceCache.set(meeting.id, new Set());
-    }
+    getOrCreateTranscriptSequenceSet(meeting.id);
 
     const channel = IpcChannels.TRANSCRIPT_UPDATE;
     (window as any).electronAPI?.on?.(channel, handleTranscriptUpdate);
@@ -2198,7 +2202,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
             bufferedCount: buffered.length
           });
 
-          const seenSequences = transcriptSequenceCache.get(meeting.id)!;
+          const seenSequences = getOrCreateTranscriptSequenceSet(meeting.id);
 
           const normalized = buffered.map((chunk: any) => ({
             id: `${Date.now()}-${Math.random()}`,
