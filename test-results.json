@@ -2,17 +2,17 @@
   "passed": [
     {
       "test": "App killed",
-      "timestamp": "2025-11-05T11:16:35.654Z"
+      "timestamp": "2025-11-05T15:30:55.783Z"
     },
     {
       "test": "App started",
       "details": {
         "pids": [
-          "32933"
+          "70717"
         ],
-        "startupTimeMs": 1049
+        "startupTimeMs": 1055
       },
-      "timestamp": "2025-11-05T11:16:36.704Z"
+      "timestamp": "2025-11-05T15:30:56.839Z"
     }
   ],
   "failed": [],
@@ -27,7 +27,7 @@
           "/var/folders/g1/fpr63r6j06x0k813kk8ydbch0000gn/T/meeting-recorder-test/logs"
         ]
       },
-      "timestamp": "2025-11-05T11:16:39.708Z"
+      "timestamp": "2025-11-05T15:30:59.843Z"
     },
     {
       "test": "Initialization",
@@ -38,32 +38,32 @@
           "Window detection service initialized"
         ]
       },
-      "timestamp": "2025-11-05T11:16:39.708Z"
+      "timestamp": "2025-11-05T15:30:59.843Z"
     },
     {
       "test": "System permissions",
       "warning": "Skipped (non-interactive environment)",
-      "timestamp": "2025-11-05T11:16:39.708Z"
+      "timestamp": "2025-11-05T15:30:59.843Z"
     },
     {
       "test": "Manual recording test",
       "warning": "Skipped (non-interactive environment)",
-      "timestamp": "2025-11-05T11:16:39.709Z"
+      "timestamp": "2025-11-05T15:30:59.843Z"
     },
     {
       "test": "Meeting detection test",
       "warning": "Skipped (non-interactive environment)",
-      "timestamp": "2025-11-05T11:16:39.709Z"
+      "timestamp": "2025-11-05T15:30:59.844Z"
     },
     {
       "test": "Toast recording test",
       "warning": "Skipped (non-interactive environment)",
-      "timestamp": "2025-11-05T11:16:39.710Z"
+      "timestamp": "2025-11-05T15:30:59.844Z"
     },
     {
       "test": "Multiple meeting test",
       "warning": "Skipped (non-interactive environment)",
-      "timestamp": "2025-11-05T11:16:39.710Z"
+      "timestamp": "2025-11-05T15:30:59.844Z"
     },
     {
       "test": "Log file",
@@ -75,7 +75,7 @@
           "/var/folders/g1/fpr63r6j06x0k813kk8ydbch0000gn/T/meeting-recorder-test/logs"
         ]
       },
-      "timestamp": "2025-11-05T11:16:39.713Z"
+      "timestamp": "2025-11-05T15:30:59.846Z"
     }
   ]
 }

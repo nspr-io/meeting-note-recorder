@@ -380,7 +380,6 @@ export class StorageService {
         stabilityThreshold: 200,
         pollInterval: 100
       },
-      useFsEvents: isFsEventsWatchSupported,
       usePolling: !isFsEventsWatchSupported,
       interval: 300,
       binaryInterval: 300

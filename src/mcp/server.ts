@@ -5,7 +5,7 @@ process.env.ELECTRON_RUN_AS_NODE = process.env.ELECTRON_RUN_AS_NODE || '1';
 import path from 'path';
 import os from 'os';
 import { existsSync, mkdirSync } from 'fs';
-import chokidar from 'chokidar';
+import chokidar, { type FSWatcher } from 'chokidar';
 
 import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -64,7 +64,7 @@ class MeetingNoteRecorderMcpServer {
   private readonly searchService: SearchService;
   private readonly indexedMeetings = new Map<string, IndexedMeeting>();
   private indexBuilt = false;
-  private watcher: chokidar.FSWatcher | null = null;
+  private watcher: FSWatcher | null = null;
 
   constructor(storagePath: string) {
     log('[INIT] Starting Meeting Note Recorder MCP server');
@@ -638,10 +638,10 @@ class MeetingNoteRecorderMcpServer {
     };
 
     this.watcher
-      .on('add', (path) => void rebuild('add', path))
-      .on('change', (path) => void rebuild('change', path))
-      .on('unlink', (path) => void rebuild('unlink', path))
-      .on('error', (error) => log('[WATCH] Error', { error: formatError(error) }));
+      .on('add', (filePath: string) => void rebuild('add', filePath))
+      .on('change', (filePath: string) => void rebuild('change', filePath))
+      .on('unlink', (filePath: string) => void rebuild('unlink', filePath))
+      .on('error', (error: unknown) => log('[WATCH] Error', { error: formatError(error) }));
 
     log('[WATCH] Watching for meeting file changes');
   }

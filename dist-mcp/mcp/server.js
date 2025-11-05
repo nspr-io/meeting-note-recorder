@@ -546,9 +546,9 @@ class MeetingNoteRecorderMcpServer {
             }
         };
         this.watcher
-            .on('add', (path) => void rebuild('add', path))
-            .on('change', (path) => void rebuild('change', path))
-            .on('unlink', (path) => void rebuild('unlink', path))
+            .on('add', (filePath) => void rebuild('add', filePath))
+            .on('change', (filePath) => void rebuild('change', filePath))
+            .on('unlink', (filePath) => void rebuild('unlink', filePath))
             .on('error', (error) => log('[WATCH] Error', { error: formatError(error) }));
         log('[WATCH] Watching for meeting file changes');
     }
