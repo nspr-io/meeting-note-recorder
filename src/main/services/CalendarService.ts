@@ -1,7 +1,6 @@
 import { google, calendar_v3 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 import { CalendarEvent } from '../../shared/types';
-import { BrowserWindow } from 'electron';
 import Store from 'electron-store';
 import { EventEmitter } from 'events';
 

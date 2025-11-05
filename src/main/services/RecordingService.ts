@@ -58,8 +58,6 @@ export class RecordingService extends EventEmitter {
     });
     this.meetingTaggingService = new MeetingTaggingService(promptService);
 
-    this.meetingTaggingService = new MeetingTaggingService(promptService);
-
     // Forward correction events
     this.transcriptCorrectionService.on('correction-started', (data) => {
       this.emit('transcript-correction-started', data);
@@ -1042,7 +1040,7 @@ export class RecordingService extends EventEmitter {
     sequenceId?: string,
     isFinal = false,
     _windowId?: string,
-    fromReplay = false
+    _fromReplay = false
   ): void {
     const meetingId = this.recordingState.meetingId;
     if (!meetingId) {

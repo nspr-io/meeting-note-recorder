@@ -621,7 +621,7 @@ Analyze this meeting and create insights that an experienced Executive Assistant
     return chunks.slice(0, 40); // cap to avoid hitting Notion block limits
   }
 
-  private normalizeAnthropicJsonResponse<T>(raw: string, context: AnthropicRequestContext): string {
+  private normalizeAnthropicJsonResponse(raw: string, context: AnthropicRequestContext): string {
     const trimmed = (raw || '').trim();
     if (!trimmed) {
       throw new Error('Empty response received from Anthropic');

@@ -1,5 +1,5 @@
 import { createServiceLogger } from './ServiceLogger';
-import { ApiError, ErrorHandler, NetworkError } from './ServiceError';
+import { NetworkError } from './ServiceError';
 
 const logger = createServiceLogger('RecallApiService');
 
@@ -34,7 +34,7 @@ export class RecallApiService {
   /**
    * Helper method to retry failed API calls with exponential backoff
    */
-  private async retryApiCall<T>(
+  private async retryApiCall(
     apiCall: () => Promise<Response>,
     operation: string
   ): Promise<Response> {

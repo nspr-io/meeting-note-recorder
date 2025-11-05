@@ -179,7 +179,7 @@ interface MeetingListProps {
   isLoading?: boolean;
 }
 
-function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalendar, readyToRecordMeetings, isLoading }: MeetingListProps) {
+function MeetingList({ meetings, selectedMeeting, onSelectMeeting, onSyncCalendar: _onSyncCalendar, readyToRecordMeetings, isLoading }: MeetingListProps) {
   const [lastSyncTime, setLastSyncTime] = useState<Date>(new Date());
 
   useEffect(() => {

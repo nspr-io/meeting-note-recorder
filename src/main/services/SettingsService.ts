@@ -442,20 +442,21 @@ export class SettingsService {
       this.setNotionTodoDatabaseId(updates.notionTodoDatabaseId);
     }
 
-    // Don't store API keys in the main settings object
+    const sanitizedSettings = { ...updates };
+    delete sanitizedSettings.recallApiKey;
+    delete sanitizedSettings.anthropicApiKey;
+    delete sanitizedSettings.notionIntegrationToken;
+    delete sanitizedSettings.notionDatabaseId;
+    delete sanitizedSettings.notionTodoIntegrationToken;
+    delete sanitizedSettings.notionTodoDatabaseId;
+    delete sanitizedSettings.firefliesApiKey;
+
     const {
-      recallApiKey: _recallApiKey,
-      anthropicApiKey: _anthropicApiKey,
-      notionIntegrationToken: _notionIntegrationToken,
-      notionDatabaseId: _notionDatabaseId,
-      notionTodoIntegrationToken: _notionTodoIntegrationToken,
-      notionTodoDatabaseId: _notionTodoDatabaseId,
-      firefliesApiKey: _firefliesApiKey,
       coaches,
       permissionOnboarding,
       savedSearches,
       ...settingsToStore
-    } = updates;
+    } = sanitizedSettings;
     const settingsWithCoaches = coaches
       ? { ...settingsToStore, coaches: this.ensureCoachesSchema(coaches).map(coach => ({ ...coach, variables: this.sanitizeCoachVariables(coach.variables) })) }
       : settingsToStore;

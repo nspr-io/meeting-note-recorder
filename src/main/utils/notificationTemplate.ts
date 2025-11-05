@@ -162,7 +162,6 @@ export function generateNotificationHTML(config: NotificationConfig): string {
  * Escape HTML to prevent XSS
  */
 function escapeHtml(text: string): string {
-  const div = { innerHTML: '' } as any;
   const textNode = text;
   return textNode
     .replace(/&/g, '&amp;')

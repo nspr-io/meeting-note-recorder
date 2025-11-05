@@ -4,7 +4,6 @@ import { RecallApiService } from './RecallApiService';
 import { EventEmitter } from 'events';
 import * as sinon from 'sinon';
 import * as fs from 'fs';
-import * as path from 'path';
 
 jest.mock('./StorageService');
 jest.mock('./RecallApiService');
@@ -281,8 +280,6 @@ describe('RecordingService', () => {
         transcript: 'Test transcript content'
       };
 
-      const backupPath = path.join(process.cwd(), 'backups', `${meeting.id}.backup.json`);
-      
       (fs.writeFileSync as jest.Mock).mockImplementation(() => {});
       (fs.existsSync as jest.Mock).mockReturnValue(true);
 

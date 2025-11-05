@@ -41,7 +41,7 @@ export class SDKDebugger {
           logger.error('❌ SDK process not found!');
         }
       } catch (error) {
-        logger.error('❌ SDK process not running');
+        logger.error('❌ SDK process not running', { error });
       }
     }, 5000);
   }
@@ -78,8 +78,8 @@ export class SDKDebugger {
       try {
         await execAsync('osascript -e \'tell application "System Events" to return name of first process\'');
         logger.info('✅ Accessibility permission granted');
-      } catch (e) {
-        logger.error('❌ Accessibility permission denied');
+      } catch (sdkPermissionError) {
+        logger.error('❌ Accessibility permission denied', { error: sdkPermissionError });
       }
       
       // Log all environment variables that might affect SDK

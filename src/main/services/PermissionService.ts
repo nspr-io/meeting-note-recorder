@@ -1,5 +1,4 @@
 import { systemPreferences, dialog, shell } from 'electron';
-import RecallAiSdk from '@recallai/desktop-sdk';
 import { getLogger } from './LoggingService';
 import { PermissionStatus, PermissionType } from '../../shared/types';
 

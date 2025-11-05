@@ -187,7 +187,6 @@ const forwardRendererLog = (level: 'log' | 'warn' | 'error', message: string, co
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    // eslint-disable-next-line no-console
     console.warn('[PRELOAD] Failed to forward renderer log', error);
   }
 };
@@ -201,7 +200,6 @@ const forwardRendererError = (type: string, error: unknown, context?: unknown) =
       timestamp: new Date().toISOString()
     });
   } catch (forwardError) {
-    // eslint-disable-next-line no-console
     console.warn('[PRELOAD] Failed to forward renderer error', forwardError);
   }
 };
@@ -230,7 +228,7 @@ const consoleProxy = console as unknown as Record<string, (...args: unknown[]) =
       if (typeof arg === 'object') {
         try {
           return JSON.stringify(arg);
-        } catch (jsonError) {
+        } catch {
           return String(arg);
         }
       }

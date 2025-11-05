@@ -114,11 +114,6 @@ function notifyRecordingStarted(meetingId: string) {
   notifyMeetingsUpdated();
 }
 
-function notifyRecordingStopped() {
-  notifyUI(IpcChannels.RECORDING_STOPPED);
-  notifyMeetingsUpdated();
-}
-
 function buildMeetingTriggerTags(meeting: Meeting): string[] {
   const baseTags = Array.isArray(meeting.tags) ? meeting.tags : [];
   const extras = new Set<string>();
@@ -1647,7 +1642,7 @@ function setupIpcHandlers() {
       await shell.openExternal(url);
       return { success: true };
     } catch (error) {
-      logger.error(`Failed to open external URL: ${url}`);
+      logger.error(`Failed to open external URL: ${url}`, error);
       return { success: false, error: 'Failed to open URL' };
     }
   });
@@ -2414,14 +2409,6 @@ function setupMeetingDetectionHandlers() {
           // Fall through to show manual notification
         }
       }
-
-      // Store meeting data for fallback
-      const meetingContext = {
-        matchedMeeting,
-        windowId: data.windowId,
-        platform: data.platform,
-        meetingTitle: data.meetingTitle
-      };
 
       // Determine notification content based on whether we found a match
       const notificationTitle = matchedMeeting

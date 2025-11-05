@@ -1,6 +1,6 @@
 import { MeetingDetectionService } from './MeetingDetectionService';
 import { CalendarService } from './CalendarService';
-import { Notification, systemPreferences, app } from 'electron';
+import { Notification, systemPreferences } from 'electron';
 import * as sinon from 'sinon';
 
 jest.mock('electron');
@@ -277,7 +277,7 @@ describe('MeetingDetectionService', () => {
       
       try {
         await service['detectMeetingWindows']();
-      } catch (error) {
+      } catch {
         // Should not crash
       }
 

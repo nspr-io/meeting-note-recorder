@@ -3324,7 +3324,7 @@ function MeetingDetailFinal({ meeting, onUpdateMeeting, onDeleteMeeting, onRefre
                       texts: string[];
                     }> = [];
 
-                    transcriptSegments.forEach((segment, index) => {
+                    transcriptSegments.forEach((segment) => {
                       const lastGroup = groupedSegments[groupedSegments.length - 1];
 
                       if (lastGroup && lastGroup.speaker === segment.speaker) {

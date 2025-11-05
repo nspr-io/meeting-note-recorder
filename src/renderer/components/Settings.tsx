@@ -573,6 +573,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
       }
       setStatusMessage({ type: 'success', text: 'API settings saved successfully' });
     } catch (error) {
+      console.error('Failed to save API settings:', error);
       setStatusMessage({ type: 'error', text: 'Failed to save API settings' });
     } finally {
       setIsSaving(false);
@@ -588,6 +589,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
       setIsRecallApiKeyMasked(false);
       setStatusMessage({ type: 'success', text: 'Recall API key removed' });
     } catch (error) {
+      console.error('Failed to clear Recall API key:', error);
       setStatusMessage({ type: 'error', text: 'Failed to clear Recall API key' });
     } finally {
       setIsSaving(false);
@@ -603,6 +605,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
       setIsAnthropicApiKeyMasked(false);
       setStatusMessage({ type: 'success', text: 'Anthropic API key removed' });
     } catch (error) {
+      console.error('Failed to clear Anthropic API key:', error);
       setStatusMessage({ type: 'error', text: 'Failed to clear Anthropic API key' });
     } finally {
       setIsSaving(false);
@@ -625,6 +628,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
       setHasSavedFirefliesKey(true);
       setStatusMessage({ type: 'success', text: 'Fireflies API key saved successfully' });
     } catch (error) {
+      console.error('Failed to save Fireflies API key:', error);
       setStatusMessage({ type: 'error', text: 'Failed to save Fireflies API key' });
     } finally {
       setIsSaving(false);
@@ -640,6 +644,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
       setIsFirefliesApiKeyMasked(false);
       setStatusMessage({ type: 'success', text: 'Fireflies API key removed' });
     } catch (error) {
+      console.error('Failed to clear Fireflies API key:', error);
       setStatusMessage({ type: 'error', text: 'Failed to clear Fireflies API key' });
     } finally {
       setIsSaving(false);
@@ -667,6 +672,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
       setStatusMessage({ type: 'info', text: 'Opening browser for Google authentication...' });
       await window.electronAPI.connectCalendar();
     } catch (error) {
+      console.error('Failed to connect Google Calendar:', error);
       setIsConnectingCalendar(false);
       setStatusMessage({ type: 'error', text: 'Failed to connect Google Calendar. Please try again.' });
     }
@@ -678,6 +684,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
       setIsCalendarConnected(false);
       setStatusMessage({ type: 'success', text: 'Google Calendar disconnected' });
     } catch (error) {
+      console.error('Failed to disconnect Google Calendar:', error);
       setStatusMessage({ type: 'error', text: 'Failed to disconnect Google Calendar' });
     }
   };
@@ -696,6 +703,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
         setStatusMessage({ type: 'error', text: 'Calendar sync failed' });
       }
     } catch (error) {
+      console.error('Failed to sync calendar:', error);
       setStatusMessage({ type: 'error', text: 'Failed to sync calendar. Please try again.' });
     } finally {
       setIsSyncing(false);
@@ -725,6 +733,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
       setStatusMessage({ type: 'success', text: 'Notion settings saved successfully' });
       setTimeout(() => setStatusMessage(null), 3000);
     } catch (error) {
+      console.error('Failed to save Notion settings:', error);
       setStatusMessage({ type: 'error', text: 'Failed to save Notion settings' });
     } finally {
       setIsSaving(false);
@@ -738,6 +747,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
       setStatusMessage({ type: 'success', text: 'Slack webhook saved successfully' });
       setTimeout(() => setStatusMessage(null), 3000);
     } catch (error) {
+      console.error('Failed to save Slack webhook:', error);
       setStatusMessage({ type: 'error', text: 'Failed to save Slack webhook' });
     } finally {
       setIsSaving(false);
@@ -752,6 +762,7 @@ function useSettingsModel(settings: AppSettings | null, onUpdateSettings: (updat
       setPermissionStatus(status);
       setStatusMessage({ type: 'success', text: 'Permissions updated' });
     } catch (error) {
+      console.error('Failed to request permissions:', error);
       setStatusMessage({ type: 'error', text: 'Failed to request permissions' });
     }
   };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import styled from '@emotion/styled';
 import { UserProfile } from '../../shared/types';
 import MDEditor from '@uiw/react-md-editor';
@@ -144,6 +144,7 @@ function Profile({}: ProfileProps) {
       setStatusMessage({ type: 'success', text: 'Profile saved successfully' });
       setTimeout(() => setStatusMessage(null), 3000);
     } catch (error) {
+      console.error('Failed to save profile:', error);
       setStatusMessage({ type: 'error', text: 'Failed to save profile' });
     } finally {
       setIsSaving(false);

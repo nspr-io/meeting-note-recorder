@@ -10,7 +10,6 @@ import { app } from 'electron';
 import { DescriptionProcessingService } from './DescriptionProcessingService';
 import { detectPlatform } from '../../shared/utils/PlatformDetector';
 import { getLogger } from './LoggingService';
-import { notifyMeetingsUpdated } from '../index';
 import {
   deserializeMeetingMarkdown,
   serializeMeetingToMarkdown,
@@ -92,7 +91,6 @@ const isFsEventsWatchSupported = (() => {
   }
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
     const fsevents = require('fsevents');
     const supported = Boolean(fsevents && typeof fsevents.watch === 'function');
 
@@ -722,7 +720,9 @@ export class StorageService {
           mdFiles.push(...monthMdFiles);
           logger.info(`[LOAD] Found ${monthMdFiles.length} files in ${label} month (${year}/${month})`);
         } catch (error) {
-          logger.debug(`[LOAD] ${label} month directory doesn't exist: ${monthPath}`);
+          logger.debug(`[LOAD] ${label} month directory doesn't exist: ${monthPath}`, {
+            error: error instanceof Error ? error.message : error
+          });
         }
       }
 
@@ -2119,7 +2119,9 @@ export class StorageService {
       logger.info(`Loaded ${this.meetingsCache.size} meetings from cache (last 6 months + future + active)`);
     } catch (error) {
       // Cache doesn't exist yet, that's ok
-      logger.info('No cache file found, starting fresh');
+      logger.info('No cache file found, starting fresh', {
+        error: error instanceof Error ? error.message : error
+      });
     }
   }
 
